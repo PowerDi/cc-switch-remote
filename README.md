@@ -2,16 +2,20 @@
 
 # CC Switch Remote
 
+Thanks to **CC Switch** ([farion1231/cc-switch](https://github.com/farion1231/cc-switch)) and the original **CC Switch Remote** ([xiaoY233/cc-switch-remote](https://github.com/xiaoY233/cc-switch-remote)) for the foundations of this project.
+
+Project repository: **[PowerDi/cc-switch-remote](https://github.com/PowerDi/cc-switch-remote)**
+
 ### Local and remote management for Claude Code, Claude Desktop, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw and Hermes Agent
 
-[![Version](https://img.shields.io/github/v/release/xiaoY233/cc-switch-remote?color=blue&label=version)](https://github.com/xiaoY233/cc-switch-remote/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/xiaoY233/cc-switch-remote/releases)
+[![Version](https://img.shields.io/github/v/release/PowerDi/cc-switch-remote?color=blue&label=version)](https://github.com/PowerDi/cc-switch-remote/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/PowerDi/cc-switch-remote/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/github/downloads/xiaoY233/cc-switch-remote/total)](https://github.com/xiaoY233/cc-switch-remote/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/PowerDi/cc-switch-remote/total)](https://github.com/PowerDi/cc-switch-remote/releases/latest)
 
 CC Switch Remote is a remote-management focused fork of CC Switch. It keeps the upstream local desktop experience while adding an independent remote target mode backed by a Rust CLI helper installed on each server.
 
-[Download](https://github.com/xiaoY233/cc-switch-remote/releases/latest) | [Changelog](CHANGELOG.md) | [User Manual](docs/user-manual/en/README.md) | [中文文档](README_ZH.md)
+[Download](https://github.com/PowerDi/cc-switch-remote/releases/latest) | [Changelog](CHANGELOG.md) | [User Manual](docs/user-manual/en/README.md) | [中文文档](README_ZH.md)
 
 ![CC Switch Remote desktop screenshot](assets/screenshots/cc-switch-remote-hero-zh.png)
 
@@ -22,7 +26,8 @@ CC Switch Remote is a remote-management focused fork of CC Switch. It keeps the 
 
 
 - `main` is the CC Switch Remote product branch and is used for application releases.
-- `upstream-main` mirrors `farion1231/cc-switch/main` and is used only as the upstream sync baseline.
+- `upstream-main` is reserved for tracking official [CC Switch](https://github.com/farion1231/cc-switch) updates; published release tags are the stable baselines for merges into `main`.
+- The original [CC Switch Remote](https://github.com/xiaoY233/cc-switch-remote) is the starting point for this fork, not an ongoing upstream. No separate branch is maintained to track it.
 - Local and remote management are separate targets. Local state remains on the desktop machine; remote state remains on the selected server.
 - Remote operations are executed through SSH commands that call a pure Rust helper binary and return stable JSON.
 - The desktop app stores remote connection profiles and cached health metadata. Provider secrets, MCP data, prompts, skills and tool configuration stay on the remote host unless the user explicitly imports or exports them.
@@ -51,7 +56,7 @@ Remote management is designed as a separate execution target rather than a mirro
 
 The remote helper is published separately from the desktop application:
 
-- Helper release tag: [`remote-helper-latest`](https://github.com/xiaoY233/cc-switch-remote/releases/tag/remote-helper-latest)
+- Helper release tag: [`remote-helper-latest`](https://github.com/PowerDi/cc-switch-remote/releases/tag/remote-helper-latest)
 - Asset prefix: `cc-switch-remote-helper-*`
 - Supported helper targets: Linux x86_64, Linux arm64 and macOS universal
 - Build mode: pure CLI Rust binary, built without Tauri desktop GTK/WebKit dependencies
@@ -64,7 +69,7 @@ Remote feature parity is explicit:
 
 ## Download
 
-Get the latest desktop application from the [Releases](https://github.com/xiaoY233/cc-switch-remote/releases/latest) page.
+Get the latest desktop application from the [Releases](https://github.com/PowerDi/cc-switch-remote/releases/latest) page.
 
 ### Windows
 
@@ -170,7 +175,7 @@ src-tauri/src/services/       Core service logic reused by app and helper
 
 ## Upstream Sync
 
-This project is not intended as an upstream PR branch. The goal is to keep CC Switch Remote as a product branch while periodically syncing upstream features through `upstream-main`.
+This project keeps the existing `main` / `upstream-main` branch model: `main` owns the Remote product and releases, while `upstream-main` tracks official [CC Switch](https://github.com/farion1231/cc-switch) updates. Merge published release tags as stable baselines; review post-release commits separately before including them. The original [CC Switch Remote](https://github.com/xiaoY233/cc-switch-remote) remains an acknowledged source, but is not tracked or regularly synchronized through a separate branch.
 
 Keep remote-specific code isolated behind remote adapters, helper commands and remote UI shells so upstream local feature updates remain mergeable.
 

@@ -12,6 +12,7 @@
 
 ## Upstream Merge Policy
 
+- This repository is `PowerDi/cc-switch-remote`. Keep `main` as the Remote product/release branch and `upstream-main` as the branch for tracking official `farion1231/cc-switch` updates. The original `xiaoY233/cc-switch-remote` is an acknowledged starting point, not an ongoing upstream; do not create or maintain a separate tracking/sync branch for it.
 - Merge upstream by published release tags as the stable baseline. Treat upstream `main` commits after the latest published release as uncertain until they are included in an upstream release tag or explicitly reviewed and accepted.
 - Before merging post-release upstream commits, list the commits, classify the risk, and decide whether each commit should be included, deferred, or cherry-picked.
 - When a post-release upstream commit is included, record why it is safe or necessary for this fork and verify it against the local/remote management boundary rules below.

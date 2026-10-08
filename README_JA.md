@@ -2,24 +2,32 @@
 
 # CC Switch Remote
 
+本プロジェクトの基盤となった **CC Switch**（[farion1231/cc-switch](https://github.com/farion1231/cc-switch)）と、オリジナルの **CC Switch Remote**（[xiaoY233/cc-switch-remote](https://github.com/xiaoY233/cc-switch-remote)）に感謝します。
+
 ### Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes Agent のオールインワン管理ツール
 
-[![Version](https://img.shields.io/github/v/release/xiaoY233/cc-switch-remote?color=blue&label=version)](https://github.com/xiaoY233/cc-switch-remote/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/xiaoY233/cc-switch-remote/releases)
+[![Version](https://img.shields.io/github/v/release/PowerDi/cc-switch-remote?color=blue&label=version)](https://github.com/PowerDi/cc-switch-remote/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/PowerDi/cc-switch-remote/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/github/downloads/xiaoY233/cc-switch-remote/total)](https://github.com/xiaoY233/cc-switch-remote/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/PowerDi/cc-switch-remote/total)](https://github.com/PowerDi/cc-switch-remote/releases/latest)
 
-<a href="https://www.star-history.com/#xiaoY233/cc-switch-remote&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=xiaoY233/cc-switch-remote&theme=dark" /><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=xiaoY233/cc-switch-remote" width="196" height="55" /></picture></a>
+<a href="https://www.star-history.com/#PowerDi/cc-switch-remote&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=PowerDi/cc-switch-remote&theme=dark" /><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=PowerDi/cc-switch-remote" width="196" height="55" /></picture></a>
 
-### プロジェクトリポジトリ：**[xiaoY233/cc-switch-remote](https://github.com/xiaoY233/cc-switch-remote)**
+### プロジェクトリポジトリ：**[PowerDi/cc-switch-remote](https://github.com/PowerDi/cc-switch-remote)**
 
 [English](README.md) | [中文](README_ZH.md) | 日本語 | [Deutsch](README_DE.md) | [Changelog](CHANGELOG.md)
 
 </div>
 
+## ブランチと上流同期
+
+- `main`：本プロジェクトのリモート対応、保守、リリース用ブランチです。
+- `upstream-main`：従来のブランチ構成を維持し、公式 [CC Switch](https://github.com/farion1231/cc-switch) の更新のみを追跡します。`main` への統合は正式リリースタグを安定基準とし、タグ以降のコミットは個別に評価します。
+- オリジナルの [CC Switch Remote](https://github.com/xiaoY233/cc-switch-remote) は初期の派生元ですが、継続的な上流としては追跡せず、専用の同期ブランチも設けません。
+
 ## ❤️スポンサー
 
-> この fork のリリースは [GitHub Releases](https://github.com/xiaoY233/cc-switch-remote/releases) で公開します。
+> この fork のリリースは [GitHub Releases](https://github.com/PowerDi/cc-switch-remote/releases) で公開します。
 
 <details open>
 <summary>クリックで折りたたむ</summary>
@@ -580,7 +588,7 @@ PR を送る前に以下をご確認ください：
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=xiaoY233/cc-switch-remote&type=Date)](https://www.star-history.com/#xiaoY233/cc-switch-remote&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=PowerDi/cc-switch-remote&type=Date)](https://www.star-history.com/#PowerDi/cc-switch-remote&Date)
 
 ## ライセンス
 
