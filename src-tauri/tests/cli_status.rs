@@ -11,31 +11,6 @@ fn cli_test_home() -> &'static Path {
         .path()
 }
 
-/// 与 `with_temp_home` 相同，但每次调用都用**独立**的临时 home。
-///
-/// 文件级的 `cli_test_home()` 是所有用例共用的一个目录：谁往里多插一家供应商，
-/// 后面的用例（比如按顺序断言「可用故障转移供应商」）就会被影响。需要干净地基的用例用这个。
-fn with_isolated_temp_home<T>(run: impl FnOnce() -> T) -> T {
-    let dir = tempfile::tempdir().expect("isolated cli test home");
-    let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
-    let old_home = std::env::var_os("HOME");
-    std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
-    std::env::set_var("HOME", dir.path());
-
-    let result = run();
-
-    match old_test_home {
-        Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
-        None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
-    }
-    match old_home {
-        Some(value) => std::env::set_var("HOME", value),
-        None => std::env::remove_var("HOME"),
-    }
-
-    result
-}
-
 fn with_temp_home<T>(run: impl FnOnce() -> T) -> T {
     let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
     let old_home = std::env::var_os("HOME");
@@ -812,7 +787,7 @@ fn app_mode_commands_round_trip_through_json_cli() {
         mode_after_exit,
         bad_bool_response,
         bad_app_response,
-    ) = with_isolated_temp_home(|| {
+    ) = with_temp_home(|| {
         let provider_json = |id: &str, port: u16| {
             serde_json::json!({
                 "id": id,
@@ -934,6 +909,16 @@ fn app_mode_commands_round_trip_through_json_cli() {
         // 的守卫挡下。
         let _ =
             cc_switch_lib::cli::run(&["routing-runtime".to_string(), "daemon-stop".to_string()]);
+        // 清掉本用例塞进共享 home 的两家供应商：文件里的 routing 用例按顺序断言
+        // 「可用故障转移供应商」，多出来的行会把第一个位置挤掉。
+        for id in ["mode-a", "mode-b"] {
+            let _ = cc_switch_lib::cli::run(&[
+                "providers".to_string(),
+                "delete".to_string(),
+                "codex".to_string(),
+                id.to_string(),
+            ]);
+        }
 
         (
             direct_before,
