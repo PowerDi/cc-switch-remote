@@ -1225,6 +1225,27 @@ pub async fn remote_probe_tool_installations(
     .map_err(|e| format!("Remote tool probe task failed: {e}"))?
 }
 
+#[tauri::command]
+pub async fn remote_list_tool_installations(
+    profile: RemoteHostProfile,
+    tools: Option<Vec<String>>,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Vec<crate::tool_environment::ToolInstallationReport>, String> {
+    validate_profile(&profile).map_err(|e| e.to_string())?;
+    let tools_json =
+        serde_json::to_string(&tools.unwrap_or_default()).map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        run_helper_json(
+            &profile,
+            &["tools".to_string(), "installations".to_string(), tools_json],
+            secret.as_ref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Remote tool installations task failed: {e}"))?
+}
+
 fn remote_health_from_status_with_latest_result(
     status: serde_json::Value,
     latest: Result<Option<RemoteHelperLatest>, String>,
@@ -1574,6 +1595,7 @@ fn parse_remote_capability(value: &str) -> Option<RemoteCapability> {
         "cloud-sync" => Some(RemoteCapability::CloudSync),
         "tools" => Some(RemoteCapability::Tools),
         "stream-check" => Some(RemoteCapability::StreamCheck),
+        "connectivity-check" => Some(RemoteCapability::ConnectivityCheck),
         "usage" => Some(RemoteCapability::Usage),
         "usage-manual-session-sync" => Some(RemoteCapability::UsageManualSessionSync),
         "usage-model-pricing-sync" => Some(RemoteCapability::UsageModelPricingSync),
@@ -1659,6 +1681,7 @@ pub async fn remote_get_provider_state(
     .map_err(|e| format!("Remote provider state task failed: {e}"))?
 }
 
+const REMOTE_CONNECTIVITY_CHECK_CAPABILITY: &str = "connectivity-check";
 const REMOTE_AUTH_CAPABILITY: &str = "auth";
 const REMOTE_CODEX_CONFIG_ONLY_CAPABILITY: &str = "codex-config-only";
 const REMOTE_USAGE_MANUAL_SESSION_SYNC_CAPABILITY: &str = "usage-manual-session-sync";
@@ -2150,46 +2173,6 @@ pub async fn remote_delete_model_pricing(
 }
 
 #[tauri::command]
-pub async fn remote_get_default_cost_multiplier(
-    profile: RemoteHostProfile,
-    app_type: String,
-    secret: Option<RemoteConnectionSecret>,
-) -> Result<String, String> {
-    run_remote_helper_json(
-        profile,
-        vec![
-            "routing-config".to_string(),
-            "default-cost-multiplier".to_string(),
-            app_type,
-        ],
-        secret,
-        "Remote default cost multiplier",
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn remote_set_default_cost_multiplier(
-    profile: RemoteHostProfile,
-    app_type: String,
-    value: String,
-    secret: Option<RemoteConnectionSecret>,
-) -> Result<(), String> {
-    run_remote_helper_json(
-        profile,
-        vec![
-            "routing-config".to_string(),
-            "set-default-cost-multiplier".to_string(),
-            app_type,
-            value,
-        ],
-        secret,
-        "Remote default cost multiplier update",
-    )
-    .await
-}
-
-#[tauri::command]
 pub async fn remote_get_pricing_model_source(
     profile: RemoteHostProfile,
     app_type: String,
@@ -2252,23 +2235,23 @@ pub async fn remote_add_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] addToLive: Option<bool>,
+    #[allow(non_snake_case)] editorSave: Option<serde_json::Value>,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<bool, String> {
     ensure_remote_codex_provider_mutation_supported(profile.clone(), &app, secret.clone()).await?;
     let provider_json = serde_json::to_string(&provider).map_err(|e| e.to_string())?;
-    run_remote_helper_json(
-        profile,
-        vec![
-            "providers".to_string(),
-            "add".to_string(),
-            app,
-            provider_json,
-            addToLive.unwrap_or(true).to_string(),
-        ],
-        secret,
-        "Remote provider add",
-    )
-    .await
+    let mut args = vec![
+        "providers".to_string(),
+        "add".to_string(),
+        app,
+        provider_json,
+        addToLive.unwrap_or(true).to_string(),
+    ];
+    if let Some(editor) = editorSave {
+        args[1] = "add-editor".to_string();
+        args.push(serde_json::to_string(&editor).map_err(|e| e.to_string())?);
+    }
+    run_remote_helper_json(profile, args, secret, "Remote provider add").await
 }
 
 #[tauri::command]
@@ -2292,21 +2275,53 @@ pub async fn remote_update_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
+    #[allow(non_snake_case)] editorSave: Option<serde_json::Value>,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<bool, String> {
     ensure_remote_codex_provider_mutation_supported(profile.clone(), &app, secret.clone()).await?;
     let provider_json = serde_json::to_string(&provider).map_err(|e| e.to_string())?;
+    let mut args = vec![
+        "providers".to_string(),
+        "update".to_string(),
+        app,
+        provider_json,
+        originalId.unwrap_or_else(|| "-".to_string()),
+    ];
+    if let Some(editor) = editorSave {
+        args[1] = "update-editor".to_string();
+        args.push(serde_json::to_string(&editor).map_err(|e| e.to_string())?);
+    }
+    run_remote_helper_json(profile, args, secret, "Remote provider update").await
+}
+
+/// 远端供应商编辑器的显示内容：与 desktop 的 `get_provider_editor_view` 同一投影，
+/// 返回的是 helpers 端已脱敏的配置（密钥为 `[redacted]`，保存时由 helper 按行还原）。
+#[tauri::command]
+pub async fn remote_get_provider_editor_view(
+    profile: RemoteHostProfile,
+    app: String,
+    #[allow(non_snake_case)] settingsConfig: serde_json::Value,
+    category: Option<String>,
+    #[allow(non_snake_case)] providerId: Option<String>,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<serde_json::Value, String> {
+    let settings_json = serde_json::to_string(&settingsConfig).map_err(|e| e.to_string())?;
+    let options_json = serde_json::to_string(&serde_json::json!({
+        "category": category,
+        "providerId": providerId,
+    }))
+    .map_err(|e| e.to_string())?;
     run_remote_helper_json(
         profile,
         vec![
             "providers".to_string(),
-            "update".to_string(),
+            "editor-view".to_string(),
             app,
-            provider_json,
-            originalId.unwrap_or_else(|| "-".to_string()),
+            settings_json,
+            options_json,
         ],
         secret,
-        "Remote provider update",
+        "Remote provider editor view",
     )
     .await
 }
@@ -2366,10 +2381,16 @@ pub async fn remote_stream_check_provider(
     providerId: String,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<crate::services::stream_check::StreamCheckResult, String> {
+    ensure_remote_helper_capability(
+        profile.clone(),
+        secret.clone(),
+        REMOTE_CONNECTIVITY_CHECK_CAPABILITY,
+    )
+    .await?;
     run_remote_helper_json(
         profile,
         vec![
-            "stream-check".to_string(),
+            "connectivity-check".to_string(),
             "provider".to_string(),
             app,
             providerId,
@@ -2670,7 +2691,7 @@ pub async fn remote_get_subscription_quota(
 pub async fn remote_get_stream_check_config(
     profile: RemoteHostProfile,
     secret: Option<RemoteConnectionSecret>,
-) -> Result<crate::services::stream_check::StreamCheckConfig, String> {
+) -> Result<serde_json::Value, String> {
     run_remote_helper_json(
         profile,
         vec!["stream-check".to_string(), "config".to_string()],
@@ -2683,7 +2704,7 @@ pub async fn remote_get_stream_check_config(
 #[tauri::command]
 pub async fn remote_save_stream_check_config(
     profile: RemoteHostProfile,
-    config: crate::services::stream_check::StreamCheckConfig,
+    config: serde_json::Value,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<bool, String> {
     let config_json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
@@ -4248,6 +4269,28 @@ mod tests {
         assert!(command.contains(&REMOTE_HELPER_REQUIRED_CAPABILITIES.join(", ")));
         assert!(!command.contains("rustup.rs"));
         assert!(!command.contains("cargo install --git"));
+    }
+
+    #[test]
+    fn connectivity_checks_require_the_new_non_billing_capability() {
+        let old = RemoteHelperStatus {
+            capabilities: vec!["stream-check".into()],
+        };
+        assert_eq!(
+            validate_remote_helper_capability(&old, REMOTE_CONNECTIVITY_CHECK_CAPABILITY),
+            Err(remote_helper_upgrade_required("connectivity-check"))
+        );
+        let current = RemoteHelperStatus {
+            capabilities: vec!["connectivity-check".into()],
+        };
+        assert!(
+            validate_remote_helper_capability(&current, REMOTE_CONNECTIVITY_CHECK_CAPABILITY)
+                .is_ok()
+        );
+        assert_eq!(
+            parse_remote_capability("connectivity-check"),
+            Some(RemoteCapability::ConnectivityCheck)
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
  */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useTranslation } from "react-i18next";
 import { proxyApi } from "@/lib/api/proxy";
 import {
@@ -13,7 +13,11 @@ import {
 } from "@/lib/query/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import type { ManagementTarget } from "@/lib/api";
-import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
+import {
+  getManagementTargetKey,
+  LOCAL_MANAGEMENT_TARGET,
+} from "@/lib/managementTarget";
+import { getAppLabel } from "@/config/appConfig";
 
 /**
  * 代理服务状态管理
@@ -120,6 +124,8 @@ export function useProxyStatus(
       invalidateRemoteAppRoutingConfigs();
       if (isLocalTarget) {
         queryClient.invalidateQueries({ queryKey: proxyTakeoverStatusKey });
+        // 退回直连后「当前」显示回直连供应商。
+        queryClient.invalidateQueries({ queryKey: ["providers"] });
         // 彻底删除所有供应商健康状态缓存（后端已清空数据库记录）
         queryClient.removeQueries({ queryKey: ["providerHealth"] });
         // 彻底删除所有熔断器统计缓存（代理停止后熔断器状态已重置）
@@ -140,19 +146,23 @@ export function useProxyStatus(
     },
   });
 
-  // 按应用开启/关闭接管
+  // 按应用开启/关闭接管。stack 为真时进入的是 Stack 模式（和路由模式二选一）
   const setTakeoverForAppMutation = useMutation({
     mutationFn: ({
       appType,
       enabled,
+      stack = false,
     }: {
       appType: string;
       enabled: boolean;
+      stack?: boolean;
     }) => {
+      // 远端应用的进出路由由远端路由开关（RemoteAppRoutingToggle）负责；
+      // 这个本机接管接口在远端目标下必须显式拒绝，避免改到本机 live。
       if (!isLocalTarget) {
         throw new Error("Remote app takeover is not supported yet");
       }
-      return proxyApi.setProxyTakeoverForApp(appType, enabled);
+      return proxyApi.setProxyTakeoverForApp(appType, enabled, stack);
     },
     onSuccess: (_data, variables) => {
       const appLabel =
@@ -168,19 +178,63 @@ export function useProxyStatus(
 
       toast.success(
         variables.enabled
-          ? t("proxy.takeover.enabled", {
-              app: appLabel,
-              defaultValue: `已接管 ${appLabel} 配置（请求将走本地代理）`,
-            })
+          ? variables.stack
+            ? t("proxy.stackMode.enabled", { app: appLabel })
+            : t("proxy.takeover.enabled", {
+                app: appLabel,
+                defaultValue: `已接管 ${appLabel} 配置（请求将走本地代理）`,
+              })
           : t("proxy.takeover.disabled", {
               app: appLabel,
               defaultValue: `已恢复 ${appLabel} 配置`,
             }),
         { closeButton: true },
       );
-
       queryClient.invalidateQueries({ queryKey: proxyStatusKey });
       queryClient.invalidateQueries({ queryKey: proxyTakeoverStatusKey });
+      // 路由模式下「当前」是路由到的那家，进出路由都要刷新（只刷本次目标）。
+      queryClient.invalidateQueries({
+        queryKey: [
+          "providers",
+          variables.appType,
+          getManagementTargetKey(target),
+        ],
+      });
+    },
+    onError: (error: Error) => {
+      const detail =
+        extractErrorMessage(error) ||
+        t("common.unknown", { defaultValue: "未知错误" });
+      toast.error(
+        t("proxy.takeover.failed", {
+          detail,
+          defaultValue: `操作失败: ${detail}`,
+        }),
+      );
+    },
+  });
+
+  // 设置里在路由和 Stack 之间换时：处于另一种模式的 Claude Code、Codex 先退回直连
+  const exitAppsInModeMutation = useMutation({
+    mutationFn: (stack: boolean) => proxyApi.exitProxyAppsInMode(stack),
+    onSuccess: (apps) => {
+      if (apps.length > 0) {
+        toast.success(
+          t("proxy.stackMode.exitedToDirect", {
+            apps: apps.map(getAppLabel).join(" / "),
+          }),
+          { closeButton: true },
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status(target) });
+      queryClient.invalidateQueries({
+        queryKey: proxyKeys.takeoverStatus(target),
+      });
+      for (const app of apps) {
+        queryClient.invalidateQueries({
+          queryKey: ["providers", app, getManagementTargetKey(target)],
+        });
+      }
     },
     onError: (error: Error) => {
       const detail =
@@ -210,6 +264,7 @@ export function useProxyStatus(
 
     // 按应用接管开关
     setTakeoverForApp: setTakeoverForAppMutation.mutateAsync,
+    exitAppsInMode: exitAppsInModeMutation.mutateAsync,
 
     // 加载状态
     isStarting: startProxyServerMutation.isPending,
@@ -219,6 +274,7 @@ export function useProxyStatus(
       startProxyServerMutation.isPending ||
       stopProxyServerMutation.isPending ||
       stopWithRestoreMutation.isPending ||
-      setTakeoverForAppMutation.isPending,
+      setTakeoverForAppMutation.isPending ||
+      exitAppsInModeMutation.isPending,
   };
 }

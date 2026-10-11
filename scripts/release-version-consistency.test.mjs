@@ -8,9 +8,9 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const releaseVersion = "3.20.2";
+const releaseVersion = "4.0.5";
 
-test("release metadata uses the planned v3.20.2 version consistently", () => {
+test("release metadata uses the planned v4.0.5 version consistently", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
   );
@@ -34,6 +34,6 @@ test("release metadata uses the planned v3.20.2 version consistently", () => {
   assert.match(cargoToml, new RegExp(`^version = "${releaseVersion}"$`, "m"));
   assert.match(
     cargoLock,
-    new RegExp(`name = "cc-switch-remote"\\nversion = "${releaseVersion}"`),
+    new RegExp(`name = "cc-switch-remote"\\r?\\nversion = "${releaseVersion}"`),
   );
 });

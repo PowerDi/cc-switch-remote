@@ -43,6 +43,12 @@ import { ProfileManageDialog } from "./ProfileManageDialog";
 import { APP_PROFILE_SCOPE, hasScopeSnapshot } from "./scope";
 import type { CurrentProfileIds, ProfileScope } from "@/lib/api/profiles";
 import type { ManagementTarget } from "@/lib/api/remote";
+import {
+  getManagementTargetKey,
+  LOCAL_MANAGEMENT_TARGET,
+} from "@/lib/managementTarget";
+import { useTargetConnectionEpoch } from "@/hooks/useTargetConnectionEpoch";
+import { useTargetCapability } from "@/hooks/useTargetCapability";
 
 const CURRENT_ID_KEY: Record<ProfileScope, keyof CurrentProfileIds> = {
   claude: "claude",
@@ -59,14 +65,38 @@ interface ProfileSwitcherProps {
  * 项目 Profile 切换器（header 左侧入口）
  *
  * 项目列表全应用共享（用户拥有的项目就那几个），但切换按分组进行：
- * Claude 组（Claude Code 的供应商/MCP/Skills/记忆文件 + Claude Desktop
- * 的供应商）与 Codex 组各自指向自己的当前项目、只应用组内快照。
- * 与右侧 AppSwitcher（仅切换查看的应用）语义不同。
+ * Claude Code、Claude Desktop 与 Codex 各自指向自己的当前项目，
+ * 只应用当前分组的快照。切换目标/连接/应用时丢弃旧对话框草稿和确认。
+ * 与侧栏的应用列表（只切换查看的应用）语义不同。
  */
 export function ProfileSwitcher({
   activeApp,
-  target = { type: "local" },
+  target = LOCAL_MANAGEMENT_TARGET,
 }: ProfileSwitcherProps) {
+  const epoch = useTargetConnectionEpoch(target);
+  const appSupportsProfiles = Boolean(APP_PROFILE_SCOPE[activeApp]);
+  const helperSupportsProfiles = useTargetCapability(
+    target,
+    "profiles",
+    appSupportsProfiles,
+  );
+  if (!appSupportsProfiles) return null;
+  // 远端 helper 未实现项目命令时隐藏入口，而不是让点击报底层错误；
+  // 本机始终可用（useTargetCapability 对本机直接返回 true）。
+  if (!helperSupportsProfiles) return null;
+  return (
+    <ProfileSwitcherContent
+      key={JSON.stringify([getManagementTargetKey(target), epoch, activeApp])}
+      activeApp={activeApp}
+      target={target}
+    />
+  );
+}
+
+function ProfileSwitcherContent({
+  activeApp,
+  target,
+}: ProfileSwitcherProps & { target: ManagementTarget }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -115,11 +145,14 @@ export function ProfileSwitcher({
             type="button"
             role="combobox"
             aria-expanded={open}
+            aria-label={t("profiles.switcherAriaLabel", {
+              name: currentProfile?.name ?? t("profiles.none"),
+            })}
             title={t(`profiles.switcherTooltip.${scope}`)}
             className={cn(
               "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium transition-colors",
               "hover:bg-black/5 dark:hover:bg-white/5",
-              currentProfile ? "text-foreground" : "text-muted-foreground",
+              currentProfile ? "text-fg-1" : "text-fg-2",
             )}
           >
             <FolderOpen className="h-4 w-4 shrink-0 opacity-70" />
@@ -133,6 +166,7 @@ export function ProfileSwitcher({
           side="bottom"
           align="start"
           sideOffset={6}
+          aria-label={t(`profiles.switcherTooltip.${scope}`)}
           className="z-[100] w-64 p-0"
         >
           <Command label={t("profiles.searchPlaceholder")}>
@@ -158,7 +192,7 @@ export function ProfileSwitcher({
                       />
                       <span className="truncate">{profile.name}</span>
                       {!hasScopeSnapshot(profile, scope) && (
-                        <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
+                        <span className="ml-auto shrink-0 pl-2 text-xs text-fg-2">
                           {t("profiles.noSnapshotForScope")}
                         </span>
                       )}

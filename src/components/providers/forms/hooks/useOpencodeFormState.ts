@@ -59,7 +59,7 @@ export function useOpencodeFormState({
 
   const [opencodeNpm, setOpencodeNpm] = useState<string>(() => {
     if (appId !== "opencode") return OPENCODE_DEFAULT_NPM;
-    return initialOpencodeConfig?.npm || OPENCODE_DEFAULT_NPM;
+    return initialOpencodeConfig?.npm ?? OPENCODE_DEFAULT_NPM;
   });
 
   const [opencodeApiKey, setOpencodeApiKey] = useState<string>(() => {
@@ -206,7 +206,7 @@ export function useOpencodeFormState({
 
   const resetOpencodeState = useCallback((config?: OpenCodeProviderConfig) => {
     setOpencodeProviderKey("");
-    setOpencodeNpm(config?.npm || OPENCODE_DEFAULT_NPM);
+    setOpencodeNpm(config?.npm ?? OPENCODE_DEFAULT_NPM);
     setOpencodeBaseUrl(config?.options?.baseURL || "");
     setOpencodeApiKey(getDisplaySecretValue(config?.options?.apiKey));
     setOpencodeHeaders(config?.options?.headers || {});

@@ -6,9 +6,12 @@ import type { ProviderMeta } from "@/types";
 import type { SubscriptionQuota } from "@/types/subscription";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
-import { resolveDisplayUsage, type LastGoodSnapshot } from "./queries";
+import { resolveDisplayUsage, type LastGoodSnapshot } from "./keepLastGood";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { useTargetQueryIdentityReset } from "@/hooks/useTargetQueryIdentityReset";
+import {
+  useTargetConnectionEpoch,
+  withConnectionEpoch,
+} from "@/hooks/useTargetConnectionEpoch";
 
 const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
@@ -29,6 +32,11 @@ export const subscriptionKeys = {
       targetKey(target),
       accountId ?? "default",
     ] as const,
+  xaiOauthQuota: (
+    accountId: string | null,
+    target: ManagementTarget = { type: "local" },
+  ) =>
+    ["xai_oauth", "quota", targetKey(target), accountId ?? "default"] as const,
 };
 
 /**
@@ -109,8 +117,12 @@ export function useSubscriptionQuota(
   const targetKey =
     target.type === "remote" ? `remote:${target.profile.id}` : "local";
 
+  const epoch = useTargetConnectionEpoch(target);
   const query = useQuery({
-    queryKey: subscriptionKeys.quota(appId, targetKey),
+    queryKey: withConnectionEpoch(
+      subscriptionKeys.quota(appId, targetKey),
+      epoch,
+    ),
     queryFn: () => subscriptionApi.getQuota(appId, target),
     enabled:
       enabled && ["claude", "codex", "gemini", "grokbuild"].includes(appId),
@@ -123,17 +135,7 @@ export function useSubscriptionQuota(
         : REFETCH_INTERVAL,
     retry: 1,
   });
-  const connectionRevision = useTargetQueryIdentityReset(
-    "quota",
-    target,
-    targetKey,
-  );
-
-  return useQuotaKeepLastGood(
-    query,
-    `${targetKey}:${appId}`,
-    connectionRevision,
-  );
+  return useQuotaKeepLastGood(query, `${targetKey}:${appId}`, epoch ?? 0);
 }
 
 export interface UseCodexOauthQuotaOptions {
@@ -164,8 +166,12 @@ export function useCodexOauthQuotaByAccountId(
     target = { type: "local" },
   } = options;
   const key = targetKey(target);
+  const epoch = useTargetConnectionEpoch(target);
   const query = useQuery({
-    queryKey: subscriptionKeys.codexOauthQuota(accountId, target),
+    queryKey: withConnectionEpoch(
+      subscriptionKeys.codexOauthQuota(accountId, target),
+      epoch,
+    ),
     queryFn: () => subscriptionApi.getCodexOauthQuota(accountId, target),
     enabled,
     refetchInterval:
@@ -180,7 +186,7 @@ export function useCodexOauthQuotaByAccountId(
         : REFETCH_INTERVAL,
     retry: 1,
   });
-  const connectionRevision = useTargetQueryIdentityReset("quota", target, key);
+  const connectionRevision = epoch ?? 0;
 
   return useQuotaKeepLastGood(
     query,
@@ -208,16 +214,27 @@ export function useXaiOauthQuota(
   meta: ProviderMeta | undefined,
   options: UseCodexOauthQuotaOptions = {},
 ) {
+  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.XAI_OAUTH);
+  return useXaiOauthQuotaByAccountId(accountId, options);
+}
+
+/** Shared by the auth-center account row and provider quota footer. */
+export function useXaiOauthQuotaByAccountId(
+  accountId: string | null,
+  options: UseCodexOauthQuotaOptions = {},
+) {
   const {
     enabled = true,
     autoQuery = false,
     target = { type: "local" },
   } = options;
-  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.XAI_OAUTH);
-  const targetKey =
-    target.type === "remote" ? `remote:${target.profile.id}` : "local";
+  const key = targetKey(target);
+  const epoch = useTargetConnectionEpoch(target);
   const query = useQuery({
-    queryKey: ["xai_oauth", "quota", targetKey, accountId ?? "default"],
+    queryKey: withConnectionEpoch(
+      subscriptionKeys.xaiOauthQuota(accountId, target),
+      epoch,
+    ),
     queryFn: () => subscriptionApi.getXaiOauthQuota(accountId, target),
     enabled,
     refetchInterval: autoQuery ? REFETCH_INTERVAL : false,
@@ -226,15 +243,9 @@ export function useXaiOauthQuota(
     staleTime: REFETCH_INTERVAL,
     retry: 1,
   });
-  const connectionRevision = useTargetQueryIdentityReset(
-    "quota",
-    target,
-    targetKey,
-  );
-
   return useQuotaKeepLastGood(
     query,
-    `${targetKey}:${accountId ?? "default"}`,
-    connectionRevision,
+    `${key}:${accountId ?? "default"}`,
+    epoch ?? 0,
   );
 }

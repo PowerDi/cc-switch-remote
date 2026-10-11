@@ -93,6 +93,7 @@ pub enum RemoteCapability {
     CloudSync,
     Tools,
     StreamCheck,
+    ConnectivityCheck,
     Usage,
     UsageManualSessionSync,
     UsageModelPricingSync,

@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { History, KeyRound } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import type { Settings } from "@/types";
-import { ToggleRow } from "@/components/ui/toggle-row";
+import { SettingsSwitchRow } from "@/components/settings/SettingsLayout";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi } from "@/lib/api";
 import type { ManagementTarget } from "@/lib/api";
@@ -14,6 +13,7 @@ type CodexAuthSettingsState = Settings | SettingsFormState;
 
 interface CodexAuthSettingsProps<TSettings extends CodexAuthSettingsState> {
   settings: TSettings;
+  /** 管理目标：默认本机；远端目标时不读本机迁移备份、不跑本机还原 */
   target?: ManagementTarget;
   /** 返回 false（或 resolve 为 false）表示保存失败；其余返回值视为成功 */
   onChange: (
@@ -37,6 +37,7 @@ export function CodexAuthSettings<TSettings extends CodexAuthSettingsState>({
       return;
     }
     if (target.type === "remote") {
+      // 备份是远端主机上的东西，本机探测不到，也不该在本机跑还原
       setHasUnifyBackup(false);
       setShowDisableConfirm(true);
       return;
@@ -101,17 +102,15 @@ export function CodexAuthSettings<TSettings extends CodexAuthSettingsState>({
     }
   };
 
+  // 设置 → 应用配置 → Codex 卡片里的两行
   return (
-    <section className="space-y-4">
-      <div className="flex items-center gap-2 pb-2 border-b border-border/40">
-        <KeyRound className="h-4 w-4 text-primary" />
-        <h3 className="text-sm font-medium">{t("settings.codexAuth")}</h3>
-      </div>
-
-      <ToggleRow
-        icon={<KeyRound className="h-4 w-4 text-emerald-500" />}
-        title={t("settings.preserveCodexOfficialAuthOnSwitch")}
-        description={t("settings.preserveCodexOfficialAuthOnSwitchDescription")}
+    <>
+      <SettingsSwitchRow
+        label={t("settings.preserveCodexOfficialAuthOnSwitch")}
+        help={{
+          title: t("settings.preserveCodexOfficialAuthOnSwitch"),
+          body: t("settings.preserveCodexOfficialAuthOnSwitchDescription"),
+        }}
         checked={settings.preserveCodexOfficialAuthOnSwitch ?? false}
         onCheckedChange={(value) =>
           onChange({
@@ -120,10 +119,12 @@ export function CodexAuthSettings<TSettings extends CodexAuthSettingsState>({
         }
       />
 
-      <ToggleRow
-        icon={<History className="h-4 w-4 text-sky-500" />}
-        title={t("settings.unifyCodexSessionHistory")}
-        description={t("settings.unifyCodexSessionHistoryDescription")}
+      <SettingsSwitchRow
+        label={t("settings.unifyCodexSessionHistory")}
+        help={{
+          title: t("settings.unifyCodexSessionHistory"),
+          body: t("settings.unifyCodexSessionHistoryDescription"),
+        }}
         checked={settings.unifyCodexSessionHistory ?? false}
         onCheckedChange={handleUnifyHistoryChange}
       />
@@ -134,6 +135,7 @@ export function CodexAuthSettings<TSettings extends CodexAuthSettingsState>({
         message={t("confirm.unifyCodexHistory.message")}
         checkboxLabel={t("confirm.unifyCodexHistory.migrateExisting")}
         confirmText={t("confirm.unifyCodexHistory.confirm")}
+        variant="info"
         onConfirm={handleEnableConfirm}
         onCancel={() => setShowEnableConfirm(false)}
       />
@@ -149,9 +151,10 @@ export function CodexAuthSettings<TSettings extends CodexAuthSettingsState>({
         }
         checkboxDefaultChecked
         confirmText={t("confirm.unifyCodexHistoryOff.confirm")}
+        variant="info"
         onConfirm={(restoreBackup) => void handleDisableConfirm(restoreBackup)}
         onCancel={() => setShowDisableConfirm(false)}
       />
-    </section>
+    </>
   );
 }

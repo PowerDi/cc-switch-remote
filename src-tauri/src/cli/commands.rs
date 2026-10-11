@@ -4,13 +4,14 @@ use crate::prompt::Prompt;
 use crate::provider::UniversalProvider;
 use crate::services::omo::{OmoLocalFileData, OmoVariant, SLIM, STANDARD};
 use crate::services::profile::{ProfilePayload, ProfileScope, ProfileService};
+use crate::services::provider::EditorSave;
 use crate::services::provider_secrets::{
     redact_provider_map_secret_values, redact_secret_values, restore_redacted_secret_values,
     restore_redacted_secret_values_for,
 };
 use crate::services::skill::{
-    DiscoverableSkill, ImportSkillSelection, SkillBackupEntry, SkillRepo, SkillService,
-    SkillStorageLocation, SkillUninstallResult, SkillUpdateInfo,
+    DiscoverableSkill, ImportSkillSelection, SkillBackupEntry, SkillDiscoveryResult, SkillRepo,
+    SkillService, SkillStorageLocation, SkillUninstallResult, SkillUpdateCheckResult,
 };
 use crate::services::OmoService;
 use crate::services::ProviderSortUpdate;
@@ -1211,16 +1212,17 @@ const REMOTE_ROUTING_APP_TYPES: [&str; 4] = ["claude", "codex", "gemini", "grokb
 
 #[cfg(feature = "proxy-runtime")]
 async fn repair_enabled_routing_takeovers(state: &AppState) -> Result<(), String> {
+    let status = effective_routing_runtime_status(state).await?;
+    let external = status.running && !state.proxy_service.is_running().await;
     for app_type in REMOTE_ROUTING_APP_TYPES {
         let config = state
             .db
             .get_proxy_config_for_app(app_type)
             .await
             .map_err(|e| e.to_string())?;
-        if config.enabled {
-            state
-                .proxy_service
-                .set_takeover_for_app(app_type, true)
+        let app = AppType::from_str(app_type).map_err(|e| e.to_string())?;
+        if config.enabled || crate::mode::current::is_proxy(&app) {
+            crate::mode::controller::enter_with_route_in_runtime(state, &app, None, None, external)
                 .await?;
         }
     }
@@ -1229,11 +1231,8 @@ async fn repair_enabled_routing_takeovers(state: &AppState) -> Result<(), String
 
 #[cfg(feature = "proxy-runtime")]
 async fn disable_enabled_routing_takeovers(state: &AppState) -> Result<(), String> {
-    for app_type in REMOTE_ROUTING_APP_TYPES {
-        state
-            .proxy_service
-            .set_takeover_for_app(app_type, false)
-            .await?;
+    for app in crate::mode::controller::PROXY_APPS {
+        crate::mode::controller::exit(state, &app).await?;
     }
     Ok(())
 }
@@ -1473,19 +1472,12 @@ pub fn clear_current_profile(scope: &str) -> Result<(), String> {
 }
 
 pub fn apply_profile(id: &str, scope: &str) -> Result<Vec<String>, String> {
+    #[cfg(feature = "proxy-runtime")]
+    let state = routing_state()?.clone();
+    #[cfg(not(feature = "proxy-runtime"))]
     let state = build_command_state()?;
     let scope = ProfileScope::parse(scope).map_err(|e| e.to_string())?;
-    let (mut warnings, should_stop_proxy) =
-        ProfileService::apply(&state, id, scope).map_err(|e| e.to_string())?;
-
-    if should_stop_proxy {
-        #[cfg(feature = "proxy-runtime")]
-        if let Err(error) = routing_runtime()?.block_on(state.proxy_service.stop()) {
-            warnings.push(format!("stop proxy after profile switch failed: {error}"));
-        }
-    }
-
-    Ok(warnings)
+    ProfileService::apply(&state, id, scope).map_err(|e| e.to_string())
 }
 
 pub fn get_common_config_snippet(app_type: &str) -> Result<Option<String>, String> {
@@ -1536,13 +1528,20 @@ pub fn set_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), St
     Ok(())
 }
 
+/// Kept only to return a stable error to older clients. v4 edits must use the
+/// shared editor projection/ownership contract, not the retired text patcher.
 pub fn update_toml_common_config_snippet(
-    config_toml: &str,
-    snippet_toml: &str,
-    enabled: bool,
+    _config_toml: &str,
+    _snippet_toml: &str,
+    _enabled: bool,
 ) -> Result<String, String> {
-    crate::services::provider::update_toml_common_config_snippet(config_toml, snippet_toml, enabled)
-        .map_err(|e| e.to_string())
+    retired_upstream_command("common-update-toml")
+}
+
+fn retired_upstream_command<T>(command: &str) -> Result<T, String> {
+    Err(format!(
+        "该接口已被 v4.0.4 移除，未修改任何配置 (Unsupported retired command: {command}; no configuration was changed)"
+    ))
 }
 
 pub fn extract_common_config_snippet(
@@ -2007,6 +2006,18 @@ pub fn probe_tool_installations(
     runtime.block_on(crate::tool_environment::probe_tool_installations(tools))
 }
 
+pub fn list_tool_installations(
+    tools_json: &str,
+) -> Result<Vec<crate::tool_environment::ToolInstallationReport>, String> {
+    let tools: Vec<String> = if tools_json.trim().is_empty() || tools_json == "-" {
+        Vec::new()
+    } else {
+        serde_json::from_str(tools_json).map_err(|e| e.to_string())?
+    };
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    runtime.block_on(crate::tool_environment::list_tool_installations(tools))
+}
+
 pub fn list_sessions() -> Result<Vec<crate::session_manager::SessionMeta>, String> {
     Ok(crate::session_manager::scan_sessions())
 }
@@ -2089,37 +2100,11 @@ pub fn provider_state(app: AppType) -> Result<ProviderStatePayload, String> {
 
 pub fn switch_provider(app: AppType, id: &str) -> Result<crate::services::SwitchResult, String> {
     #[cfg(feature = "proxy-runtime")]
-    {
-        let state = routing_state()?;
-        let runtime = routing_runtime()?;
-        let app_type = app.as_str().to_string();
-        let provider_id = id.to_string();
-
-        let routed = runtime.block_on(async {
-            let config = state
-                .db
-                .get_proxy_config_for_app(&app_type)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            if config.enabled && state.proxy_service.is_running().await {
-                state
-                    .proxy_service
-                    .switch_proxy_target(&app_type, &provider_id)
-                    .await?;
-                return Ok::<bool, String>(true);
-            }
-
-            Ok::<bool, String>(false)
-        })?;
-
-        if routed {
-            return Ok(crate::services::SwitchResult::default());
-        }
-    }
-
-    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
-    let state = build_remote_app_state(db);
+    let state = routing_state()?.clone();
+    #[cfg(not(feature = "proxy-runtime"))]
+    let state = build_command_state()?;
+    // The shared service chooses direct vs route mode and holds the shared app
+    // lock. Do not bypass it using the legacy enabled flag or live pointer.
     ProviderService::switch(&state, app, id).map_err(|e| e.to_string())
 }
 
@@ -2148,6 +2133,104 @@ pub fn update_provider(
             .map_err(|e| e.to_string())?;
     }
     ProviderService::update(&state, app, original_id, provider).map_err(|e| e.to_string())
+}
+
+/// 远端编辑器显示内容：与 desktop 的 `get_provider_editor_view` 共用同一投影逻辑
+/// （`ProviderService::editor_view` / `editor_category`）。返回前按 provider 读取
+/// 路径统一脱敏，避免把远端 live 里的密钥带进桌面端。
+pub fn editor_view(
+    app: AppType,
+    settings_config_json: &str,
+    options_json: &str,
+) -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EditorViewOptions {
+        #[serde(default)]
+        category: Option<String>,
+        #[serde(default)]
+        provider_id: Option<String>,
+    }
+
+    let settings_config: serde_json::Value =
+        serde_json::from_str(settings_config_json).map_err(|e| e.to_string())?;
+    let options: EditorViewOptions =
+        serde_json::from_str(options_json).map_err(|e| e.to_string())?;
+    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
+    let state = build_remote_app_state(db);
+    let category = ProviderService::editor_category(
+        &state,
+        &app,
+        options.provider_id.as_deref(),
+        options.category,
+    )
+    .map_err(|e| e.to_string())?;
+    let view = ProviderService::editor_view(&state, app, &settings_config, category.as_deref())
+        .map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(view).map_err(|e| e.to_string())?;
+    redact_secret_values(&mut value);
+    Ok(value)
+}
+
+/// 编辑器保存上下文里的 `base`/`draft` 是从远端读出的脱敏内容；写回前按库里
+/// 那一行还原被替换的密钥，保证三方比较比的是真值。与 provider 回写路径用同一
+/// 套恢复逻辑（只回填仍是哨兵值的字段，用户真正改过的值不会被覆盖）。
+fn restore_editor_save_secrets(existing: Option<&Provider>, editor: &mut EditorSave) {
+    let Some(row) = existing else {
+        return;
+    };
+    let _ = restore_redacted_secret_values_for(&row.settings_config, &mut editor.base);
+    if let Some(draft) = editor.draft.as_mut() {
+        let _ = restore_redacted_secret_values_for(&row.settings_config, draft);
+    }
+}
+
+/// 远端按编辑器上下文新增供应商：走 desktop 同一套 `add_from_editor`
+/// （行与 live 的失败保护由它内部的 `keep_row_if_written` 负责）。
+pub fn add_provider_from_editor(
+    app: AppType,
+    provider_json: &str,
+    add_to_live: bool,
+    editor_save_json: &str,
+) -> Result<bool, String> {
+    let provider: Provider = serde_json::from_str(provider_json).map_err(|e| e.to_string())?;
+    let mut editor: EditorSave =
+        serde_json::from_str(editor_save_json).map_err(|e| e.to_string())?;
+    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
+    let state = build_remote_app_state(db);
+    let existing = state
+        .db
+        .get_provider_by_id(&provider.id, app.as_str())
+        .map_err(|e| e.to_string())?;
+    restore_editor_save_secrets(existing.as_ref(), &mut editor);
+    ProviderService::add_from_editor(&state, app, provider, add_to_live, Some(editor))
+        .map_err(|e| e.to_string())
+}
+
+/// 远端按编辑器上下文保存供应商：与 desktop 的 `update_provider` 一致，先把
+/// provider 行和 `base`/`draft` 里的脱敏哨兵按库里那一行还原，再走共享服务。
+pub fn update_provider_from_editor(
+    app: AppType,
+    provider_json: &str,
+    original_id: Option<&str>,
+    editor_save_json: &str,
+) -> Result<bool, String> {
+    let mut provider: Provider = serde_json::from_str(provider_json).map_err(|e| e.to_string())?;
+    let mut editor: EditorSave =
+        serde_json::from_str(editor_save_json).map_err(|e| e.to_string())?;
+    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
+    let state = build_remote_app_state(db);
+    let provider_id = original_id.unwrap_or(provider.id.as_str());
+    let existing = state
+        .db
+        .get_provider_by_id(provider_id, app.as_str())
+        .map_err(|e| e.to_string())?;
+    if let Some(row) = existing.as_ref() {
+        restore_redacted_secret_values(row, &mut provider).map_err(|e| e.to_string())?;
+    }
+    restore_editor_save_secrets(existing.as_ref(), &mut editor);
+    ProviderService::update_from_editor(&state, app, original_id, provider, Some(editor))
+        .map_err(|e| e.to_string())
 }
 
 pub fn delete_provider(app: AppType, id: &str) -> Result<bool, String> {
@@ -2188,12 +2271,7 @@ pub fn stream_check_provider(
     app: AppType,
     provider_id: &str,
 ) -> Result<crate::services::stream_check::StreamCheckResult, String> {
-    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
-    let state = build_remote_app_state(db);
-    let config = state
-        .db
-        .get_stream_check_config()
-        .map_err(|e| e.to_string())?;
+    let state = build_command_state()?;
     let providers = state
         .db
         .get_all_providers(app.as_str())
@@ -2201,35 +2279,25 @@ pub fn stream_check_provider(
     let provider = providers
         .get(provider_id)
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    let result = runtime
+    auth_runtime()?
         .block_on(
-            crate::services::stream_check::StreamCheckService::check_with_retry(
-                &app, provider, &config, None,
+            crate::services::stream_check::StreamCheckService::check_provider(
+                &app,
+                provider,
+                COPILOT_AUTH_MANAGER.as_ref(),
             ),
         )
-        .map_err(|e| e.to_string())?;
-
-    let _ = state
-        .db
-        .save_stream_check_log(provider_id, &provider.name, app.as_str(), &result);
-
-    Ok(result)
+        .map_err(|e| e.to_string())
 }
 
-pub fn get_stream_check_config() -> Result<crate::services::stream_check::StreamCheckConfig, String>
-{
-    let db = Database::init().map_err(|e| e.to_string())?;
-    db.get_stream_check_config().map_err(|e| e.to_string())
+// Real-model test settings were removed upstream. Do not reintroduce a helper-
+// only settings store, or report that a setting was saved when it has no effect.
+pub fn get_stream_check_config() -> Result<Value, String> {
+    retired_upstream_command("stream-check config")
 }
 
-pub fn save_stream_check_config(config_json: &str) -> Result<bool, String> {
-    let config: crate::services::stream_check::StreamCheckConfig =
-        serde_json::from_str(config_json).map_err(|e| e.to_string())?;
-    let db = Database::init().map_err(|e| e.to_string())?;
-    db.save_stream_check_config(&config)
-        .map_err(|e| e.to_string())?;
-    Ok(true)
+pub fn save_stream_check_config(_config_json: &str) -> Result<bool, String> {
+    retired_upstream_command("stream-check set-config")
 }
 
 pub fn get_log_config() -> Result<crate::proxy::types::LogConfig, String> {
@@ -2560,11 +2628,27 @@ pub fn get_routing_global_config() -> Result<crate::proxy::types::GlobalProxyCon
 pub fn update_routing_global_config(config_json: &str) -> Result<(), String> {
     let config: crate::proxy::types::GlobalProxyConfig =
         serde_json::from_str(config_json).map_err(|e| e.to_string())?;
-    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    runtime
-        .block_on(db.update_global_proxy_config(config))
-        .map_err(|e| e.to_string())
+    #[cfg(feature = "proxy-runtime")]
+    {
+        let state = routing_state()?;
+        routing_runtime()?.block_on(async {
+            let external = !state.proxy_service.is_running().await
+                && effective_routing_runtime_status(state).await?.running;
+            if external {
+                // No control channel exists for the detached daemon yet. Never
+                // silently change DB addresses while it keeps serving the old one.
+                return Err("请先停止外部路由 daemon 再修改全局配置；现有服务和配置未变 (Stop the external routing daemon before changing its configuration)".to_string());
+            }
+            crate::services::proxy::update_global_proxy_config(state, &config).await
+        })
+    }
+    #[cfg(not(feature = "proxy-runtime"))]
+    {
+        let state = build_command_state()?;
+        crate::runtime::block_on(crate::services::proxy::update_global_proxy_config(
+            &state, &config,
+        ))
+    }
 }
 
 pub fn get_routing_app_config(
@@ -2581,8 +2665,14 @@ pub fn get_routing_app_config(
 pub fn preflight_routing_app(
     app_type: &str,
 ) -> Result<crate::proxy::types::AppRoutingPreflight, String> {
-    let state = routing_state()?;
-    state.proxy_service.preflight_takeover_for_app(app_type)
+    let app = AppType::from_str(app_type).map_err(|e| e.to_string())?;
+    let state = build_command_state()?;
+    let validation = crate::mode::controller::preflight_enter(&state, &app);
+    Ok(crate::proxy::types::AppRoutingPreflight {
+        app_type: app.as_str().to_string(),
+        can_enable: validation.is_ok(),
+        reason: validation.err(),
+    })
 }
 
 #[cfg(not(feature = "proxy-runtime"))]
@@ -2598,20 +2688,14 @@ pub fn preflight_routing_app(
     })
 }
 
-pub fn get_default_cost_multiplier(app_type: &str) -> Result<String, String> {
-    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    runtime
-        .block_on(db.get_default_cost_multiplier(app_type))
-        .map_err(|e| e.to_string())
+// v4 uses provider-level cost multipliers; the old per-app defaults are no
+// longer read by the shared billing service. Reject obsolete writes explicitly.
+pub fn get_default_cost_multiplier(_app_type: &str) -> Result<String, String> {
+    retired_upstream_command("routing-config default-cost-multiplier")
 }
 
-pub fn set_default_cost_multiplier(app_type: &str, value: &str) -> Result<(), String> {
-    let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    runtime
-        .block_on(db.set_default_cost_multiplier(app_type, value))
-        .map_err(|e| e.to_string())
+pub fn set_default_cost_multiplier(_app_type: &str, _value: &str) -> Result<(), String> {
+    retired_upstream_command("routing-config set-default-cost-multiplier")
 }
 
 pub fn get_pricing_model_source(app_type: &str) -> Result<String, String> {
@@ -2686,7 +2770,7 @@ pub fn set_routing_auto_failover_enabled(app_type: &str, enabled: bool) -> Resul
             .map_err(|e| e.to_string())?;
         let previous_config = config.clone();
 
-        if enabled && !config.enabled {
+        if enabled && !crate::mode::current::is_proxy(&app) {
             return Err("需要先启用该应用的远程路由，再开启故障转移".to_string());
         }
 
@@ -2694,11 +2778,15 @@ pub fn set_routing_auto_failover_enabled(app_type: &str, enabled: bool) -> Resul
         let p1_provider_id = if enabled {
             let mut queue = db.get_failover_queue(app_type).map_err(|e| e.to_string())?;
             if queue.is_empty() {
-                let current_id = crate::settings::get_effective_current_provider(&db, &app)
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| {
-                        "故障转移队列为空，且未设置当前供应商，无法开启故障转移".to_string()
-                    })?;
+                let current_id = crate::mode::current::provider_for(
+                    &db,
+                    &app,
+                    crate::mode::current::Purpose::InUse,
+                )
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| {
+                    "故障转移队列为空，且未设置当前供应商，无法开启故障转移".to_string()
+                })?;
 
                 db.add_to_failover_queue(app_type, &current_id)
                     .map_err(|e| e.to_string())?;
@@ -2735,10 +2823,9 @@ pub fn set_routing_auto_failover_enabled(app_type: &str, enabled: bool) -> Resul
 
         if enabled {
             #[cfg(feature = "proxy-runtime")]
-            if let Err(error) = state
-                .proxy_service
-                .switch_proxy_target(app_type, &p1_provider_id)
-                .await
+            if let Err(error) =
+                crate::mode::controller::switch_route_for_failover(state, &app, &p1_provider_id)
+                    .await
             {
                 let _ = db.update_proxy_config_for_app(previous_config).await;
                 if let Some(provider_id) = auto_added_provider_id {
@@ -2768,23 +2855,14 @@ pub fn update_routing_app_config(config_json: &str) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             let app_type = config.app_type.clone();
             let desired_enabled = config.enabled;
-            let enabled_changed = previous.enabled != config.enabled;
+            let app = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
 
             if desired_enabled {
-                let preflight = state.proxy_service.preflight_takeover_for_app(&app_type)?;
-                if !preflight.can_enable {
-                    return Err(preflight
-                        .reason
-                        .unwrap_or_else(|| "当前应用不满足远程路由启用条件".to_string()));
-                }
+                crate::mode::controller::preflight_enter(state, &app)?;
             }
 
             if !desired_enabled {
-                if let Err(error) = state
-                    .proxy_service
-                    .set_takeover_for_app(&app_type, false)
-                    .await
-                {
+                if let Err(error) = crate::mode::controller::exit(state, &app).await {
                     let _ = db.update_proxy_config_for_app(previous).await;
                     return Err(error);
                 }
@@ -2795,34 +2873,20 @@ pub fn update_routing_app_config(config_json: &str) -> Result<(), String> {
                 return Ok(());
             }
 
-            db.update_proxy_config_for_app(config.clone())
+            // Probe before any write: a malformed daemon response must not
+            // leave a new app config behind when the command is rejected.
+            let runtime_status = effective_routing_runtime_status(state).await?;
+            let external = runtime_status.running && !state.proxy_service.is_running().await;
+            db.update_proxy_config_for_app(config)
                 .await
                 .map_err(|e| e.to_string())?;
-
-            if enabled_changed || desired_enabled {
-                let runtime_status = if desired_enabled {
-                    Some(effective_routing_runtime_status(state).await?)
-                } else {
-                    None
-                };
-                let external_runtime_running = runtime_status
-                    .as_ref()
-                    .map(|status| status.running)
-                    .unwrap_or(false)
-                    && !state.proxy_service.is_running().await;
-
-                if let Err(error) = state
-                    .proxy_service
-                    .set_takeover_for_app_with_external_runtime(
-                        &app_type,
-                        desired_enabled,
-                        external_runtime_running,
-                    )
-                    .await
-                {
-                    let _ = db.update_proxy_config_for_app(previous).await;
-                    return Err(error);
-                }
+            if let Err(error) = crate::mode::controller::enter_with_route_in_runtime(
+                state, &app, None, None, external,
+            )
+            .await
+            {
+                let _ = db.update_proxy_config_for_app(previous).await;
+                return Err(error);
             }
 
             Ok(())
@@ -2857,6 +2921,10 @@ pub fn get_routing_provider_health(
 }
 
 pub fn reset_routing_circuit_breaker(app_type: &str, provider_id: &str) -> Result<(), String> {
+    let app = AppType::from_str(app_type).map_err(|e| e.to_string())?;
+    if !app.supports_local_proxy() {
+        return Err(format!("{} 不支持本地路由", app.as_str()));
+    }
     #[cfg(feature = "proxy-runtime")]
     let state = routing_state()?;
     #[cfg(feature = "proxy-runtime")]
@@ -2870,6 +2938,12 @@ pub fn reset_routing_circuit_breaker(app_type: &str, provider_id: &str) -> Resul
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
 
     runtime.block_on(async {
+        #[cfg(feature = "proxy-runtime")]
+        if !state.proxy_service.is_running().await
+            && effective_routing_runtime_status(state).await?.running
+        {
+            return Err("外部路由 daemon 暂不支持重置运行中熔断器；服务及原状态未变 (Live circuit-breaker reset requires a managed runtime)".to_string());
+        }
         db.update_provider_health(provider_id, app_type, true, None)
             .await
             .map_err(|e| e.to_string())?;
@@ -2886,13 +2960,13 @@ pub fn reset_routing_circuit_breaker(app_type: &str, provider_id: &str) -> Resul
                 .await
                 .map_err(|e| e.to_string())?;
 
-            if config.enabled
+            if crate::mode::current::is_proxy(&app)
                 && config.auto_failover_enabled
                 && state.proxy_service.is_running().await
             {
-                let current_id = db
-                    .get_current_provider(app_type)
-                    .map_err(|e| e.to_string())?;
+                let current_id = crate::mode::current::provider_for(
+                    &db, &app, crate::mode::current::Purpose::InUse,
+                ).map_err(|e| e.to_string())?;
                 if let Some(current_id) = current_id {
                     let queue = db.get_failover_queue(app_type).map_err(|e| e.to_string())?;
                     let restored_order = queue
@@ -2906,20 +2980,9 @@ pub fn reset_routing_circuit_breaker(app_type: &str, provider_id: &str) -> Resul
 
                     if let (Some(restored), Some(current)) = (restored_order, current_order) {
                         if restored < current {
-                            let provider_name = db
-                                .get_all_providers(app_type)
-                                .ok()
-                                .and_then(|providers| {
-                                    providers.get(provider_id).map(|p| p.name.clone())
-                                })
-                                .unwrap_or_else(|| provider_id.to_string());
-                            let switch_manager =
-                                crate::proxy::failover_switch::FailoverSwitchManager::new(
-                                    db.clone(),
-                                );
-                            if let Err(error) = switch_manager
-                                .try_switch(None, app_type, provider_id, &provider_name)
-                                .await
+                            if let Err(error) = crate::mode::controller::record_failover_route(
+                                state, &app, provider_id,
+                            ).await
                             {
                                 log::error!("[Recovery] 远程熔断器重置后自动切换失败: {error}");
                             }
@@ -3362,23 +3425,20 @@ pub fn import_skills_from_apps(imports_json: &str) -> Result<Vec<InstalledSkill>
     SkillService::import_from_apps(&db, imports).map_err(|e| e.to_string())
 }
 
-pub fn discover_available_skills() -> Result<Vec<DiscoverableSkill>, String> {
+/// 与 desktop 的 `discover_available_skills` 共用同一份报告实现：v4 起返回
+/// 「读到的 Skills + 没读到的仓库」，远端必须跟着一起返回，否则前端拿 .skills 会拿到 undefined。
+pub fn discover_available_skills() -> Result<SkillDiscoveryResult, String> {
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
     let repos = db.get_skill_repos().map_err(|e| e.to_string())?;
     let service = SkillService::new();
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    runtime
-        .block_on(service.discover_available(repos))
-        .map_err(|e| e.to_string())
+    crate::runtime::block_on(service.discover_available_report(repos)).map_err(|e| e.to_string())
 }
 
-pub fn check_skill_updates() -> Result<Vec<SkillUpdateInfo>, String> {
+/// 同上：与 desktop 的 `check_skill_updates` 共用 `check_updates_report`。
+pub fn check_skill_updates() -> Result<SkillUpdateCheckResult, String> {
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
     let service = SkillService::new();
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    runtime
-        .block_on(service.check_updates(&db))
-        .map_err(|e| e.to_string())
+    crate::runtime::block_on(service.check_updates_report(&db)).map_err(|e| e.to_string())
 }
 
 pub fn update_skill(id: &str) -> Result<InstalledSkill, String> {

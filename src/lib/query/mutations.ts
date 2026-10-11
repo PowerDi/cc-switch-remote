@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import {
   providersApi,
   sessionsApi,
@@ -9,9 +9,13 @@ import {
   type ManagementTarget,
 } from "@/lib/api";
 import type { DeleteSessionOptions } from "@/lib/api/sessions";
-import type { SwitchResult } from "@/lib/api/providers";
+import type { ProviderEditorSave, SwitchResult } from "@/lib/api/providers";
+import { parseLiveEditConflict } from "@/lib/errors/liveEditConflict";
 import type { Provider, SessionMeta, Settings } from "@/types";
-import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  extractErrorMessage,
+  translatePiProviderMutationError,
+} from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { invalidateHermesProviderCaches } from "@/hooks/useHermes";
@@ -22,10 +26,9 @@ import {
   omoSlimKeys,
   openCodeRuntimeModelsQueryKey,
 } from "@/lib/query/omo";
-import {
-  CODEX_OFFICIAL_PROVIDER_ID,
-  GROKBUILD_OFFICIAL_PROVIDER_ID,
-} from "@/utils/providerCapabilities";
+import { sessionKeys } from "@/lib/query/sessions";
+import { invalidatePiProviderCaches } from "@/lib/query/pi";
+import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 
 const targetKey = (target: ManagementTarget) =>
   target.type === "remote" ? `remote:${target.profile.id}` : "local";
@@ -68,16 +71,16 @@ export const useAddProviderMutation = (
         providerKey?: string;
         addToLive?: boolean;
         ensureClaudeDesktopOfficialSeed?: boolean;
-        ensureCodexOfficialSeed?: boolean;
         ensureGrokBuildOfficialSeed?: boolean;
+        editorSave?: ProviderEditorSave;
       },
     ) => {
       const {
         providerKey: _providerKey,
         addToLive,
         ensureClaudeDesktopOfficialSeed,
-        ensureCodexOfficialSeed,
         ensureGrokBuildOfficialSeed,
+        editorSave,
         ...rest
       } = providerInput;
 
@@ -87,16 +90,6 @@ export const useAddProviderMutation = (
         const officialProvider = providers["claude-desktop-official"];
         if (!officialProvider) {
           throw new Error("Claude Desktop official provider was not created");
-        }
-        return officialProvider;
-      }
-
-      if (appId === "codex" && ensureCodexOfficialSeed) {
-        await providersApi.ensureCodexOfficialProvider(target);
-        const providers = await providersApi.getAll(appId, target);
-        const officialProvider = providers[CODEX_OFFICIAL_PROVIDER_ID];
-        if (!officialProvider) {
-          throw new Error("Codex official provider was not created");
         }
         return officialProvider;
       }
@@ -113,7 +106,13 @@ export const useAddProviderMutation = (
 
       let id: string;
 
-      if (appId === "opencode" || appId === "openclaw" || appId === "hermes") {
+      if (
+        appId === "opencode" ||
+        appId === "openclaw" ||
+        appId === "hermes" ||
+        appId === "pi" ||
+        appId === "mcode"
+      ) {
         if (
           providerInput.category === "omo" ||
           providerInput.category === "omo-slim"
@@ -137,7 +136,9 @@ export const useAddProviderMutation = (
       };
       delete (newProvider as any).providerKey;
 
-      await providersApi.add(newProvider, appId, addToLive, target);
+      // 第 4 参是 target、第 5 参是 editorSave：两者都是必传的位置参数，
+      // 顺序写错会让远端保存带上本机目标或丢掉冲突保护。
+      await providersApi.add(newProvider, appId, addToLive, target, editorSave);
       return newProvider;
     },
     onSuccess: async () => {
@@ -180,13 +181,26 @@ export const useAddProviderMutation = (
       );
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      // 编辑冲突由对话框让用户选保留哪一边，不弹失败提示。
+      if (parseLiveEditConflict(error)) return;
+      const rawDetail = extractErrorMessage(error);
+      const detail =
+        (appId === "pi"
+          ? translatePiProviderMutationError(rawDetail, t)
+          : "") ||
+        rawDetail ||
+        t("common.unknown");
       toast.error(
         t("notifications.addFailed", {
           defaultValue: "添加供应商失败: {{error}}",
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
     },
   });
 };
@@ -202,11 +216,19 @@ export const useUpdateProviderMutation = (
     mutationFn: async ({
       provider,
       originalId,
+      editorSave,
     }: {
       provider: Provider;
       originalId?: string;
+      editorSave?: ProviderEditorSave;
     }) => {
-      await providersApi.update(provider, appId, originalId, target);
+      await providersApi.update(
+        provider,
+        appId,
+        originalId,
+        target,
+        editorSave,
+      );
       return provider;
     },
     onSuccess: async (provider, variables) => {
@@ -239,13 +261,26 @@ export const useUpdateProviderMutation = (
       );
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      // 编辑冲突由对话框让用户选保留哪一边，不弹失败提示。
+      if (parseLiveEditConflict(error)) return;
+      const rawDetail = extractErrorMessage(error);
+      const detail =
+        (appId === "pi"
+          ? translatePiProviderMutationError(rawDetail, t)
+          : "") ||
+        rawDetail ||
+        t("common.unknown");
       toast.error(
         t("notifications.updateFailed", {
           defaultValue: "更新供应商失败: {{error}}",
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
     },
   });
 };
@@ -301,13 +336,24 @@ export const useDeleteProviderMutation = (
       );
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const rawDetail = extractErrorMessage(error);
+      const detail =
+        (appId === "pi"
+          ? translatePiProviderMutationError(rawDetail, t)
+          : "") ||
+        rawDetail ||
+        t("common.unknown");
       toast.error(
         t("notifications.deleteFailed", {
           defaultValue: "删除供应商失败: {{error}}",
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
     },
   });
 };
@@ -388,6 +434,11 @@ export const useSwitchProviderMutation = (
         },
       );
     },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
+    },
   });
 };
 
@@ -404,6 +455,15 @@ export const useDeleteSessionMutation = (
     },
     onSuccess: async (input) => {
       const sessionsKey = ["sessions", targetKey(target)];
+      const deleted = queryClient
+        .getQueryData<SessionMeta[]>(sessionsKey)
+        ?.find(
+          (session) =>
+            session.providerId === input.providerId &&
+            session.sessionId === input.sessionId &&
+            session.sourcePath === input.sourcePath,
+        );
+      const deletedTitle = deleted?.title?.trim() || deleted?.summary?.trim();
       queryClient.setQueryData<SessionMeta[]>(sessionsKey, (current) =>
         (current ?? []).filter(
           (session) =>
@@ -414,6 +474,9 @@ export const useDeleteSessionMutation = (
             ),
         ),
       );
+      // 会话读取链的键在 sessions 批次统一（参见实施记录 B3：helper 载荷契约）。
+      // 这里两种形态都清：本仓库按 target 分槽的行内键，以及上游 sessionKeys；
+      // 删一个不存在的键是空操作，两边都能避免删完还留着缓存。
       queryClient.removeQueries({
         queryKey: [
           "sessionMessages",
@@ -422,13 +485,21 @@ export const useDeleteSessionMutation = (
           input.sourcePath,
         ],
       });
+      queryClient.removeQueries({
+        queryKey: sessionKeys.messages(input.providerId, input.sourcePath),
+      });
+      queryClient.removeQueries({
+        queryKey: sessionKeys.transcript(input.providerId, input.sourcePath),
+      });
 
       await queryClient.invalidateQueries({ queryKey: sessionsKey });
 
       toast.success(
-        t("sessionManager.sessionDeleted", {
-          defaultValue: "会话已删除",
-        }),
+        deletedTitle
+          ? t("sessionManager.sessionDeletedNamed", { title: deletedTitle })
+          : t("sessionManager.sessionDeleted", {
+              defaultValue: "会话已删除",
+            }),
       );
     },
     onError: (error: Error) => {

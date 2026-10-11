@@ -92,12 +92,17 @@ describe("useUpdateProviderMutation", () => {
       "codex",
       undefined,
       LOCAL_MANAGEMENT_TARGET,
+      undefined,
     );
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["providers", "codex", "local"],
     });
     expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: usageKeys.script("provider-b", "codex"),
+      queryKey: usageKeys.script(
+        "provider-b",
+        "codex",
+        LOCAL_MANAGEMENT_TARGET,
+      ),
     });
     expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: usageKeys.all,
@@ -123,12 +128,21 @@ describe("useUpdateProviderMutation", () => {
       "openclaw",
       "provider-old",
       LOCAL_MANAGEMENT_TARGET,
+      undefined,
     );
     expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: usageKeys.script("provider-new", "openclaw"),
+      queryKey: usageKeys.script(
+        "provider-new",
+        "openclaw",
+        LOCAL_MANAGEMENT_TARGET,
+      ),
     });
     expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: usageKeys.script("provider-old", "openclaw"),
+      queryKey: usageKeys.script(
+        "provider-old",
+        "openclaw",
+        LOCAL_MANAGEMENT_TARGET,
+      ),
     });
     expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: usageKeys.all,
@@ -167,6 +181,7 @@ describe("useUpdateProviderMutation", () => {
       "hermes",
       undefined,
       remoteTarget,
+      undefined,
     );
     expect(invalidateHermesProviderCaches).toHaveBeenCalledWith(
       expect.any(QueryClient),

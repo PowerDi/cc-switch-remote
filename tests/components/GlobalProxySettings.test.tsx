@@ -15,8 +15,10 @@ const useGlobalProxyUrlMock = vi.fn();
 const useSetGlobalProxyUrlMock = vi.fn();
 
 vi.mock("@/hooks/useGlobalProxy", () => ({
+  // 参数要能断言（远端目标必须把 target 传下去），返回值照 v4 原样
   useGlobalProxyUrl: (...args: unknown[]) => useGlobalProxyUrlMock(...args),
-  useSetGlobalProxyUrl: (...args: unknown[]) => useSetGlobalProxyUrlMock(...args),
+  useSetGlobalProxyUrl: (...args: unknown[]) =>
+    useSetGlobalProxyUrlMock(...args),
   useTestProxy: () => ({
     mutateAsync: testMutateAsyncMock,
     isPending: false,
@@ -73,9 +75,7 @@ describe("GlobalProxySettings", () => {
       "http://127.0.0.1:7890 / socks5://127.0.0.1:1080",
     );
     // URL 对象会在末尾添加斜杠
-    await waitFor(() =>
-      expect(urlInput).toHaveValue("http://127.0.0.1:7890/"),
-    );
+    await waitFor(() => expect(urlInput).toHaveValue("http://127.0.0.1:7890/"));
   });
 
   it("saves proxy URL when save button is clicked", async () => {
@@ -103,12 +103,12 @@ describe("GlobalProxySettings", () => {
     );
 
     // Wait for initial value to load
-    await waitFor(() =>
-      expect(urlInput).toHaveValue("http://127.0.0.1:7890/"),
-    );
+    await waitFor(() => expect(urlInput).toHaveValue("http://127.0.0.1:7890/"));
 
     // Click clear button
-    const clearButton = screen.getByTitle("settings.globalProxy.clear");
+    const clearButton = screen.getByRole("button", {
+      name: "settings.globalProxy.clear",
+    });
     fireEvent.click(clearButton);
 
     expect(urlInput).toHaveValue("");
@@ -119,8 +119,13 @@ describe("GlobalProxySettings", () => {
 
     expect(useGlobalProxyUrlMock).toHaveBeenCalledWith(remoteTarget);
     expect(useSetGlobalProxyUrlMock).toHaveBeenCalledWith(remoteTarget);
-    expect(screen.queryByTitle("settings.globalProxy.scan")).toBeNull();
-    expect(screen.queryByTitle("settings.globalProxy.test")).toBeNull();
+    // v4 之后按钮在 HoverTip 里，靠 aria-label 定位
+    expect(
+      screen.queryByRole("button", { name: "settings.globalProxy.scan" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "settings.globalProxy.test" }),
+    ).toBeNull();
     expect(
       screen.getByText("remote.settings.routing.globalProxyHint"),
     ).toBeInTheDocument();

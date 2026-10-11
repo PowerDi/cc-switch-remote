@@ -1,12 +1,18 @@
-import { useState, useCallback } from "react";
-import { toast } from "sonner";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { toast } from "@/lib/toast";
 import { useTranslation } from "react-i18next";
 import {
   streamCheckProvider,
   type StreamCheckResult,
 } from "@/lib/api/connectivity-check";
 import type { AppId, ManagementTarget } from "@/lib/api";
-import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
+import {
+  getManagementTargetKey,
+  LOCAL_MANAGEMENT_TARGET,
+} from "@/lib/managementTarget";
+import { remoteApi } from "@/lib/api/remote";
+import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
 
 /**
  * 供应商连通性检查。
@@ -21,16 +27,46 @@ export function useStreamCheck(
 ) {
   const { t } = useTranslation();
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
+  const targetKey = getManagementTargetKey(target);
+  const { capture, isCurrent, revision } = useTargetAsyncGeneration(target);
+  const appScopeRef = useRef({ appId });
+  if (appScopeRef.current.appId !== appId) appScopeRef.current = { appId };
+  const appScope = appScopeRef.current;
+  const health = useQuery({
+    queryKey: ["remote-health", targetKey, revision],
+    queryFn: () =>
+      target.type === "remote"
+        ? remoteApi.checkHealth(target.profile, target.secret)
+        : null,
+    enabled: target.type === "remote",
+    retry: false,
+    staleTime: 30_000,
+  });
+  const canCheck =
+    target.type === "local" ||
+    health.data?.capabilities.includes("connectivity-check") === true;
+
+  useEffect(() => {
+    setCheckingIds(new Set());
+  }, [appId, targetKey, revision]);
 
   const checkProvider = useCallback(
     async (
       providerId: string,
       providerName: string,
     ): Promise<StreamCheckResult | null> => {
+      if (!canCheck) return null;
+      const generation = capture();
+      const isActive = () =>
+        isCurrent(generation) &&
+        generation.revision === revision &&
+        appScopeRef.current === appScope;
+      if (!isActive()) return null;
       setCheckingIds((prev) => new Set(prev).add(providerId));
 
       try {
         const result = await streamCheckProvider(appId, providerId, target);
+        if (!isActive()) return null;
 
         if (result.status === "operational") {
           toast.success(
@@ -70,6 +106,7 @@ export function useStreamCheck(
 
         return result;
       } catch (e) {
+        if (!isActive()) return null;
         toast.error(
           t("streamCheck.error", {
             providerName: providerName,
@@ -79,14 +116,15 @@ export function useStreamCheck(
         );
         return null;
       } finally {
-        setCheckingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(providerId);
-          return next;
-        });
+        if (isActive())
+          setCheckingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(providerId);
+            return next;
+          });
       }
     },
-    [appId, t, target],
+    [appId, t, target, canCheck, capture, isCurrent, revision, appScope],
   );
 
   const isChecking = useCallback(
@@ -94,5 +132,5 @@ export function useStreamCheck(
     [checkingIds],
   );
 
-  return { checkProvider, isChecking };
+  return { checkProvider, isChecking, canCheck };
 }

@@ -79,7 +79,10 @@ mod tests {
 
     #[cfg(feature = "proxy-runtime")]
     #[test]
+    #[serial_test::serial]
     fn routing_app_preflight_command_returns_stable_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
         let response = run_command(&[
             "routing-config".to_string(),
             "app-preflight".to_string(),
@@ -194,6 +197,12 @@ mod tests {
     }
 
     #[test]
+    fn circuit_reset_rejects_non_routable_apps_before_opening_state() {
+        let error = commands::reset_routing_circuit_breaker("opencode", "any").unwrap_err();
+        assert!(error.contains("不支持本地路由"), "{error}");
+    }
+
+    #[test]
     fn status_advertises_profiles_capability() {
         let response = run_command(&["status".to_string()]);
         let capabilities = response
@@ -208,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn status_advertises_common_config_capability() {
+    fn status_withholds_legacy_editor_and_advertises_reachability_only() {
         let response = run_command(&["status".to_string()]);
         let capabilities = response
             .get("data")
@@ -216,9 +225,62 @@ mod tests {
             .and_then(Value::as_array)
             .expect("status capabilities");
 
-        assert!(capabilities
+        assert!(!capabilities
             .iter()
             .any(|capability| capability == "common-config"));
+        assert!(!capabilities
+            .iter()
+            .any(|capability| capability == "stream-check"));
+        assert!(capabilities
+            .iter()
+            .any(|capability| capability == "connectivity-check"));
+    }
+
+    #[test]
+    fn retired_v3_commands_fail_without_parsing_or_writing_settings() {
+        for args in [
+            vec!["stream-check", "config"],
+            vec!["stream-check", "set-config", "not-json"],
+            vec!["routing-config", "default-cost-multiplier", "claude"],
+            vec![
+                "routing-config",
+                "set-default-cost-multiplier",
+                "claude",
+                "2",
+            ],
+            vec![
+                "config",
+                "common-update-toml",
+                "not-toml",
+                "not-toml",
+                "true",
+            ],
+        ] {
+            let response = run_command(
+                &args
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(response["ok"], false, "{response}");
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Unsupported retired command"),
+                "{response}"
+            );
+        }
+        let old_check = run_command(&[
+            "stream-check".into(),
+            "provider".into(),
+            "claude".into(),
+            "any".into(),
+        ]);
+        assert_eq!(
+            old_check["ok"], false,
+            "must not silently change an old real-model test into reachability"
+        );
     }
 
     #[test]
@@ -269,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn common_config_toml_update_command_is_registered() {
+    fn common_config_toml_update_command_is_explicitly_retired() {
         let response = run_command(&[
             "config".to_string(),
             "common-update-toml".to_string(),
@@ -278,11 +340,15 @@ mod tests {
             "true".to_string(),
         ]);
 
-        assert_eq!(response.get("ok").and_then(Value::as_bool), Some(true));
-        assert!(response
-            .get("data")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.contains("[tui]")));
+        assert_eq!(response.get("ok").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            response["error"]["code"],
+            "common_config_update_toml_failed"
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported retired command"));
     }
 
     #[test]
@@ -451,6 +517,137 @@ mod tests {
                 .and_then(|error| error.get("code"))
                 .and_then(Value::as_str),
             Some("invalid_app")
+        );
+    }
+
+    #[test]
+    fn providers_editor_commands_are_registered() {
+        let cases: Vec<Vec<String>> = vec![
+            vec!["providers", "editor-view", "not-an-app", "{}", "{}"],
+            vec!["providers", "add-editor", "not-an-app", "{}", "true", "{}"],
+            vec!["providers", "update-editor", "not-an-app", "{}", "-", "{}"],
+        ]
+        .into_iter()
+        .map(|case| case.into_iter().map(str::to_string).collect())
+        .collect();
+
+        for args in cases {
+            let response = run_command(&args);
+            assert_eq!(
+                response
+                    .get("error")
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str),
+                Some("invalid_app"),
+                "{args:?} should reach its editor handler"
+            );
+        }
+    }
+
+    /// 远端编辑器契约：读出去必须脱敏，写回来必须能按库里那一行还原。
+    /// 若不还原，`base` 里的 `[redacted]` 与 live 的真密钥不一致，三方比较会
+    /// 当成外部改动并以默认 Refuse 策略整单拒绝，下面的保存就不会成功。
+    #[test]
+    #[serial_test::serial]
+    fn helper_editor_view_redacts_secrets_and_editor_save_restores_them() {
+        let dir = tempfile::tempdir().expect("temp test home");
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
+
+        let provider = serde_json::json!({
+            "id": "editor-provider",
+            "name": "Editor Provider",
+            "category": "custom",
+            "settingsConfig": {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://example.com",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-live-secret"
+                }
+            }
+        });
+        let seed = run_command(
+            &["providers", "add", "claude", &provider.to_string(), "true"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            seed.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "seeding provider failed: {seed}"
+        );
+
+        let view = run_command(
+            &[
+                "providers",
+                "editor-view",
+                "claude",
+                &provider["settingsConfig"].to_string(),
+                "{}",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            view.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "editor view failed: {view}"
+        );
+        let settings = view
+            .pointer("/data/settings")
+            .expect("editor view settings");
+        assert_eq!(
+            settings
+                .pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some("[redacted]")
+        );
+        assert_eq!(
+            settings
+                .pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some("https://example.com")
+        );
+        assert!(
+            !view.to_string().contains("sk-live-secret"),
+            "editor view must not carry remote secrets to the desktop"
+        );
+
+        // 桌面端会把列表里那行（已脱敏）和编辑器显示的 base 一起送回来。
+        let mut redacted_provider = provider.clone();
+        redacted_provider["settingsConfig"]["env"]["ANTHROPIC_AUTH_TOKEN"] =
+            serde_json::json!("[redacted]");
+        let editor_save = serde_json::json!({ "base": settings });
+        let saved = run_command(
+            &[
+                "providers",
+                "update-editor",
+                "claude",
+                &redacted_provider.to_string(),
+                "-",
+                &editor_save.to_string(),
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            saved.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "saving with a redacted base should restore the row secret instead of refusing: {saved}"
+        );
+
+        let db = crate::Database::init().expect("helper database");
+        let row = db
+            .get_provider_by_id("editor-provider", "claude")
+            .expect("row query")
+            .expect("saved row");
+        assert_eq!(
+            row.settings_config
+                .pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some("sk-live-secret"),
+            "the restored secret must remain in the row"
         );
     }
 
@@ -858,7 +1055,7 @@ mod tests {
             state
                 .pointer("/data/config/autoSyncEnabled")
                 .and_then(Value::as_bool),
-            Some(false)
+            Some(crate::services::model_pricing::ModelsDevSyncConfig::default().auto_sync_enabled)
         );
         assert_eq!(batch.get("data").and_then(Value::as_u64), Some(1));
     }
@@ -979,26 +1176,36 @@ mod tests {
         let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("xdg-data"));
         let _opencode = EnvVarGuard::set("OPENCODE_DB", dir.path().join("missing-opencode.db"));
         let _sync_enabled = EnvVarGuard::remove("CC_SWITCH_DISABLE_SESSION_SYNC_FOR_TESTS");
-        let sessions = dir.path().join(".codex/sessions/2026/08/10");
+        // Database::init prunes detail older than 30 days. Keep this fixture
+        // inside that window; testing historical rollups is a separate target.
+        let started = chrono::Utc::now() - chrono::Duration::minutes(5);
+        let timestamp = |seconds| (started + chrono::Duration::seconds(seconds)).to_rfc3339();
+        let sessions = dir
+            .path()
+            .join(".codex/sessions")
+            .join(started.format("%Y/%m/%d").to_string());
         std::fs::create_dir_all(&sessions).expect("create Codex session directory");
 
         let session_a = "00000000-0000-4000-8000-0000000000a1";
         let session_b = "00000000-0000-4000-8000-0000000000b2";
         let write_rollout = |session_id: &str, first: u64, second: u64| {
-            let path = sessions.join(format!("rollout-2026-08-10T03-00-00-{session_id}.jsonl"));
+            let path = sessions.join(format!(
+                "rollout-{}-{session_id}.jsonl",
+                started.format("%Y-%m-%dT%H-%M-%S")
+            ));
             let lines = [
                 serde_json::json!({
-                    "timestamp": "2026-08-10T03:00:00Z",
+                    "timestamp": timestamp(0),
                     "type": "session_meta",
                     "payload": { "id": session_id, "source": "cli" }
                 }),
                 serde_json::json!({
-                    "timestamp": "2026-08-10T03:00:01Z",
+                    "timestamp": timestamp(1),
                     "type": "turn_context",
                     "payload": { "model": "gpt-5.6-sol" }
                 }),
                 serde_json::json!({
-                    "timestamp": "2026-08-10T03:00:02Z",
+                    "timestamp": timestamp(2),
                     "type": "event_msg",
                     "payload": { "type": "token_count", "info": {
                         "total_token_usage": {
@@ -1010,7 +1217,7 @@ mod tests {
                     }}
                 }),
                 serde_json::json!({
-                    "timestamp": "2026-08-10T03:00:04Z",
+                    "timestamp": timestamp(4),
                     "type": "event_msg",
                     "payload": { "type": "token_count", "info": {
                         "total_token_usage": {
@@ -1288,6 +1495,78 @@ pub(crate) fn run_command(args: &[String]) -> Value {
                             serde_json::to_value(types::err::<()>("providers_add_failed", message))
                                 .expect("serialize provider add error")
                         }
+                    }
+                }
+                Err(err) => serde_json::to_value(types::err::<()>("invalid_app", err.to_string()))
+                    .expect("serialize invalid app error"),
+            }
+        }
+        [group, cmd, app, settings_json, options_json]
+            if group == "providers" && cmd == "editor-view" =>
+        {
+            match app.parse() {
+                Ok(app_type) => match commands::editor_view(app_type, settings_json, options_json) {
+                    Ok(value) => {
+                        serde_json::to_value(types::ok(value)).expect("serialize editor view")
+                    }
+                    Err(message) => serde_json::to_value(types::err::<()>(
+                        "providers_editor_view_failed",
+                        message,
+                    ))
+                    .expect("serialize editor view error"),
+                },
+                Err(err) => serde_json::to_value(types::err::<()>("invalid_app", err.to_string()))
+                    .expect("serialize invalid app error"),
+            }
+        }
+        [group, cmd, app, provider_json, add_to_live, editor_save_json]
+            if group == "providers" && cmd == "add-editor" =>
+        {
+            match app.parse() {
+                Ok(app_type) => {
+                    let add_to_live = add_to_live != "false";
+                    match commands::add_provider_from_editor(
+                        app_type,
+                        provider_json,
+                        add_to_live,
+                        editor_save_json,
+                    ) {
+                        Ok(value) => serde_json::to_value(types::ok(value))
+                            .expect("serialize provider add editor"),
+                        Err(message) => serde_json::to_value(types::err::<()>(
+                            "providers_add_editor_failed",
+                            message,
+                        ))
+                        .expect("serialize provider add editor error"),
+                    }
+                }
+                Err(err) => serde_json::to_value(types::err::<()>("invalid_app", err.to_string()))
+                    .expect("serialize invalid app error"),
+            }
+        }
+        [group, cmd, app, provider_json, original_id, editor_save_json]
+            if group == "providers" && cmd == "update-editor" =>
+        {
+            match app.parse() {
+                Ok(app_type) => {
+                    let original_id = if original_id == "-" {
+                        None
+                    } else {
+                        Some(original_id.as_str())
+                    };
+                    match commands::update_provider_from_editor(
+                        app_type,
+                        provider_json,
+                        original_id,
+                        editor_save_json,
+                    ) {
+                        Ok(value) => serde_json::to_value(types::ok(value))
+                            .expect("serialize provider update editor"),
+                        Err(message) => serde_json::to_value(types::err::<()>(
+                            "providers_update_editor_failed",
+                            message,
+                        ))
+                        .expect("serialize provider update editor error"),
                     }
                 }
                 Err(err) => serde_json::to_value(types::err::<()>("invalid_app", err.to_string()))
@@ -1580,7 +1859,18 @@ pub(crate) fn run_command(args: &[String]) -> Value {
                 }
             }
         }
-        [group, cmd, app, provider_id] if group == "stream-check" && cmd == "provider" => {
+        [group, cmd, tools_json] if group == "tools" && cmd == "installations" => {
+            match commands::list_tool_installations(tools_json) {
+                Ok(value) => {
+                    serde_json::to_value(types::ok(value)).expect("serialize tool installs")
+                }
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("tools_installations_failed", message))
+                        .expect("serialize tool installs error")
+                }
+            }
+        }
+        [group, cmd, app, provider_id] if group == "connectivity-check" && cmd == "provider" => {
             match app.parse() {
                 Ok(app_type) => match commands::stream_check_provider(app_type, provider_id) {
                     Ok(value) => {
@@ -3363,7 +3653,7 @@ pub(crate) fn run_command(args: &[String]) -> Value {
         }
         _ => serde_json::to_value(types::err::<()>(
             "unsupported_command",
-            "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, stream-check, usage, auth",
+            "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, connectivity-check, usage, auth",
         ))
         .expect("serialize error response"),
     }

@@ -11,6 +11,7 @@ import { grokBuildProviderPresets } from "@/config/grokBuildProviderPresets";
 import { hermesProviderPresets } from "@/config/hermesProviderPresets";
 import { openclawProviderPresets } from "@/config/openclawProviderPresets";
 import { opencodeProviderPresets } from "@/config/opencodeProviderPresets";
+import { piProviderPresets } from "@/config/piProviderPresets";
 
 const requiredPaths = [
   "common.enableAllForApp",
@@ -25,6 +26,12 @@ const requiredPaths = [
   "prompts.searchPlaceholder",
   "prompts.searchAriaLabel",
   "prompts.noSearchResults",
+  // `translatePiProviderMutationError` returns this key for the duplicate-key error
+  // the Pi backend raises, and it existed in no locale -- so the toast showed the raw
+  // key. Its own test mocks `t` as identity, so it stayed green throughout.
+  "pi.form.providerKeyDuplicate",
+  // Rendered as the aria-label of the thinking-map toggle in PiProviderForm.
+  "common.collapse",
 ] as const;
 
 type Locale = Record<string, unknown>;
@@ -47,6 +54,7 @@ const partnerPromotionKeys = Array.from(
       ...hermesProviderPresets,
       ...openclawProviderPresets,
       ...opencodeProviderPresets,
+      ...piProviderPresets,
     ]
       .map((preset) => preset.partnerPromotionKey)
       .filter(

@@ -29,7 +29,13 @@ describe("ManagementTargetSwitcher", () => {
     );
 
     const switcher = screen.getByLabelText("管理目标");
-    expect(switcher).toHaveClass("inline-flex", "h-8", "rounded-md");
+    // v4 的 Button（ghost/sm）设计令牌
+    expect(switcher).toHaveClass(
+      "inline-flex",
+      "rounded-control",
+      "text-fg-2",
+      "h-7",
+    );
     expect(switcher).toHaveTextContent("本地");
     expect(switcher).not.toHaveTextContent("生产服务器");
   });
@@ -62,6 +68,6 @@ describe("ManagementTargetSwitcher", () => {
 
     const switcher = screen.getByRole("button", { name: "管理目标" });
     expect(switcher).toHaveTextContent("生产服务器");
-    expect(switcher).toHaveClass("inline-flex", "h-8", "rounded-md");
+    expect(switcher).toHaveClass("inline-flex", "rounded-control", "h-7");
   });
 });

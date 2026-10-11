@@ -1,4 +1,12 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useMutation,
+  useQueryClient,
+  type UseQueryOptions,
+} from "@tanstack/react-query";
+import { supportsLocalUsageRead } from "@/lib/api/usageSupport";
+import { useUsageTargetScope } from "./usageTargetScope";
 import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
 import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
@@ -8,6 +16,22 @@ import type {
   UsageRangeSelection,
   UsageScopeFilters,
 } from "@/types/usage";
+
+function useTargetUsageQuery<T>(
+  target: ManagementTarget,
+  options: UseQueryOptions<T>,
+) {
+  const scope = useUsageTargetScope(target);
+  return useQuery({
+    ...options,
+    queryKey: scope.key(options.queryKey),
+    placeholderData:
+      options.placeholderData === keepPreviousData
+        ? (previousData, previousQuery) =>
+            scope.placeholderData(previousData, previousQuery)
+        : options.placeholderData,
+  });
+}
 
 const DEFAULT_REFETCH_INTERVAL_MS = 30000;
 
@@ -166,6 +190,11 @@ export const usageKeys = {
   ) => [...usageKeys.all(target), "detail", requestId] as const,
   pricing: (target: ManagementTarget = LOCAL_MANAGEMENT_TARGET) =>
     [...usageKeys.all(target), "pricing"] as const,
+  session: (
+    appType: string,
+    sessionId: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ) => [...usageKeys.all(target), "session", appType, sessionId] as const,
   limits: (
     providerId: string,
     appType: string,
@@ -196,6 +225,8 @@ function normalizeScopeFilters(filters?: UsageScopeFilters): UsageScopeFilters {
 }
 
 // Hooks
+// 统计类查询都带 keepPreviousData：换筛选、时间范围、翻页时先留着上一份数据，
+// 新数据到了再换，不让指标闪成「…」、请求日志表塌成骨架。
 export function useUsageSummary(
   range: UsageRangeSelection,
   filters?: UsageScopeFilters,
@@ -203,7 +234,7 @@ export function useUsageSummary(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
   const effective = normalizeScopeFilters(filters);
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.summary(
       range.preset,
       range.customStartDate,
@@ -223,6 +254,7 @@ export function useUsageSummary(
         target,
       );
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -234,7 +266,7 @@ export function useUsageSummaryByApp(
   options?: UsageQueryOptions,
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.summaryByApp(
       range.preset,
       range.customStartDate,
@@ -253,6 +285,7 @@ export function useUsageSummaryByApp(
         target,
       );
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -265,7 +298,7 @@ export function useUsageTrends(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
   const effective = normalizeScopeFilters(filters);
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.trends(
       range.preset,
       range.customStartDate,
@@ -285,6 +318,7 @@ export function useUsageTrends(
         target,
       );
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -297,7 +331,7 @@ export function useProviderStats(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
   const effective = normalizeScopeFilters(filters);
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.providerStats(
       range.preset,
       range.customStartDate,
@@ -317,6 +351,7 @@ export function useProviderStats(
         target,
       );
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -329,7 +364,7 @@ export function useModelStats(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
   const effective = normalizeScopeFilters(filters);
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.modelStats(
       range.preset,
       range.customStartDate,
@@ -349,6 +384,7 @@ export function useModelStats(
         target,
       );
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -373,12 +409,13 @@ export function useRequestLogs({
     statusCode: filters.statusCode,
   };
 
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.logs(key, page, pageSize, target),
     queryFn: () => {
       const effectiveFilters = { ...filters, ...resolveUsageRange(range) };
       return usageApi.getRequestLogs(effectiveFilters, page, pageSize, target);
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS, // 每30秒自动刷新
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -388,17 +425,44 @@ export function useRequestDetail(
   requestId: string,
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.detail(requestId, target),
     queryFn: () => usageApi.getRequestDetail(requestId, target),
     enabled: !!requestId,
   });
 }
 
+/** The helper does not expose its scanner timestamp or per-session summary yet. */
+export function useSessionUsageLastSync(
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
+  return useTargetUsageQuery(target, {
+    queryKey: [...usageKeys.all(target), "session-last-sync"] as const,
+    queryFn: () => usageApi.getSessionUsageLastSync(target),
+    enabled: supportsLocalUsageRead(target),
+    refetchInterval: DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useSessionUsageSummary(
+  appType: string,
+  sessionId: string,
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
+  return useTargetUsageQuery(target, {
+    queryKey: usageKeys.session(appType, sessionId, target),
+    queryFn: () => usageApi.getSessionUsageSummary(appType, sessionId, target),
+    enabled: supportsLocalUsageRead(target) && !!appType && !!sessionId,
+    refetchInterval: DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+  });
+}
+
 export function useModelPricing(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.pricing(target),
     queryFn: () => usageApi.getModelPricing(target),
   });
@@ -409,10 +473,10 @@ export function useProviderLimits(
   appType: string,
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
-  return useQuery({
+  return useTargetUsageQuery(target, {
     queryKey: usageKeys.limits(providerId, appType, target),
-    queryFn: () => usageApi.checkProviderLimits(providerId, appType),
-    enabled: !!providerId && !!appType,
+    queryFn: () => usageApi.checkProviderLimits(providerId, appType, target),
+    enabled: supportsLocalUsageRead(target) && !!providerId && !!appType,
   });
 }
 

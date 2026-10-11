@@ -26,6 +26,50 @@ use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::providers::{get_adapter, ClaudeAdapter, ProviderAdapter};
 
+/// Copilot 供应商的 base_url 需要从 OAuth 管理器动态解析（按账号或默认端点）。
+/// `is_full_url` 的供应商已是完整地址，无需解析。
+pub(crate) async fn resolve_copilot_base_url_override(
+    provider: &crate::provider::Provider,
+    auth_manager: &crate::proxy::providers::copilot_auth::CopilotAuthManager,
+) -> Result<Option<String>, AppError> {
+    let is_copilot = is_copilot_provider(provider);
+    let is_full_url = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.is_full_url)
+        .unwrap_or(false);
+
+    if !is_copilot || is_full_url {
+        return Ok(None);
+    }
+
+    let account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("github_copilot"));
+
+    let endpoint = match account_id.as_deref() {
+        Some(id) => auth_manager.get_api_endpoint(id).await,
+        None => auth_manager.get_default_api_endpoint().await,
+    };
+
+    Ok(Some(endpoint))
+}
+
+pub(crate) fn is_copilot_provider(provider: &crate::provider::Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.provider_type.as_deref())
+        == Some("github_copilot")
+        || provider
+            .settings_config
+            .pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(|value| value.as_str())
+            .map(|url| url.contains("githubcopilot.com"))
+            .unwrap_or(false)
+}
+
 /// 健康状态枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -35,9 +79,8 @@ pub enum HealthStatus {
     Failed,
 }
 
-/// 连通性检查配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// 连通性检查参数（固定默认值，不对用户开放）
+#[derive(Debug, Clone)]
 pub struct StreamCheckConfig {
     /// 单次探测超时（秒）
     pub timeout_secs: u64,
@@ -69,19 +112,25 @@ pub struct StreamCheckResult {
     pub message: String,
     pub response_time_ms: Option<u64>,
     pub http_status: Option<u16>,
-    /// 保留字段以兼容 `stream_check_logs` 表结构；连通性检查恒为空串。
-    pub model_used: String,
     pub tested_at: i64,
     pub retry_count: u32,
-    /// 细粒度错误分类；连通性检查不再细分，恒为 None。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_category: Option<String>,
 }
 
 /// 连通性检查服务
 pub struct StreamCheckService;
 
 impl StreamCheckService {
+    /// Shared reachability workflow: use the selected target's managed Copilot
+    /// endpoint, fixed safe probe defaults, and never update circuit breakers.
+    pub(crate) async fn check_provider(
+        app_type: &AppType,
+        provider: &Provider,
+        copilot: &crate::proxy::providers::copilot_auth::CopilotAuthManager,
+    ) -> Result<StreamCheckResult, AppError> {
+        let endpoint = resolve_copilot_base_url_override(provider, copilot).await?;
+        Self::check_with_retry(app_type, provider, &StreamCheckConfig::default(), endpoint).await
+    }
+
     /// 执行连通性检查（仅对超时类失败重试）。
     ///
     /// `base_url_override`：用于 Copilot 等需要从 OAuth 管理器动态解析端点的供应商，
@@ -123,10 +172,8 @@ impl StreamCheckService {
             message: "Check failed".to_string(),
             response_time_ms: None,
             http_status: None,
-            model_used: String::new(),
             tested_at: chrono::Utc::now().timestamp(),
             retry_count: config.max_retries,
-            error_category: None,
         }))
     }
 
@@ -243,10 +290,8 @@ impl StreamCheckService {
                 message: "Reachable".to_string(),
                 response_time_ms: Some(response_time),
                 http_status: Some(status),
-                model_used: String::new(),
                 tested_at,
                 retry_count: 0,
-                error_category: None,
             },
             Err(e) => StreamCheckResult {
                 status: HealthStatus::Failed,
@@ -254,10 +299,8 @@ impl StreamCheckService {
                 message: e.to_string(),
                 response_time_ms: Some(response_time),
                 http_status: None,
-                model_used: String::new(),
                 tested_at,
                 retry_count: 0,
-                error_category: None,
             },
         }
     }
@@ -436,8 +479,6 @@ mod tests {
             assert!(r.success, "status {status} should be reachable");
             assert_eq!(r.status, HealthStatus::Operational);
             assert_eq!(r.http_status, Some(status));
-            assert!(r.model_used.is_empty());
-            assert!(r.error_category.is_none());
         }
     }
 

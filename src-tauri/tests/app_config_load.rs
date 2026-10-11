@@ -15,7 +15,7 @@ fn cfg_path() -> PathBuf {
 
 #[test]
 fn load_v1_config_returns_error_and_does_not_write() {
-    let _guard = test_mutex().lock().expect("acquire test mutex");
+    let _guard = test_mutex().lock().unwrap_or_else(|e| e.into_inner());
     reset_test_fs();
     let home = ensure_test_home();
     let path = cfg_path();
@@ -41,7 +41,7 @@ fn load_v1_config_returns_error_and_does_not_write() {
 
 #[test]
 fn load_v1_with_extra_version_still_treated_as_v1() {
-    let _guard = test_mutex().lock().expect("acquire test mutex");
+    let _guard = test_mutex().lock().unwrap_or_else(|e| e.into_inner());
     reset_test_fs();
     let home = ensure_test_home();
     let path = cfg_path();
@@ -66,7 +66,7 @@ fn load_v1_with_extra_version_still_treated_as_v1() {
 
 #[test]
 fn load_invalid_json_returns_parse_error_and_does_not_write() {
-    let _guard = test_mutex().lock().expect("acquire test mutex");
+    let _guard = test_mutex().lock().unwrap_or_else(|e| e.into_inner());
     reset_test_fs();
     let home = ensure_test_home();
     let path = cfg_path();
@@ -89,7 +89,7 @@ fn load_invalid_json_returns_parse_error_and_does_not_write() {
 
 #[test]
 fn load_valid_v2_config_succeeds() {
-    let _guard = test_mutex().lock().expect("acquire test mutex");
+    let _guard = test_mutex().lock().unwrap_or_else(|e| e.into_inner());
     reset_test_fs();
     let _home = ensure_test_home();
     let path = cfg_path();

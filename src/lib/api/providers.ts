@@ -41,6 +41,29 @@ export interface ClaudeDesktopStatus {
   gatewayTokenConfigured: boolean;
 }
 
+/** 编辑器保存时，live 里的键在编辑期间被别的程序改过怎么办。 */
+export type EditorConflictPolicy = "refuse" | "keepMine" | "keepTheirs";
+
+/** 编辑器保存随供应商一起提交：打开时显示的完整配置，用来三方比较。 */
+export interface ProviderEditorSave {
+  base: Record<string, unknown>;
+  /** 新增对话框：投影成 `base` 的那份草稿（预设或模板）。后端按它区分预设带的和从 live 带进来的字段。 */
+  draft?: Record<string, unknown>;
+  onConflict?: EditorConflictPolicy;
+}
+
+/** 行里保存着、但不随切换生效的字段。 */
+export interface ProviderEditorInactiveField {
+  path: string[];
+  value: unknown;
+}
+
+/** 编辑器底部 JSON 的显示内容：切到这个供应商之后配置文件会是什么样。 */
+export interface ProviderEditorView {
+  settings: Record<string, unknown>;
+  inactive: ProviderEditorInactiveField[];
+}
+
 export interface ClaudeDesktopDefaultRoute {
   routeId: string;
   envKey: string;
@@ -98,6 +121,7 @@ export const providersApi = {
     appId: AppId,
     addToLive?: boolean,
     target: ManagementTarget = { type: "local" },
+    editorSave?: ProviderEditorSave,
   ): Promise<boolean> {
     if (target.type === "remote") {
       return await remoteApi.addProvider(
@@ -106,9 +130,15 @@ export const providersApi = {
         provider,
         addToLive,
         target.secret,
+        editorSave,
       );
     }
-    return await invoke("add_provider", { provider, app: appId, addToLive });
+    return await invoke("add_provider", {
+      provider,
+      app: appId,
+      addToLive,
+      ...(editorSave ? { editorSave } : {}),
+    });
   },
 
   async update(
@@ -116,6 +146,7 @@ export const providersApi = {
     appId: AppId,
     originalId?: string,
     target: ManagementTarget = { type: "local" },
+    editorSave?: ProviderEditorSave,
   ): Promise<boolean> {
     if (target.type === "remote") {
       return await remoteApi.updateProvider(
@@ -124,12 +155,42 @@ export const providersApi = {
         provider,
         originalId,
         target.secret,
+        editorSave,
       );
     }
     return await invoke("update_provider", {
       provider,
       app: appId,
       originalId,
+      ...(editorSave ? { editorSave } : {}),
+    });
+  },
+
+  /** 切换式应用（Claude Code、Codex、Gemini CLI、Grok Build）的编辑器显示内容。`settingsConfig` 是供应商的行，新增时传空对象。编辑已有供应商时传 `providerId`：后端按库里那一行认官方卡，和切换的判断一致。 */
+  async getEditorView(
+    appId: AppId,
+    settingsConfig: Record<string, unknown>,
+    category?: string,
+    providerId?: string,
+    target: ManagementTarget = { type: "local" },
+  ): Promise<ProviderEditorView> {
+    // 远端编辑器走 helper 的同一套投影，返回的密钥是 `[redacted]`：
+    // 绝不能拿本机 live 去渲染或当成 base 发给远端。
+    if (target.type === "remote") {
+      return await remoteApi.getProviderEditorView(
+        target.profile,
+        appId,
+        settingsConfig,
+        category,
+        providerId,
+        target.secret,
+      );
+    }
+    return await invoke("get_provider_editor_view", {
+      app: appId,
+      settingsConfig,
+      ...(category ? { category } : {}),
+      ...(providerId ? { providerId } : {}),
     });
   },
 

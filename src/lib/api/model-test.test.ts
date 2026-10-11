@@ -1,76 +1,75 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagementTarget, RemoteHostProfile } from "./remote";
 
-const invokeMock = vi.fn();
-const remoteGetStreamCheckConfigMock = vi.fn();
-const remoteSaveStreamCheckConfigMock = vi.fn();
-
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
-}));
-
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), remoteCheck: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("./remote", () => ({
-  remoteApi: {
-    getStreamCheckConfig: (...args: unknown[]) =>
-      remoteGetStreamCheckConfigMock(...args),
-    saveStreamCheckConfig: (...args: unknown[]) =>
-      remoteSaveStreamCheckConfigMock(...args),
-  },
+  remoteApi: { streamCheckProvider: mocks.remoteCheck },
 }));
 
 const profile: RemoteHostProfile = {
   id: "remote-1",
   name: "Remote 1",
-  host: "192.168.1.20",
+  host: "192.0.2.20",
   port: 22,
-  username: "root",
+  username: "tester",
   authMethod: { type: "password" },
   helperPath: "~/.local/bin/cc-switch-remote-helper",
   createdAt: 1,
   updatedAt: 1,
 };
-
 const remoteTarget: ManagementTarget = {
   type: "remote",
   profile,
-  secret: { password: "secret" },
+  secret: { password: "test-ssh-secret" },
+};
+const response = {
+  status: "operational",
+  success: true,
+  message: "reachable",
+  httpStatus: 401,
+  responseTimeMs: 12,
+  testedAt: 1,
+  retryCount: 0,
 };
 
-describe("stream check config API", () => {
+describe("connectivity check target routing", () => {
   beforeEach(() => {
-    invokeMock.mockReset();
-    remoteGetStreamCheckConfigMock.mockReset();
-    remoteSaveStreamCheckConfigMock.mockReset();
+    vi.clearAllMocks();
   });
 
-  it("loads and saves config through remote API when target is remote", async () => {
-    const { getStreamCheckConfig, saveStreamCheckConfig } = await import(
-      "./connectivity-check"
-    );
-    const config = {
-      timeoutSecs: 12,
-      maxRetries: 3,
-      degradedThresholdMs: 9000,
-    };
-    remoteGetStreamCheckConfigMock.mockResolvedValue(config);
-    remoteSaveStreamCheckConfigMock.mockResolvedValue(true);
-
+  it("uses the selected remote profile and secret, never local invoke", async () => {
+    const { streamCheckProvider } = await import("./connectivity-check");
+    mocks.remoteCheck.mockResolvedValue(response);
     await expect(
-      (getStreamCheckConfig as (target: ManagementTarget) => Promise<unknown>)(
-        remoteTarget,
-      ),
-    ).resolves.toEqual(config);
-    await saveStreamCheckConfig(config, remoteTarget);
+      streamCheckProvider("claude", "remote-provider", remoteTarget),
+    ).resolves.toEqual(response);
+    expect(mocks.remoteCheck).toHaveBeenCalledWith(
+      profile,
+      "claude",
+      "remote-provider",
+      remoteTarget.secret,
+    );
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
 
-    expect(remoteGetStreamCheckConfigMock).toHaveBeenCalledWith(
-      profile,
-      remoteTarget.secret,
-    );
-    expect(remoteSaveStreamCheckConfigMock).toHaveBeenCalledWith(
-      profile,
-      config,
-      remoteTarget.secret,
-    );
-    expect(invokeMock).not.toHaveBeenCalled();
+  it("keeps the local reachability command unchanged", async () => {
+    const { streamCheckProvider } = await import("./connectivity-check");
+    mocks.invoke.mockResolvedValue(response);
+    await expect(
+      streamCheckProvider("codex", "local-provider"),
+    ).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("stream_check_provider", {
+      appType: "codex",
+      providerId: "local-provider",
+    });
+    expect(mocks.remoteCheck).not.toHaveBeenCalled();
+  });
+
+  it("does not expose retired real-model test settings or batch commands", async () => {
+    const api = await import("./connectivity-check");
+    expect(api).not.toHaveProperty("getStreamCheckConfig");
+    expect(api).not.toHaveProperty("saveStreamCheckConfig");
+    expect(api).not.toHaveProperty("streamCheckAllProviders");
   });
 });

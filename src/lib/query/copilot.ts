@@ -2,7 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { copilotGetUsageForTarget } from "@/lib/api/copilot";
 import type { ManagementTarget } from "@/lib/api";
 import type { QuotaTier } from "@/types/subscription";
-import { useTargetQueryIdentityReset } from "@/hooks/useTargetQueryIdentityReset";
+import {
+  useLatestTarget,
+  useTargetQueryIdentityReset,
+} from "@/hooks/useTargetQueryIdentityReset";
 
 const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
@@ -33,10 +36,15 @@ export function useCopilotQuota(
   } = options;
   const targetKey =
     target.type === "remote" ? `remote:${target.profile.id}` : "local";
+  // reset 触发的重新拉取可能带着上一轮的 queryFn 闭包：从 ref 读最新目标
+  const targetRef = useLatestTarget(target);
   const query = useQuery<CopilotQuota>({
     queryKey: ["copilot", "quota", targetKey, accountId ?? "default"],
     queryFn: async (): Promise<CopilotQuota> => {
-      const usage = await copilotGetUsageForTarget(accountId, target);
+      const usage = await copilotGetUsageForTarget(
+        accountId,
+        targetRef.current,
+      );
 
       const premium = usage.quota_snapshots.premium_interactions;
       const utilization =

@@ -1,6 +1,8 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ThemeProvider } from "@/components/theme-provider";
 import { RemoteSettingsPage } from "@/components/settings/RemoteSettingsPage";
 import type { RemoteHostProfile } from "@/lib/api";
 import type { Settings } from "@/types";
@@ -71,26 +73,31 @@ vi.mock("@/hooks/useProxyStatus", () => ({
   }),
 }));
 
-vi.mock("@/lib/query/proxy", () => ({
-  useAppProxyConfig: () => ({
-    data: {
-      appType: "claude",
-      enabled: false,
-      targetUrl: "http://127.0.0.1:15721",
-    },
-  }),
-  useUpdateAppProxyConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useGlobalProxyConfig: () => ({
-    data: {
-      listenAddress: "127.0.0.1",
-      listenPort: 15721,
-      enableLogging: true,
-    },
-  }),
-  useUpdateGlobalProxyConfig: () => ({ mutateAsync: vi.fn() }),
-  useProxyTakeoverStatus: () => ({ data: {} }),
-  useSetProxyTakeoverForApp: () => ({ mutateAsync: vi.fn() }),
-}));
+vi.mock("@/lib/query/proxy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/query/proxy")>();
+  return {
+    ...actual,
+    useAppProxyConfig: () => ({
+      data: {
+        appType: "claude",
+        enabled: false,
+        targetUrl: "http://127.0.0.1:15721",
+      },
+    }),
+    useUpdateAppProxyConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useGlobalProxyConfig: () => ({
+      data: {
+        listenAddress: "127.0.0.1",
+        listenPort: 15721,
+        enableLogging: true,
+      },
+    }),
+    useUpdateGlobalProxyConfig: () => ({ mutateAsync: vi.fn() }),
+    useProxyTakeoverStatus: () => ({ data: {} }),
+    useSetProxyTakeoverForApp: () => ({ mutateAsync: vi.fn() }),
+    useProxyStatusQuery: () => ({ data: { running: true } }),
+  };
+});
 
 vi.mock("@/components/proxy/FailoverQueueManager", () => ({
   FailoverQueueManager: () => <div data-testid="failover-queue-manager" />,
@@ -154,10 +161,43 @@ const settings: Settings = {
     openclaw: true,
     hermes: true,
     pi: true,
+    mcode: true,
   },
   skillSyncMethod: "auto",
   skillStorageLocation: "cc_switch",
 };
+
+/** jsdom 没有 matchMedia：主题上下文要它。 */
+function stubMatchMedia() {
+  if (typeof window.matchMedia === "function") return;
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }),
+  });
+}
+
+/** v4 的设置 section 需要主题上下文与 React Query。 */
+function renderSettingsPage(ui: React.ReactElement) {
+  stubMatchMedia();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <ThemeProvider>{ui}</ThemeProvider>
+    </QueryClientProvider>,
+  );
+}
 
 describe("RemoteSettingsPage", () => {
   beforeEach(() => {
@@ -192,7 +232,7 @@ describe("RemoteSettingsPage", () => {
   });
 
   it("aligns remote settings tab order with local settings modules", async () => {
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -225,7 +265,7 @@ describe("RemoteSettingsPage", () => {
       capabilities: ["settings", "auth"],
     });
 
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -248,7 +288,7 @@ describe("RemoteSettingsPage", () => {
   });
 
   it("maps the legacy remote data tab to the advanced tab", async () => {
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -272,7 +312,7 @@ describe("RemoteSettingsPage", () => {
     const saveDeferred = createDeferred<boolean>();
     saveSettingsMock.mockReturnValue(saveDeferred.promise);
 
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -300,8 +340,9 @@ describe("RemoteSettingsPage", () => {
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "代理" }));
+    // 折叠状态下开关不渲染：模块本身要展开才出现
     expect(
-      screen.queryByRole("button", { name: /远程路由/ }),
+      screen.queryByRole("switch", { name: "在主页面显示远程路由开关" }),
     ).not.toBeInTheDocument();
     await user.click(
       screen.getByRole("button", { name: /settings\.advanced\.proxy\.title/ }),
@@ -311,18 +352,24 @@ describe("RemoteSettingsPage", () => {
       expect(screen.getByText("在主页面显示远程路由开关")).toBeInTheDocument();
     });
 
+    // 主页面开关是远端自己的模块；故障转移参数走下面的 RoutingSection
+    await user.click(
+      screen.getByRole("button", {
+        name: /主页面开关/,
+      }),
+    );
     expect(
-      screen.queryByRole("button", { name: /远程自动故障转移/ }),
-    ).not.toBeInTheDocument();
+      screen.getByText("在主页面显示远程故障转移开关"),
+    ).toBeInTheDocument();
+
     await user.click(
       screen.getByRole("button", {
         name: /settings\.advanced\.failover\.title/,
       }),
     );
-
-    expect(screen.getByRole("tab", { name: "Grok Build" })).toBeInTheDocument();
+    // 故障转移参数按应用分段（v4 的 SegmentedControl：aria-pressed 按钮）
     expect(
-      screen.getByText("在主页面显示远程故障转移开关"),
+      screen.getByRole("button", { name: "Grok Build" }),
     ).toBeInTheDocument();
 
     await user.click(
@@ -357,7 +404,7 @@ describe("RemoteSettingsPage", () => {
     const user = userEvent.setup();
     proxyRunning = true;
 
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -379,7 +426,7 @@ describe("RemoteSettingsPage", () => {
   it("loads remote general settings and saves per-host app visibility", async () => {
     const user = userEvent.setup();
 
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -426,7 +473,7 @@ describe("RemoteSettingsPage", () => {
       unifyCodexMigrateExisting: true,
     });
 
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -476,7 +523,7 @@ describe("RemoteSettingsPage", () => {
       capabilities: ["settings", "plugin", "skills", "tools"],
     });
 
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
@@ -503,7 +550,7 @@ describe("RemoteSettingsPage", () => {
       createDeferred<Awaited<ReturnType<typeof checkHealthMock>>>();
     checkHealthMock.mockReturnValueOnce(health.promise);
 
-    render(
+    renderSettingsPage(
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}

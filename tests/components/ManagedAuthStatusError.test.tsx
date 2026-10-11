@@ -38,6 +38,11 @@ vi.mock("@/components/providers/forms/hooks/useCopilotAuth", () => ({
   useCopilotAuth: () => failedStatus(authMocks.refetchCopilot),
 }));
 
+// 「N 个供应商在用」要读供应商列表（React Query）；这里不关心，给空
+vi.mock("@/components/providers/forms/hooks/useManagedAccountUsers", () => ({
+  useManagedAccountUsers: () => () => [],
+}));
+
 describe("managed auth status failures", () => {
   beforeEach(() => {
     authMocks.refetchCodex.mockResolvedValue(undefined);
@@ -48,6 +53,7 @@ describe("managed auth status failures", () => {
     const onAccountSelect = vi.fn();
     render(
       <CodexOAuthSection
+        mode="select"
         selectedAccountId="acct-existing"
         onAccountSelect={onAccountSelect}
       />,
@@ -67,6 +73,7 @@ describe("managed auth status failures", () => {
     const onAccountSelect = vi.fn();
     render(
       <CopilotAuthSection
+        mode="select"
         selectedAccountId="acct-existing"
         onAccountSelect={onAccountSelect}
       />,

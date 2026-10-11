@@ -3,6 +3,22 @@ use std::sync::PoisonError;
 
 use thiserror::Error;
 
+/// Remove configuration source lines from parse diagnostics before logging.
+/// Shared by desktop and helper: a TOML error may quote a credential value.
+pub(crate) fn error_for_log(error: &str) -> String {
+    error
+        .lines()
+        .filter(|line| {
+            !line
+                .trim_start()
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .trim_start()
+                .starts_with('|')
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("配置错误: {0}")]
@@ -146,4 +162,30 @@ pub fn format_skill_error(
         // 如果 JSON 序列化失败，返回简单格式
         format!("ERROR:{code}")
     })
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::error_for_log;
+
+    #[test]
+    fn diagnostics_drop_configuration_source_in_both_line_endings() {
+        for newline in ["\n", "\r\n"] {
+            let diagnostic = [
+                "TOML parse error at line 1, column 8",
+                "  |",
+                "1 | key = \"test-secret\" invalid",
+                "  |        ^",
+                "expected newline",
+            ]
+            .join(newline);
+            let logged = error_for_log(&diagnostic);
+            assert!(!logged.contains("test-secret"));
+            assert_eq!(
+                logged,
+                "TOML parse error at line 1, column 8\nexpected newline"
+            );
+        }
+        assert_eq!(error_for_log("provider not found"), "provider not found");
+    }
 }

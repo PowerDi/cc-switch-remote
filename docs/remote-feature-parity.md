@@ -53,7 +53,7 @@ This document tracks how remote management maps to the local CC Switch feature s
 | Sessions | parity | List, view messages, delete, and batch delete are target-aware. Terminal resume remains local-only for now. |
 | Hermes memory | parity | Memory, model config, limits, and enabled state are target-aware. |
 | OpenClaw | parity | Default model, env, tools, and agents defaults are target-aware. |
-| Tool environment lifecycle | parity | Version check, install/update/uninstall, conflict diagnosis, and manual install commands are remote-adapted through shared tool lifecycle logic. Remote helper install/status checks also perform a remote-only Claude Code native installer PATH postflight, adding shell profile PATH entries and, when safe, exposing `~/.local/bin/claude` through `/usr/local/bin/claude` so future SSH shells can run `claude` directly. |
+| Tool environment lifecycle | parity | Version check, install/update/uninstall, conflict diagnosis, and installation listing are remote-adapted through the shared `tool_environment` logic; the Apps page (`appsPage`) now follows the management target, so the same rows work for a remote host via the helper (`tools versions` / `tools run` / `tools probe-installations` / `tools installations`). Local-only pieces stay hidden for a remote target: the Claude Desktop row, the Windows WSL shell override, and the client startup update check (that one keeps informing the local sidebar dot). Helper install/status checks additionally run a remote-only Claude Code native installer PATH postflight. The remote settings environment tab still lists the same tools (legacy surface, same helper commands) and is slated for consolidation into the Apps page. |
 
 ## Current Next Items
 
