@@ -920,6 +920,16 @@ fn app_mode_commands_round_trip_through_json_cli() {
             "not-an-app".to_string(),
         ]);
 
+        // 用例收尾：退出模式并停掉运行时。Linux 上运行时可能是 systemd user 服务，
+        // 不随临时 home 消失；留着的话后面的用例会把「外部 daemon 在跑」当事实，
+        // 连改全局配置都会被守卫拒绝。
+        let _ = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "exit".to_string(),
+            "codex".to_string(),
+        ]);
+        let _ = cc_switch_lib::cli::run(&["routing-runtime".to_string(), "stop".to_string()]);
+
         (
             direct_before,
             enter_response,
