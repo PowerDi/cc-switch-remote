@@ -3,9 +3,11 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/lib/toast";
 import type { AppId } from "@/lib/api";
+import type { ManagementTarget } from "@/lib/api/remote";
 import { providersApi } from "@/lib/api/providers";
 import { proxyApi } from "@/lib/api/proxy";
 import { proxyKeys } from "@/lib/query/proxy";
+import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import type { AppMode } from "@/types/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
@@ -22,7 +24,10 @@ export interface ModeSnapshot {
  * 进入 / 离开路由和聚合模式。进入要先在确认框里确认；回到直连不弹框，toast 里给「撤销」，
  * 撤销按原来的模式和路由目标重新进入。
  */
-export function useModeActions(app: AppId) {
+export function useModeActions(
+  app: AppId,
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
@@ -33,12 +38,17 @@ export function useModeActions(app: AppId) {
 
   const refresh = useCallback(async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: proxyKeys.status() }),
-      queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus() }),
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status(target) }),
+      queryClient.invalidateQueries({
+        queryKey: proxyKeys.takeoverStatus(target),
+      }),
       queryClient.invalidateQueries({ queryKey: ["providers", app] }),
     ]);
-    providersApi.updateTrayMenu().catch(() => undefined);
-  }, [app, queryClient]);
+    // 托盘是本机的：管理远端时不刷新本机托盘
+    if (target.type === "local") {
+      providersApi.updateTrayMenu().catch(() => undefined);
+    }
+  }, [app, queryClient, target]);
 
   /** 进入路由 / 聚合模式；已经在另一种代理模式时后端一次写完，不经过直连。抛出错误给确认框显示。 */
   const enter = useCallback(
@@ -54,6 +64,7 @@ export function useModeActions(app: AppId) {
           true,
           mode === "stack",
           route,
+          target,
         );
         await refresh();
         toast.success(
@@ -74,7 +85,7 @@ export function useModeActions(app: AppId) {
         setPending(false);
       }
     },
-    [app, appName, refresh, t],
+    [app, appName, refresh, t, target],
   );
 
   /**
@@ -95,7 +106,7 @@ export function useModeActions(app: AppId) {
     }) => {
       setPending(true);
       try {
-        await proxyApi.setProxyTakeoverForApp(app, false);
+        await proxyApi.setProxyTakeoverForApp(app, false, false, null, target);
         if (useProviderId && useProviderId !== directProviderId) {
           await providersApi.switch(useProviderId, app);
         }
@@ -114,6 +125,7 @@ export function useModeActions(app: AppId) {
               true,
               previous.mode === "stack",
               previous.routeProviderId,
+              target,
             );
             await refresh();
           } catch (error) {

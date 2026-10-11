@@ -49,11 +49,15 @@ import type {
   AppRoutingPreflight,
   CircuitBreakerConfig,
   CircuitBreakerStats,
+  CodexDaemonRestartOutcome,
   FailoverQueueItem,
   GlobalProxyConfig,
   ProviderHealth,
   ProxyServerInfo,
+  ProxyStack,
+  ProxyStackNotice,
   ProxyStatus,
+  ProxyTakeoverStatus,
 } from "@/types/proxy";
 import type {
   OptimizerConfig,
@@ -1964,6 +1968,125 @@ export const remoteApi = {
       url,
       secret,
     });
+  },
+
+  // ===== 应用页模式行（直连 / 路由 / 聚合）：helper `app-mode` =====
+  getAppMode(
+    profile: RemoteHostProfile,
+    appType: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<{
+    mode: "direct" | "route" | "stack";
+    attached: boolean;
+    routeProviderId: string | null;
+    directProviderId: string | null;
+  }> {
+    return invoke("remote_get_app_mode", { profile, appType, secret });
+  },
+
+  setAppMode(
+    profile: RemoteHostProfile,
+    appType: string,
+    enabled: boolean,
+    stack?: boolean,
+    route?: string | null,
+    secret?: RemoteConnectionSecret,
+  ): Promise<void> {
+    return invoke("remote_set_app_mode", {
+      profile,
+      appType,
+      enabled,
+      stack,
+      route,
+      secret,
+    });
+  },
+
+  setAppRoute(
+    profile: RemoteHostProfile,
+    appType: string,
+    providerId: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<void> {
+    return invoke("remote_set_app_route", {
+      profile,
+      appType,
+      providerId,
+      secret,
+    });
+  },
+
+  getDirectProvider(
+    profile: RemoteHostProfile,
+    appType: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<string | null> {
+    return invoke("remote_get_direct_provider", { profile, appType, secret });
+  },
+
+  getProxyTakeoverStatus(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyTakeoverStatus> {
+    return invoke("remote_get_proxy_takeover_status", { profile, secret });
+  },
+
+  exitProxyAppsInMode(
+    profile: RemoteHostProfile,
+    stack: boolean,
+    secret?: RemoteConnectionSecret,
+  ): Promise<string[]> {
+    return invoke("remote_exit_proxy_apps_in_mode", { profile, stack, secret });
+  },
+
+  getProxyStack(
+    profile: RemoteHostProfile,
+    appType: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyStack> {
+    return invoke("remote_get_proxy_stack", { profile, appType, secret });
+  },
+
+  /**
+   * Stack 名单写入。helper 用结构化 data 回传写入结果（`partial` 对调用方有意义），
+   * 这里还原成本机同样的契约：`error` 非空即抛 `ProxyStackWriteError`。
+   */
+  async setProxyStackMember(
+    profile: RemoteHostProfile,
+    appType: string,
+    providerId: string,
+    enabled: boolean,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyStackNotice | null> {
+    const result = await invoke<{
+      notice: string | null;
+      error: string | null;
+      partial: boolean;
+    }>("remote_set_proxy_stack_member", {
+      profile,
+      appType,
+      providerId,
+      enabled,
+      secret,
+    });
+    if (result.error) {
+      throw { partial: result.partial, message: result.error };
+    }
+    return (result.notice ?? null) as ProxyStackNotice | null;
+  },
+
+  adoptCodexStackCatalog(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyStackNotice | null> {
+    return invoke("remote_adopt_codex_stack_catalog", { profile, secret });
+  },
+
+  restartCodexAppServerDaemon(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<CodexDaemonRestartOutcome> {
+    return invoke("remote_restart_codex_daemon", { profile, secret });
   },
 
   getRoutingRuntimeStatus(

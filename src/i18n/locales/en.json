@@ -4854,7 +4854,8 @@
         "showRemoteRoutingToggleDescription": "When enabled, the main page shows the active app's remote routing toggle. Enabling app routing starts the remote routing service automatically.",
         "showRemoteFailoverToggle": "Show Remote Failover Toggle on Main Page",
         "showRemoteFailoverToggleDescription": "When enabled, the main page shows the active app's remote failover toggle. The active app must have remote routing enabled.",
-        "homepageTitle": "Homepage toggles"
+        "homepageTitle": "Homepage toggles",
+        "appModeUnsupported": "This remote Helper cannot switch per-app direct / route / stack mode yet. Update to a Helper build that includes the app-mode capability."
       }
     },
     "errors": {

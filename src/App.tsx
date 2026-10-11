@@ -1547,15 +1547,18 @@ function App() {
   };
 
   const renderProviderList = () => {
-    // 路由/聚合模式面板是本机代理运行时的 UI；远端只看远端 helper 的供应商列表
-    if (proxyAppId && !isRemoteTarget) {
-      const startupFailure = startupFailures.find(
-        (failure) => failure.appType === proxyAppId,
-      );
+    // 模式行（直连 / 路由 / 聚合）本机与远端共用同一套 UI 与逻辑：远端经 helper 的
+    // app-mode 命令读写那台主机的模式状态（旧 helper 没有该能力时面板自己给说明）。
+    // 本机专属的部分仍然只在 local 传：启动接管失败提示、托盘驱动的「需要路由」请求。
+    if (proxyAppId) {
+      const startupFailure = isRemoteTarget
+        ? undefined
+        : startupFailures.find((failure) => failure.appType === proxyAppId);
       return (
         <SwitchModePanel
           key={proxyAppId}
           app={proxyAppId}
+          target={managementTarget}
           providers={providers}
           currentProviderId={currentProviderId}
           isLoading={isLoading}
@@ -1563,15 +1566,20 @@ function App() {
           onSwitch={switchProvider}
           onOpenRoutingSettings={() => openSettings("routing")}
           needsRouteRequest={
-            trayNeedsRoute?.app === proxyAppId ? trayNeedsRoute : undefined
+            !isRemoteTarget && trayNeedsRoute?.app === proxyAppId
+              ? trayNeedsRoute
+              : undefined
           }
           onNeedsRouteHandled={() => setTrayNeedsRoute(null)}
           onViewChange={handleProviderModeViewChange}
           startupFailure={startupFailure}
-          onDismissStartupFailure={() =>
-            setStartupFailures((list) =>
-              list.filter((failure) => failure.appType !== proxyAppId),
-            )
+          onDismissStartupFailure={
+            isRemoteTarget
+              ? undefined
+              : () =>
+                  setStartupFailures((list) =>
+                    list.filter((failure) => failure.appType !== proxyAppId),
+                  )
           }
           {...listCallbacks}
         />
@@ -1732,6 +1740,7 @@ function App() {
             target={managementTarget}
             onInteractionBlockedChange={setRemoteSettingsManagementBusy}
             onOpenApps={() => setCurrentView("apps")}
+            onOpenApp={selectApp}
           />
         ) : (
           <UsagePage
@@ -1861,6 +1870,7 @@ function App() {
             target={settingsTarget}
             onInteractionBlockedChange={setRemoteSettingsManagementBusy}
             onOpenApps={() => setCurrentView("apps")}
+            onOpenApp={selectApp}
           />
         );
       }

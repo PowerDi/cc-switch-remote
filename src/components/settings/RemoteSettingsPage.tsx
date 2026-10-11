@@ -50,6 +50,7 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useRemoteSettings } from "@/hooks/useRemoteSettings";
 import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
 import { remoteApi } from "@/lib/api";
+import type { AppId } from "@/lib/api/types";
 import type { ManagementTarget, RemoteHealth } from "@/lib/api";
 import {
   formatRemoteCapabilitySummary,
@@ -72,6 +73,8 @@ interface RemoteSettingsPageProps {
   onInteractionBlockedChange?: (blocked: boolean) => void;
   /** 「应用」页入口：工具环境已统一到那里（按当前管理目标执行） */
   onOpenApps?: () => void;
+  /** 从路由页的「正在使用」行跳到对应应用页（与本地设置页同一个行为） */
+  onOpenApp?: (app: AppId) => void;
   defaultTab?: string;
   target: Extract<ManagementTarget, { type: "remote" }>;
 }
@@ -97,6 +100,7 @@ export function RemoteSettingsPage({
   onInteractionBlockedChange,
   defaultTab = "environment",
   onOpenApps,
+  onOpenApp,
   target,
 }: RemoteSettingsPageProps) {
   const { t } = useTranslation();
@@ -358,6 +362,7 @@ export function RemoteSettingsPage({
               isSavingSettings={isSavingRemoteSettings}
               onSaveSettings={saveRemoteSettings}
               target={target}
+              onOpenApp={onOpenApp}
             />
           </TabsContent>
 
@@ -610,6 +615,8 @@ interface RemoteRoutingRuntimePanelProps {
   onSaveSettings: (
     updates: Partial<Settings>,
   ) => boolean | void | Promise<boolean | void>;
+  /** 从路由页的「正在使用」行跳到对应应用页 */
+  onOpenApp?: (app: AppId) => void;
 }
 
 function RemoteRoutingRuntimePanel({
@@ -618,6 +625,7 @@ function RemoteRoutingRuntimePanel({
   settings,
   isSavingSettings,
   onSaveSettings,
+  onOpenApp,
 }: RemoteRoutingRuntimePanelProps) {
   const { t } = useTranslation();
 
@@ -656,7 +664,7 @@ function RemoteRoutingRuntimePanel({
       ) : null}
       {/* 远端路由服务（启动/停止/状态/监听/日志）、故障转移参数与整流都复用本机同一套
           RoutingSection，只是 target 指向远端；应用级模式视图在应用页的模式面板里。 */}
-      <RoutingSection target={target} onOpenApp={() => undefined} />
+      <RoutingSection target={target} onOpenApp={onOpenApp} />
     </div>
   );
 }
@@ -670,6 +678,8 @@ interface RemoteRoutingSettingsSectionProps {
   onSaveSettings: (
     updates: Partial<Settings>,
   ) => boolean | void | Promise<boolean | void>;
+  /** 从路由页的「正在使用」行跳到对应应用页 */
+  onOpenApp?: (app: AppId) => void;
   target: Extract<ManagementTarget, { type: "remote" }>;
 }
 
@@ -680,6 +690,7 @@ function RemoteRoutingSettingsSection({
   settings,
   isSavingSettings,
   onSaveSettings,
+  onOpenApp,
   target,
 }: RemoteRoutingSettingsSectionProps) {
   const { t } = useTranslation();
@@ -761,6 +772,7 @@ function RemoteRoutingSettingsSection({
               settings={settings}
               isSavingSettings={isSavingSettings}
               onSaveSettings={onSaveSettings}
+              onOpenApp={onOpenApp}
             />
           </AccordionContent>
         </AccordionItem>

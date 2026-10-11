@@ -16,6 +16,10 @@ pub const REMOTE_HELPER_CAPABILITIES: &[&str] = &[
     "routing-runtime",
     #[cfg(feature = "proxy-runtime")]
     "routing-daemon",
+    // App-page mode row (direct / route / stack): helper `app-mode` reuses the same
+    // mode::controller logic the desktop app uses.
+    #[cfg(feature = "proxy-runtime")]
+    "app-mode",
     "openclaw",
     "mcp",
     "prompts",

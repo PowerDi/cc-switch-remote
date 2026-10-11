@@ -6,9 +6,13 @@ import { Notice } from "@/components/ui/notice";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useRestartCodexAppServerDaemon } from "@/lib/query/proxy";
 import type { CodexStaleClients } from "@/types/proxy";
+import type { ManagementTarget } from "@/lib/api/remote";
+import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 
 interface CodexStaleClientsNoticeProps {
   staleClients: CodexStaleClients;
+  /** 管理目标：重启的是那台主机上的 Codex 守护进程 */
+  target?: ManagementTarget;
   onDismiss?: () => void;
 }
 
@@ -19,11 +23,12 @@ interface CodexStaleClientsNoticeProps {
  */
 export function CodexStaleClientsNotice({
   staleClients,
+  target = LOCAL_MANAGEMENT_TARGET,
   onDismiss,
 }: CodexStaleClientsNoticeProps) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState(false);
-  const restart = useRestartCodexAppServerDaemon();
+  const restart = useRestartCodexAppServerDaemon(target);
 
   return (
     <>

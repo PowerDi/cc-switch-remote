@@ -768,6 +768,217 @@ fn routing_runtime_stop_exits_modes_and_keeps_app_routing_configs() {
     // 与临时 home 无关（CI 的干净 runner 上没有这个问题）。
 }
 
+/// app-mode：远端应用页的模式行（直连 / 路由 / 聚合）。helper 只做薄适配，
+/// 真正干活的是和桌面端同一套 mode::controller。
+#[test]
+#[serial]
+fn app_mode_commands_round_trip_through_json_cli() {
+    let (
+        direct_before,
+        enter_response,
+        route_after,
+        set_route_response,
+        route_after_set_route,
+        direct_provider_response,
+        stack_response,
+        stack_member_response,
+        takeover_response,
+        exit_response,
+        mode_after_exit,
+        bad_bool_response,
+        bad_app_response,
+    ) = with_temp_home(|| {
+        let provider_json = |id: &str, port: u16| {
+            serde_json::json!({
+                "id": id,
+                "name": id,
+                "settingsConfig": {
+                    "auth": { "OPENAI_API_KEY": "sk-test" },
+                    "config": format!(
+                        "model_provider = \"test\"\nmodel = \"gpt-5\"\n\n[model_providers.test]\nname = \"Test\"\nbase_url = \"https://example.com:{port}/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+                    )
+                },
+                "sortIndex": 1
+            })
+            .to_string()
+        };
+        // 先初始化临时 home 的数据库，再把路由端口换成一个冷门口：
+        // 开发机上常常真跑着一个路由 daemon 占着 15721，测试不该和它抢端口。
+        let _ = cc_switch_lib::cli::run(&["status".to_string()]);
+        {
+            let test_home = std::env::var("CC_SWITCH_TEST_HOME").expect("test home");
+            let db_path = std::path::PathBuf::from(test_home)
+                .join(".cc-switch-remote")
+                .join("cc-switch.db");
+            let conn = rusqlite::Connection::open(db_path).expect("open test database");
+            conn.execute("UPDATE proxy_config SET listen_port = 21931", [])
+                .expect("move routing port off the developer default");
+        }
+
+        for (id, port) in [("mode-a", 21001), ("mode-b", 21002)] {
+            let added = cc_switch_lib::cli::run(&[
+                "providers".to_string(),
+                "add".to_string(),
+                "codex".to_string(),
+                provider_json(id, port),
+                "false".to_string(),
+            ]);
+            assert_eq!(added["ok"], true, "seed provider {id}: {added:?}");
+        }
+
+        let direct_before = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "get".to_string(),
+            "codex".to_string(),
+        ]);
+        let enter_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "enter".to_string(),
+            "codex".to_string(),
+            "false".to_string(),
+            "mode-a".to_string(),
+        ]);
+        let route_after = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "get".to_string(),
+            "codex".to_string(),
+        ]);
+        let set_route_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "set-route".to_string(),
+            "codex".to_string(),
+            "mode-b".to_string(),
+        ]);
+        let route_after_set_route = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "get".to_string(),
+            "codex".to_string(),
+        ]);
+        let direct_provider_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "direct-provider".to_string(),
+            "codex".to_string(),
+        ]);
+        let stack_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "stack".to_string(),
+            "codex".to_string(),
+        ]);
+        let stack_member_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "set-stack-member".to_string(),
+            "codex".to_string(),
+            "mode-b".to_string(),
+            "true".to_string(),
+        ]);
+        let takeover_response =
+            cc_switch_lib::cli::run(&["app-mode".to_string(), "takeover-status".to_string()]);
+        let exit_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "exit".to_string(),
+            "codex".to_string(),
+        ]);
+        let mode_after_exit = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "get".to_string(),
+            "codex".to_string(),
+        ]);
+        let bad_bool_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "enter".to_string(),
+            "claude".to_string(),
+            "maybe".to_string(),
+        ]);
+        let bad_app_response = cc_switch_lib::cli::run(&[
+            "app-mode".to_string(),
+            "get".to_string(),
+            "not-an-app".to_string(),
+        ]);
+
+        (
+            direct_before,
+            enter_response,
+            route_after,
+            set_route_response,
+            route_after_set_route,
+            direct_provider_response,
+            stack_response,
+            stack_member_response,
+            takeover_response,
+            exit_response,
+            mode_after_exit,
+            bad_bool_response,
+            bad_app_response,
+        )
+    });
+
+    assert_eq!(direct_before["ok"], true, "{direct_before:?}");
+    assert_eq!(direct_before["data"]["mode"], "direct", "{direct_before:?}");
+
+    assert_eq!(enter_response["ok"], true, "{enter_response:?}");
+    assert_eq!(route_after["ok"], true, "{route_after:?}");
+    assert_eq!(route_after["data"]["mode"], "route", "{route_after:?}");
+    assert_eq!(
+        route_after["data"]["routeProviderId"], "mode-a",
+        "{route_after:?}"
+    );
+
+    assert_eq!(set_route_response["ok"], true, "{set_route_response:?}");
+    assert_eq!(
+        route_after_set_route["data"]["routeProviderId"], "mode-b",
+        "{route_after_set_route:?}"
+    );
+
+    assert_eq!(
+        direct_provider_response["ok"], true,
+        "{direct_provider_response:?}"
+    );
+
+    assert_eq!(stack_response["ok"], true, "{stack_response:?}");
+    assert!(
+        stack_response["data"]["members"].is_array(),
+        "{stack_response:?}"
+    );
+    // Stack 名单写入失败不当作命令失败：partial 用结构化 data 回传
+    assert_eq!(
+        stack_member_response["ok"], true,
+        "{stack_member_response:?}"
+    );
+    assert!(
+        stack_member_response["data"]["error"].is_null()
+            || stack_member_response["data"]["error"].is_string(),
+        "{stack_member_response:?}"
+    );
+    assert!(
+        stack_member_response["data"]["partial"].is_boolean(),
+        "{stack_member_response:?}"
+    );
+
+    assert_eq!(takeover_response["ok"], true, "{takeover_response:?}");
+    assert!(
+        takeover_response["data"]["codex"].is_boolean(),
+        "{takeover_response:?}"
+    );
+
+    assert_eq!(exit_response["ok"], true, "{exit_response:?}");
+    assert_eq!(
+        mode_after_exit["data"]["mode"], "direct",
+        "{mode_after_exit:?}"
+    );
+
+    // 参数错误在碰状态之前就报出来
+    assert_eq!(bad_bool_response["ok"], false, "{bad_bool_response:?}");
+    assert_eq!(
+        bad_bool_response["error"]["code"], "invalid_argument",
+        "{bad_bool_response:?}"
+    );
+    assert_eq!(bad_app_response["ok"], false, "{bad_app_response:?}");
+    assert_eq!(
+        bad_app_response["error"]["code"], "app_mode_get_failed",
+        "{bad_app_response:?}"
+    );
+}
+
 #[test]
 #[serial]
 fn status_accepts_json_flag_for_remote_invocation() {
@@ -1132,6 +1343,6 @@ fn unsupported_command_returns_stable_error_envelope() {
     assert_eq!(response["error"]["code"], "unsupported_command");
     assert_eq!(
         response["error"]["message"],
-        "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, connectivity-check, usage, auth"
+        "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, app-mode, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, connectivity-check, usage, auth"
     );
 }

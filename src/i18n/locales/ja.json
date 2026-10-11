@@ -4853,7 +4853,8 @@
         "showRemoteRoutingToggleDescription": "有効にすると、メインページ上部に現在のアプリのリモートルーティング切り替えが表示されます。アプリルーティングを有効にすると、リモートルーティングサービスは自動で起動します。",
         "showRemoteFailoverToggle": "メインページにリモートフェイルオーバー切り替えを表示",
         "showRemoteFailoverToggleDescription": "有効にすると、メインページ上部に現在のアプリのリモートフェイルオーバー切り替えが表示されます。現在のアプリでリモートルーティングが有効になっている必要があります。",
-        "homepageTitle": "ホームページのスイッチ"
+        "homepageTitle": "ホームページのスイッチ",
+        "appModeUnsupported": "現在のリモート Helper はアプリごとの直結 / ルーティング / スタックモード切替に対応していません。app-mode capability を含む新しい Helper に更新してください。"
       }
     },
     "errors": {

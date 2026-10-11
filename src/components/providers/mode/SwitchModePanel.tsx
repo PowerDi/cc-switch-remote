@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/lib/toast";
 import type { Provider } from "@/types";
 import type { AppMode, StartupAttachFailure } from "@/types/proxy";
+import type { ManagementTarget } from "@/lib/api/remote";
+import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
+import { getManagementTargetKey } from "@/lib/managementTarget";
+import { useTargetCapability } from "@/hooks/useTargetCapability";
 import type { ProxyAppId } from "@/config/appConfig";
 import { isStackAppId } from "@/config/appConfig";
 import { settingsApi } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { proxyApi } from "@/lib/api/proxy";
-import { useSettingsQuery } from "@/lib/query";
 import {
   proxyKeys,
   useAdoptCodexStackCatalog,
@@ -52,6 +55,8 @@ type ListCallbacks = Pick<
 
 interface SwitchModePanelProps extends ListCallbacks {
   app: ProxyAppId;
+  /** 管理目标：默认本机；远端目标时模式行读写该主机的模式状态（helper app-mode） */
+  target?: ManagementTarget;
   providers: Record<string, Provider>;
   currentProviderId: string;
   isLoading: boolean;
@@ -91,14 +96,19 @@ export function SwitchModePanel({
   needsRouteRequest,
   onNeedsRouteHandled,
   onViewChange,
+  target = LOCAL_MANAGEMENT_TARGET,
   ...listCallbacks
 }: SwitchModePanelProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const appName = APP_DISPLAY_NAME[app];
   const modes = modesFor(app);
+  const targetKey = getManagementTargetKey(target);
+  // 旧 helper 没有 mode 命令：如实说明，不给点了必然失败的模式行
+  const appModeSupported = useTargetCapability(target, "app-mode");
 
-  const { data: modeView } = useAppMode(app);
+  // 能力未知/不支持时先不查：旧 helper 不该收到任何模式命令
+  const { data: modeView } = useAppMode(app, appModeSupported, target);
   const active: AppMode =
     modeView && modes.includes(modeView.mode) ? modeView.mode : "direct";
   const directId = modeView?.directProviderId ?? null;
@@ -113,18 +123,25 @@ export function SwitchModePanel({
     onViewChange?.(app, view);
   }, [app, view, onViewChange]);
 
-  const { data: proxyStatus } = useProxyStatusQuery();
+  const { data: proxyStatus } = useProxyStatusQuery(target);
   const serviceRunning = proxyStatus?.running ?? false;
-  const { data: settings } = useSettingsQuery();
-  const { data: failoverOn = false } = useAutoFailoverEnabled(app);
-  const { data: queue } = useFailoverQueue(app);
-  const setFailover = useSetAutoFailoverEnabled();
-  const addToQueue = useAddToFailoverQueue();
-  const removeFromQueue = useRemoveFromFailoverQueue();
-  const { data: stack } = useProxyStack(app, isStackAppId(app));
-  const setStackMember = useSetProxyStackMember();
-  const adoptCatalog = useAdoptCodexStackCatalog();
-  const modeActions = useModeActions(app);
+  const { data: settings } = useQuery({
+    queryKey: ["settings", targetKey],
+    queryFn: () => settingsApi.get(target),
+  });
+  const { data: failoverOn = false } = useAutoFailoverEnabled(app, target);
+  const { data: queue } = useFailoverQueue(app, target);
+  const setFailover = useSetAutoFailoverEnabled(target);
+  const addToQueue = useAddToFailoverQueue(target);
+  const removeFromQueue = useRemoveFromFailoverQueue(target);
+  const { data: stack } = useProxyStack(
+    app,
+    appModeSupported && isStackAppId(app),
+    target,
+  );
+  const setStackMember = useSetProxyStackMember(target);
+  const adoptCatalog = useAdoptCodexStackCatalog(target);
+  const modeActions = useModeActions(app, target);
 
   const [dialog, setDialog] = useState<ModeDialogState | null>(null);
   const [routeSettingsOpen, setRouteSettingsOpen] = useState(false);
@@ -175,11 +192,11 @@ export function SwitchModePanel({
   const queueMove = async (provider: Provider, delta: -1 | 1) => {
     const items = queue ?? [];
     const index = items.findIndex((item) => item.providerId === provider.id);
-    const target = index + delta;
-    if (index < 0 || target < 0 || target >= items.length) return;
+    const dropIndex = index + delta;
+    if (index < 0 || dropIndex < 0 || dropIndex >= items.length) return;
     const order = items.map((item) => item.providerId);
     order.splice(index, 1);
-    order.splice(target, 0, provider.id);
+    order.splice(dropIndex, 0, provider.id);
     // 队列顺序就是供应商的排序：按原来占着的位置重新分配
     const slots = items
       .map(
@@ -191,13 +208,14 @@ export function SwitchModePanel({
       await providersApi.updateSortOrder(
         order.map((id, i) => ({ id, sortIndex: slots[i] })),
         app,
+        target,
       );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["failoverQueue", app] }),
         queryClient.invalidateQueries({ queryKey: ["providers", app] }),
       ]);
       toast.success(
-        t("mode.queueMoved", { name: provider.name, position: target + 1 }),
+        t("mode.queueMoved", { name: provider.name, position: dropIndex + 1 }),
       );
     } catch (error) {
       toast.error(extractErrorMessage(error) || t("provider.sortUpdateFailed"));
@@ -206,7 +224,7 @@ export function SwitchModePanel({
 
   const rememberDefault = async (provider: Provider) => {
     try {
-      await proxyApi.setProxyRoute(app, provider.id);
+      await proxyApi.setProxyRoute(app, provider.id, target);
       await queryClient.invalidateQueries({ queryKey: ["providers", app] });
       toast.success(
         t("mode.toast.defaultRemembered", { provider: provider.name }),
@@ -309,12 +327,17 @@ export function SwitchModePanel({
   const confirmFailoverOn = async () => {
     setConfirmFailover(false);
     try {
-      const current = await settingsApi.get();
-      await settingsApi.save({
-        ...current,
-        failoverConfirmed: true,
+      const current = await settingsApi.get(target);
+      await settingsApi.saveForTarget(
+        {
+          ...current,
+          failoverConfirmed: true,
+        },
+        target,
+      );
+      await queryClient.invalidateQueries({
+        queryKey: ["settings", targetKey],
       });
-      await queryClient.invalidateQueries({ queryKey: ["settings"] });
     } catch (error) {
       console.error(
         "[SwitchModePanel] Failed to save failover confirmation",
@@ -324,11 +347,8 @@ export function SwitchModePanel({
     setFailover.mutate({ appType: app, enabled: true });
   };
 
-  const enterMode = async (
-    target: Exclude<AppMode, "direct">,
-    pick: string,
-  ) => {
-    await modeActions.enter(target, pick, providers[pick]?.name);
+  const enterMode = async (mode: Exclude<AppMode, "direct">, pick: string) => {
+    await modeActions.enter(mode, pick, providers[pick]?.name);
   };
 
   const eligibleIds = providerList
@@ -337,8 +357,10 @@ export function SwitchModePanel({
 
   const startService = async () => {
     try {
-      await proxyApi.startProxyServer();
-      await queryClient.invalidateQueries({ queryKey: proxyKeys.status() });
+      await proxyApi.startProxyServer(target);
+      await queryClient.invalidateQueries({
+        queryKey: proxyKeys.status(target),
+      });
     } catch (error) {
       toast.error(
         t("proxy.server.startFailed", {
@@ -458,6 +480,7 @@ export function SwitchModePanel({
       <CodexStaleClientsNotice
         key="stale"
         staleClients={stack.staleClients}
+        target={target}
         onDismiss={() => setStaleDismissed(true)}
       />,
     );
@@ -500,6 +523,32 @@ export function SwitchModePanel({
     );
   }
 
+  // 旧 helper 没有 app-mode 命令：模式行换成一句说明，供应商列表照常可用
+  if (!appModeSupported) {
+    return (
+      <>
+        <div className="px-4 pb-3 text-sm text-fg-2" role="status">
+          {t("remote.settings.routing.appModeUnsupported", {
+            defaultValue:
+              "当前远程 Helper 不支持按应用切换直连 / 路由 / 聚合模式。请更新到包含 app-mode capability 的新版 Helper。",
+          })}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto scroll-stable overflow-x-hidden px-6 pb-12">
+          <ProviderList
+            {...listCallbacks}
+            providers={providers}
+            currentProviderId={currentProviderId}
+            appId={app}
+            target={target}
+            isLoading={isLoading}
+            onSwitch={(provider) => void onSwitch(provider)}
+            switchMode={switchMode}
+          />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <ModeTabs
@@ -538,6 +587,7 @@ export function SwitchModePanel({
           providers={providers}
           currentProviderId={currentProviderId}
           appId={app}
+          target={target}
           isLoading={isLoading}
           onSwitch={(provider) => void onSwitch(provider)}
           switchMode={switchMode}

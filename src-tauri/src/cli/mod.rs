@@ -1885,6 +1885,170 @@ pub(crate) fn run_command(args: &[String]) -> Value {
                     .expect("serialize invalid app error"),
             }
         }
+        // ===== app-mode：应用页模式行（直连 / 路由 / 聚合），复用 mode::controller =====
+        [group, cmd, app_type] if group == "app-mode" && cmd == "get" => {
+            match commands::app_mode_view(app_type) {
+                Ok(value) => {
+                    serde_json::to_value(types::ok(value)).expect("serialize app mode view")
+                }
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("app_mode_get_failed", message))
+                        .expect("serialize app mode view error")
+                }
+            }
+        }
+        [group, cmd, app_type, stack] if group == "app-mode" && cmd == "enter" => {
+            match parse_bool_arg(stack) {
+                Ok(stack) => match commands::app_mode_enter(app_type, stack, None) {
+                    Ok(()) => {
+                        serde_json::to_value(types::ok(())).expect("serialize app mode enter")
+                    }
+                    Err(message) => {
+                        serde_json::to_value(types::err::<()>("app_mode_enter_failed", message))
+                            .expect("serialize app mode enter error")
+                    }
+                },
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("invalid_argument", message))
+                        .expect("serialize app mode enter argument error")
+                }
+            }
+        }
+        [group, cmd, app_type, stack, route] if group == "app-mode" && cmd == "enter" => {
+            let parsed = parse_bool_arg(stack);
+            match parsed {
+                Ok(stack) => {
+                    let route = if route == "-" { None } else { Some(route.as_str()) };
+                    match commands::app_mode_enter(app_type, stack, route) {
+                        Ok(()) => {
+                            serde_json::to_value(types::ok(())).expect("serialize app mode enter")
+                        }
+                        Err(message) => serde_json::to_value(types::err::<()>(
+                            "app_mode_enter_failed",
+                            message,
+                        ))
+                        .expect("serialize app mode enter error"),
+                    }
+                }
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("invalid_argument", message))
+                        .expect("serialize app mode enter argument error")
+                }
+            }
+        }
+        [group, cmd, app_type] if group == "app-mode" && cmd == "exit" => {
+            match commands::app_mode_exit(app_type) {
+                Ok(()) => serde_json::to_value(types::ok(())).expect("serialize app mode exit"),
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("app_mode_exit_failed", message))
+                        .expect("serialize app mode exit error")
+                }
+            }
+        }
+        [group, cmd, app_type, provider_id] if group == "app-mode" && cmd == "set-route" => {
+            match commands::app_mode_set_route(app_type, provider_id) {
+                Ok(()) => serde_json::to_value(types::ok(())).expect("serialize app mode route"),
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("app_mode_set_route_failed", message))
+                        .expect("serialize app mode route error")
+                }
+            }
+        }
+        [group, cmd, app_type] if group == "app-mode" && cmd == "direct-provider" => {
+            match commands::app_mode_direct_provider(app_type) {
+                Ok(value) => serde_json::to_value(types::ok(value))
+                    .expect("serialize app mode direct provider"),
+                Err(message) => serde_json::to_value(types::err::<()>(
+                    "app_mode_direct_provider_failed",
+                    message,
+                ))
+                .expect("serialize app mode direct provider error"),
+            }
+        }
+        [group, cmd] if group == "app-mode" && cmd == "takeover-status" => {
+            match commands::app_mode_takeover_status() {
+                Ok(value) => serde_json::to_value(types::ok(value))
+                    .expect("serialize app mode takeover status"),
+                Err(message) => serde_json::to_value(types::err::<()>(
+                    "app_mode_takeover_status_failed",
+                    message,
+                ))
+                .expect("serialize app mode takeover status error"),
+            }
+        }
+        [group, cmd, stack] if group == "app-mode" && cmd == "exit-apps-in-mode" => {
+            match parse_bool_arg(stack) {
+                Ok(stack) => match commands::app_mode_exit_apps_in_mode(stack) {
+                    Ok(value) => serde_json::to_value(types::ok(value))
+                        .expect("serialize app mode exit apps"),
+                    Err(message) => serde_json::to_value(types::err::<()>(
+                        "app_mode_exit_apps_failed",
+                        message,
+                    ))
+                    .expect("serialize app mode exit apps error"),
+                },
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("invalid_argument", message))
+                        .expect("serialize app mode exit apps argument error")
+                }
+            }
+        }
+        [group, cmd, app_type] if group == "app-mode" && cmd == "stack" => {
+            match commands::app_mode_stack(app_type) {
+                Ok(value) => {
+                    serde_json::to_value(types::ok(value)).expect("serialize app mode stack")
+                }
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("app_mode_stack_failed", message))
+                        .expect("serialize app mode stack error")
+                }
+            }
+        }
+        [group, cmd, app_type, provider_id, enabled]
+            if group == "app-mode" && cmd == "set-stack-member" =>
+        {
+            match parse_bool_arg(enabled) {
+                Ok(enabled) => match commands::app_mode_set_stack_member(
+                    app_type,
+                    provider_id,
+                    enabled,
+                ) {
+                    Ok(value) => serde_json::to_value(types::ok(value))
+                        .expect("serialize app mode stack member"),
+                    Err(message) => serde_json::to_value(types::err::<()>(
+                        "app_mode_set_stack_member_failed",
+                        message,
+                    ))
+                    .expect("serialize app mode stack member error"),
+                },
+                Err(message) => {
+                    serde_json::to_value(types::err::<()>("invalid_argument", message))
+                        .expect("serialize app mode stack member argument error")
+                }
+            }
+        }
+        [group, cmd] if group == "app-mode" && cmd == "adopt-codex-catalog" => {
+            match commands::app_mode_adopt_codex_catalog() {
+                Ok(value) => serde_json::to_value(types::ok(value))
+                    .expect("serialize app mode adopt codex catalog"),
+                Err(message) => serde_json::to_value(types::err::<()>(
+                    "app_mode_adopt_codex_catalog_failed",
+                    message,
+                ))
+                .expect("serialize app mode adopt codex catalog error"),
+            }
+        }
+        [group, cmd] if group == "app-mode" && cmd == "restart-codex-daemon" => {
+            match commands::app_mode_restart_codex_daemon() {
+                Ok(value) => serde_json::to_value(types::ok(value))
+                    .expect("serialize app mode restart codex daemon"),
+                Err(message) => serde_json::to_value(types::err::<()>(
+                    "app_mode_restart_codex_daemon_failed",
+                    message,
+                ))
+                .expect("serialize app mode restart codex daemon error"),
+            }
+        }
         [group, cmd] if group == "stream-check" && cmd == "config" => {
             match commands::get_stream_check_config() {
                 Ok(value) => serde_json::to_value(types::ok(value))
@@ -3653,7 +3817,7 @@ pub(crate) fn run_command(args: &[String]) -> Value {
         }
         _ => serde_json::to_value(types::err::<()>(
             "unsupported_command",
-            "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, connectivity-check, usage, auth",
+            "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, app-mode, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, connectivity-check, usage, auth",
         ))
         .expect("serialize error response"),
     }

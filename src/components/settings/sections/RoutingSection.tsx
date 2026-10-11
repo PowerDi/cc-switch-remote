@@ -5,7 +5,10 @@ import { useQueries } from "@tanstack/react-query";
 import { toast } from "@/lib/toast";
 import { ChevronRight, Loader2 } from "lucide-react";
 import type { AppId, ManagementTarget } from "@/lib/api";
-import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
+import {
+  getManagementTargetKey,
+  LOCAL_MANAGEMENT_TARGET,
+} from "@/lib/managementTarget";
 import { proxyApi } from "@/lib/api/proxy";
 import { useProvidersQuery } from "@/lib/query";
 import {
@@ -35,8 +38,8 @@ import type { AppMode } from "@/types/proxy";
 import { cn } from "@/lib/utils";
 
 interface RoutingSectionProps {
-  /** 「前往」打开这个应用的供应商页 */
-  onOpenApp: (app: AppId) => void;
+  /** 「前往」打开这个应用的供应商页；远端设置页里没接导航时可以省掉 */
+  onOpenApp?: (app: AppId) => void;
   /** 管理目标：本机走 Tauri，远端走 SSH helper（同一套设置模块）。 */
   target?: ManagementTarget;
 }
@@ -69,7 +72,7 @@ function formatUptime(seconds: number, t: TFunction) {
  * → 全部回到直连 → 故障转移参数 → 整流与优化。进出路由在各应用页的模式 tab 里。
  */
 export function RoutingSection({
-  onOpenApp,
+  onOpenApp = () => undefined,
   target = LOCAL_MANAGEMENT_TARGET,
 }: RoutingSectionProps) {
   const { t } = useTranslation();
@@ -94,15 +97,12 @@ export function RoutingSection({
     }
   }, [config]);
 
+  // 应用级模式视图：本机读本地模式状态，远端读那台主机的（helper app-mode）。
   const modeQueries = useQueries({
-    // 应用级模式视图只有本机有（helper 没有 mode 命令）：远端只显示说明，
-    // 各应用的远端路由状态在应用页的模式面板里看。
-    queries: isLocalTarget
-      ? PROXY_APP_IDS.map((app) => ({
-          queryKey: ["providers", app, "mode"],
-          queryFn: () => proxyApi.getAppMode(app),
-        }))
-      : [],
+    queries: PROXY_APP_IDS.map((app) => ({
+      queryKey: ["providers", app, getManagementTargetKey(target), "mode"],
+      queryFn: () => proxyApi.getAppMode(app, target),
+    })),
   });
   const providerQueries = {
     claude: useProvidersQuery("claude", { target }).data,
@@ -318,16 +318,9 @@ export function RoutingSection({
       <SettingsBlock
         title={t("routingSettings.usingApps", { count: usingCount })}
       >
-        {isLocalTarget && usingCount === 0 ? (
+        {usingCount === 0 ? (
           <div className="rounded-panel border border-dashed border-border px-4 py-3 text-caption text-fg-3">
             {t("routingSettings.noApps")}
-          </div>
-        ) : !isLocalTarget ? (
-          <div className="rounded-panel border border-dashed border-border px-4 py-3 text-caption text-fg-3">
-            {t("routingSettings.remoteAppsHint", {
-              defaultValue:
-                "远端各应用的进出路由在应用页的模式面板里切换；此页只管远端路由服务本身。",
-            })}
           </div>
         ) : (
           <SettingsCard>

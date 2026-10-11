@@ -3299,6 +3299,229 @@ pub async fn remote_set_routing_global_outbound_proxy(
     .await
 }
 
+/// helper `app-mode` 返回值的镜像类型。
+///
+/// 上游的 `AppModeView` / `StackView` 里带 `&'static str`（只实现 Serialize），桌面端要把
+/// helper 的 JSON 读进来的话需要 Deserialize，这里按同样的 camelCase 形状接住。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAppModeView {
+    pub mode: String,
+    pub attached: bool,
+    pub route_provider_id: Option<String>,
+    pub direct_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStackMember {
+    pub provider_id: String,
+    pub model_ids: Vec<String>,
+    pub route: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStaleClients {
+    pub daemon: bool,
+    pub others: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStackView {
+    pub active: bool,
+    pub members: Vec<RemoteStackMember>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_clients: Option<RemoteStaleClients>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteCodexDaemonRestartOutcome {
+    Restarted,
+    NotRunning,
+}
+
+// ===== 远端应用页模式行（直连 / 路由 / 聚合）：helper 的 app-mode 命令组 =====
+
+#[tauri::command]
+pub async fn remote_get_app_mode(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<RemoteAppModeView, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "get".to_string(), appType],
+        secret,
+        "Remote app mode view",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_set_app_mode(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    enabled: bool,
+    stack: Option<bool>,
+    route: Option<String>,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<(), String> {
+    let mut args = vec![
+        "app-mode".to_string(),
+        if enabled { "enter" } else { "exit" }.to_string(),
+        appType,
+    ];
+    if enabled {
+        args.push(stack.unwrap_or(false).to_string());
+        args.push(route.unwrap_or_else(|| "-".to_string()));
+    }
+    run_remote_helper_json(profile, args, secret, "Remote app mode set").await
+}
+
+#[tauri::command]
+pub async fn remote_set_app_route(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    #[allow(non_snake_case)] providerId: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<(), String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "set-route".to_string(),
+            appType,
+            providerId,
+        ],
+        secret,
+        "Remote app route set",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_direct_provider(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Option<String>, String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "direct-provider".to_string(),
+            appType,
+        ],
+        secret,
+        "Remote direct provider",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_proxy_takeover_status(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<crate::proxy::types::ProxyTakeoverStatus, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "takeover-status".to_string()],
+        secret,
+        "Remote takeover status",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_exit_proxy_apps_in_mode(
+    profile: RemoteHostProfile,
+    stack: bool,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Vec<String>, String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "exit-apps-in-mode".to_string(),
+            stack.to_string(),
+        ],
+        secret,
+        "Remote exit apps in mode",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_proxy_stack(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<RemoteStackView, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "stack".to_string(), appType],
+        secret,
+        "Remote proxy stack",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_set_proxy_stack_member(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    #[allow(non_snake_case)] providerId: String,
+    enabled: bool,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<crate::cli::commands::AppModeStackWriteResult, String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "set-stack-member".to_string(),
+            appType,
+            providerId,
+            enabled.to_string(),
+        ],
+        secret,
+        "Remote proxy stack member",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_adopt_codex_stack_catalog(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Option<String>, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "adopt-codex-catalog".to_string()],
+        secret,
+        "Remote adopt codex stack catalog",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_restart_codex_daemon(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<RemoteCodexDaemonRestartOutcome, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "restart-codex-daemon".to_string()],
+        secret,
+        "Remote restart codex daemon",
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn remote_get_routing_runtime_status(
     profile: RemoteHostProfile,

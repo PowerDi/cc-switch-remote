@@ -54,7 +54,8 @@ This document tracks how remote management maps to the local CC Switch feature s
 | Hermes memory | parity | Memory, model config, limits, and enabled state are target-aware. |
 | OpenClaw | parity | Default model, env, tools, and agents defaults are target-aware. |
 | Apps page | parity | The v4 Apps page follows the management target: tool versions, install/update/uninstall, conflict diagnosis, installation listing and the per-host visible-app switches all run against the selected host through the shared `tool_environment` logic. Local-only parts are hidden on a remote target (the Claude Desktop row, the Windows WSL shell override, and the client startup update check that feeds the local sidebar dot). |
-| App mode / stack panel | local-only | The v4 direct/route/stack panel drives the desktop proxy runtime, so it is not rendered for a remote target; remote routing shows the helper runtime controls plus a hint that per-app mode switching has no helper equivalent yet. |
+| App mode / stack panel | parity | The v4 direct/route/stack panel is target-aware: a remote target reads and writes the selected host's mode state through the helper's `app-mode` commands, which are thin adapters over the same `mode::controller` logic the desktop uses (`get` / `enter` / `exit` / `set-route` / `direct-provider` / `takeover-status` / `exit-apps-in-mode` / `stack` / `set-stack-member` / `adopt-codex-catalog` / `restart-codex-daemon`). Stack member writes return a structured result so the partial-write warning survives the helper boundary. Local-only parts stay local: startup attach-failure notices and tray-driven "needs route" prompts are not sent for a remote target, and an old helper without the `app-mode` capability keeps the provider list but replaces the mode row with an explanation instead of failing controls. |
+| Remote routing "apps in use" rows | parity | The routing settings block lists each app's effective mode and route for the selected host (same rows as local) and "exit all" exits that host's modes. |
 | Pi (live status) | remote-adapted | Remote shows the provider row and its stored `liveConfigManaged` flag. The helper's `live-ids` covers OpenCode/OpenClaw/Hermes only, so remote Pi live state is not readable. |
 | Hermes Web UI | local-only | The embedded Hermes web panel and its ZIP/folder pickers are desktop features; remote Hermes work uses the target-aware memory/config surfaces. |
 | Workspace view | local-only | The workspace/aggregate shell reads local runtimes and filesystem paths. |
@@ -71,7 +72,6 @@ This document tracks how remote management maps to the local CC Switch feature s
 | Remote Pi live state | unsupported | helper `live-ids` covers OpenCode / OpenClaw / Hermes only. |
 | Remote terminal resume | local-only | Opens a local terminal. |
 | Remote local proxy takeover / hot switch | local-only | The takeover runtime is the desktop app's; remote routing uses the host's own runtime through helper commands. |
-| Per-app mode / stack switching for a remote host | next | Needs a helper mode command before the v4 mode panel can be reused remotely. |
 
 ## Current Next Items
 
@@ -84,6 +84,6 @@ Audited while landing the upstream v4.0.4 baseline (fork 4.0.5). The mechanical 
 
 - every capability string the UI gates on (`useTargetCapability`, `capabilities.includes`) is advertised by the helper's `remote_capabilities` list, so no working remote feature is hidden as unsupported;
 - the only frontend files that mix `target.type === "remote"` with local `invoke(` calls are the `src/lib/api/*` adapter modules, each branching remote → helper and local → Tauri command (covered by the target-routing tests);
-- local-only surfaces are guarded at the entry point: the app mode/stack panel (`if (proxyAppId && !isRemoteTarget)`), the tray/terminal/deeplink actions, the workspace view, the project switcher, the Hermes web panel, the Apps desktop row, and the WSL shell override.
+- local-only surfaces are guarded at the entry point: the tray/terminal/deeplink actions, the workspace view, the project switcher, the Hermes web panel, the Apps desktop row, and the WSL shell override. The app mode/stack panel is shared with the remote target, and only its desktop-specific extras (startup attach failures, tray-routed prompts) stay local.
 
 Unverified in this audit: a real SSH host run (needs a dedicated test host and a backup) and the release chain (tag, `latest.json`, signatures, asset names) — both belong to the release-preparation step, not to the merge.

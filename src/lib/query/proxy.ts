@@ -57,8 +57,8 @@ export function useProxyTakeoverStatus(
 ) {
   return useQuery({
     queryKey: proxyKeys.takeoverStatus(target),
-    queryFn: () => proxyApi.getProxyTakeoverStatus(),
-    enabled: target.type === "local",
+    queryFn: () => proxyApi.getProxyTakeoverStatus(target),
+    enabled: true,
     refetchInterval: poll ? 2000 : false,
     ...(poll
       ? {}
@@ -73,10 +73,19 @@ export function useProxyTakeoverStatus(
  * 应用的模式状态（直连 / 路由 / 聚合、路由目标、直连那家）。放在 ["providers", appId] 前缀下：
  * 进出模式、切换供应商时随供应商列表一起失效。
  */
-export function useAppMode(appType: string, enabled = true) {
+export function useAppMode(
+  appType: string,
+  enabled = true,
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
   return useQuery({
-    queryKey: ["providers", appType, "mode"] as const,
-    queryFn: () => proxyApi.getAppMode(appType),
+    queryKey: [
+      "providers",
+      appType,
+      getManagementTargetKey(target),
+      "mode",
+    ] as const,
+    queryFn: () => proxyApi.getAppMode(appType, target),
     enabled,
     placeholderData: (previous: AppModeView | undefined) => previous,
   });
@@ -86,10 +95,19 @@ export function useAppMode(appType: string, enabled = true) {
  * 直连供应商（路由模式下退出路由时写回的那家）。
  * 放在 ["providers", appId] 前缀下：切换、编辑供应商时随供应商列表一起失效。
  */
-export function useDirectProviderId(appType: string, enabled: boolean) {
+export function useDirectProviderId(
+  appType: string,
+  enabled: boolean,
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
   return useQuery({
-    queryKey: ["providers", appType, "direct"] as const,
-    queryFn: () => proxyApi.getDirectProvider(appType),
+    queryKey: [
+      "providers",
+      appType,
+      getManagementTargetKey(target),
+      "direct",
+    ] as const,
+    queryFn: () => proxyApi.getDirectProvider(appType, target),
     enabled,
   });
 }
@@ -97,10 +115,19 @@ export function useDirectProviderId(appType: string, enabled: boolean) {
 /**
  * Stack 模型名单。放在 ["providers", appId] 前缀下：编辑、删除供应商时随列表一起失效。
  */
-export function useProxyStack(appType: string, enabled: boolean) {
+export function useProxyStack(
+  appType: string,
+  enabled: boolean,
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
   return useQuery({
-    queryKey: ["providers", appType, "stack"] as const,
-    queryFn: () => proxyApi.getProxyStack(appType),
+    queryKey: [
+      "providers",
+      appType,
+      getManagementTargetKey(target),
+      "stack",
+    ] as const,
+    queryFn: () => proxyApi.getProxyStack(appType, target),
     enabled,
   });
 }
@@ -119,7 +146,9 @@ function isStackWriteError(error: unknown): error is ProxyStackWriteError {
  * 什么都没改（弹后端的错误），已部分写入（下次操作或重启 CC Switch 时补完）。两种都按
  * 后端的状态重新显示，不在前端假设名单不变。
  */
-export function useSetProxyStackMember() {
+export function useSetProxyStackMember(
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
@@ -132,7 +161,7 @@ export function useSetProxyStackMember() {
       appType: string;
       providerId: string;
       enabled: boolean;
-    }) => proxyApi.setProxyStackMember(appType, providerId, enabled),
+    }) => proxyApi.setProxyStackMember(appType, providerId, enabled, target),
     onSuccess: (notice, variables) => {
       toast.success(
         t(
@@ -176,12 +205,14 @@ export function useSetProxyStackMember() {
  * Codex 聚合的模型被路由供应商自己的模型目录挡住（routeOwnsCatalog）时，改用 CC Switch
  * 生成的目录。客户端只在启动时读模型目录，成功后提示重启；还剩别的提示照样弹出。
  */
-export function useAdoptCodexStackCatalog() {
+export function useAdoptCodexStackCatalog(
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: () => proxyApi.adoptCodexStackCatalog(),
+    mutationFn: () => proxyApi.adoptCodexStackCatalog(target),
     onSuccess: (notice) => {
       toast.success(t("provider.adoptCatalogDone"), { closeButton: true });
       if (notice) {
@@ -205,12 +236,14 @@ export function useAdoptCodexStackCatalog() {
  * 重启 Codex 的托管守护进程，让它重读模型目录。结束后重新查 Stack 名单：重启成功时
  * 「还在用旧模型列表」的提示随之消失。
  */
-export function useRestartCodexAppServerDaemon() {
+export function useRestartCodexAppServerDaemon(
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: () => proxyApi.restartCodexAppServerDaemon(),
+    mutationFn: () => proxyApi.restartCodexAppServerDaemon(target),
     onSuccess: (outcome) => {
       if (outcome === "notRunning") {
         toast.info(t("proxy.stackMode.codexStale.notRunning"), {

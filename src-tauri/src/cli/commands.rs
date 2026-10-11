@@ -1263,6 +1263,198 @@ pub fn routing_runtime_start() -> Result<crate::proxy::types::ProxyServerInfo, S
     Err("This helper build does not include remote routing runtime support".to_string())
 }
 
+// ========== app-mode：应用页模式行（直连 / 路由 / 聚合）==========
+//
+// 远端 helper 与桌面端共用同一套模式逻辑（mode::controller），这里只是薄适配器：
+// 没有 proxy-runtime 的 helper 构建明确报「不支持」，不静默降级、不写配置。
+
+#[cfg(feature = "proxy-runtime")]
+fn app_mode_app(app_type: &str) -> Result<AppType, String> {
+    let app = AppType::from_str(app_type).map_err(|_| format!("Invalid app type: {app_type}"))?;
+    if !app.supports_local_proxy() {
+        return Err(format!("{} 不支持路由模式", app.as_str()));
+    }
+    Ok(app)
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_view(app_type: &str) -> Result<crate::mode::controller::AppModeView, String> {
+    let state = routing_state()?;
+    crate::mode::controller::app_mode_view(state, &app_mode_app(app_type)?)
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_view(_app_type: &str) -> Result<crate::mode::controller::AppModeView, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_enter(app_type: &str, stack: bool, route: Option<&str>) -> Result<(), String> {
+    let state = routing_state()?;
+    let app = app_mode_app(app_type)?;
+    routing_runtime()?.block_on(async move {
+        crate::mode::controller::enter_with_route(state, &app, stack, route).await
+    })
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_enter(_app_type: &str, _stack: bool, _route: Option<&str>) -> Result<(), String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_exit(app_type: &str) -> Result<(), String> {
+    let state = routing_state()?;
+    let app = app_mode_app(app_type)?;
+    routing_runtime()?.block_on(async move { crate::mode::controller::exit(state, &app).await })
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_exit(_app_type: &str) -> Result<(), String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_set_route(app_type: &str, provider_id: &str) -> Result<(), String> {
+    let state = routing_state()?;
+    let app = app_mode_app(app_type)?;
+    routing_runtime()?
+        .block_on(async move { crate::mode::controller::set_route(state, &app, provider_id).await })
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_set_route(_app_type: &str, _provider_id: &str) -> Result<(), String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_direct_provider(app_type: &str) -> Result<Option<String>, String> {
+    let state = routing_state()?;
+    crate::mode::controller::direct_provider_id(state, &app_mode_app(app_type)?)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_direct_provider(_app_type: &str) -> Result<Option<String>, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_takeover_status() -> Result<crate::proxy::types::ProxyTakeoverStatus, String> {
+    let state = routing_state()?;
+    routing_runtime()?.block_on(state.proxy_service.get_takeover_status())
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_takeover_status() -> Result<crate::proxy::types::ProxyTakeoverStatus, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_exit_apps_in_mode(stack: bool) -> Result<Vec<String>, String> {
+    let state = routing_state()?;
+    routing_runtime()?.block_on(crate::mode::controller::exit_apps_in_mode(state, stack))
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_exit_apps_in_mode(_stack: bool) -> Result<Vec<String>, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_stack(app_type: &str) -> Result<crate::mode::stack::StackView, String> {
+    let state = routing_state()?;
+    let app = app_mode_app(app_type)?;
+    routing_runtime()?.block_on(crate::mode::controller::stack_view_with_clients(
+        state, &app,
+    ))
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_stack(_app_type: &str) -> Result<crate::mode::stack::StackView, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+/// Stack 名单写入结果：`notice` 是写入成功后的提示；`error` 非空表示写入失败，
+/// `partial` 为真说明已经部分写入（下次操作或重启时会补完）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppModeStackWriteResult {
+    pub notice: Option<String>,
+    pub error: Option<String>,
+    pub partial: bool,
+}
+
+/// 把一家加入或移出 Stack 名单。写入失败不当作命令失败返回：`partial` 对调用方有意义，
+/// 用结构化 data 回传（同样的信息走 error 字符串会丢）。
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_set_stack_member(
+    app_type: &str,
+    provider_id: &str,
+    enabled: bool,
+) -> Result<AppModeStackWriteResult, String> {
+    let state = routing_state()?;
+    let app = app_mode_app(app_type)?;
+    match routing_runtime()?.block_on(crate::mode::controller::set_stack_member(
+        state,
+        &app,
+        provider_id,
+        enabled,
+    )) {
+        Ok(notice) => Ok(AppModeStackWriteResult {
+            notice: notice.map(str::to_string),
+            error: None,
+            partial: false,
+        }),
+        Err(error) => Ok(AppModeStackWriteResult {
+            notice: None,
+            error: Some(error.message),
+            partial: error.partial,
+        }),
+    }
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_set_stack_member(
+    _app_type: &str,
+    _provider_id: &str,
+    _enabled: bool,
+) -> Result<AppModeStackWriteResult, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_adopt_codex_catalog() -> Result<Option<&'static str>, String> {
+    let state = routing_state()?;
+    routing_runtime()?.block_on(crate::mode::controller::adopt_codex_stack_catalog(state))
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_adopt_codex_catalog() -> Result<Option<&'static str>, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
+#[cfg(feature = "proxy-runtime")]
+pub fn app_mode_restart_codex_daemon(
+) -> Result<crate::services::provider::codex_client_catalog::RestartOutcome, String> {
+    // off_runtime 返回 Result<Result<RestartOutcome, String>, AppError>：外层是后台线程，
+    // 内层是重启本身的结果。
+    routing_runtime()?
+        .block_on(async {
+            crate::services::provider::codex_direct::off_runtime(
+                crate::services::provider::codex_client_catalog::restart_daemon,
+            )
+            .await
+        })
+        .map_err(|error| error.to_string())?
+}
+
+#[cfg(not(feature = "proxy-runtime"))]
+pub fn app_mode_restart_codex_daemon(
+) -> Result<crate::services::provider::codex_client_catalog::RestartOutcome, String> {
+    Err("This helper build does not include remote app mode support".to_string())
+}
+
 #[cfg(feature = "proxy-runtime")]
 pub fn routing_runtime_stop() -> Result<bool, String> {
     let state = routing_state()?;

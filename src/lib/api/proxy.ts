@@ -57,7 +57,12 @@ export const proxyApi = {
   // ========== 接管状态 API ==========
 
   // 获取各应用接管状态
-  async getProxyTakeoverStatus(): Promise<ProxyTakeoverStatus> {
+  async getProxyTakeoverStatus(
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<ProxyTakeoverStatus> {
+    if (target.type === "remote") {
+      return remoteApi.getProxyTakeoverStatus(target.profile, target.secret);
+    }
     return invoke("get_proxy_takeover_status");
   },
 
@@ -68,7 +73,18 @@ export const proxyApi = {
     enabled: boolean,
     stack = false,
     route?: string | null,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
   ): Promise<void> {
+    if (target.type === "remote") {
+      return remoteApi.setAppMode(
+        target.profile,
+        appType,
+        enabled,
+        stack,
+        route,
+        target.secret,
+      );
+    }
     return invoke("set_proxy_takeover_for_app", {
       appType,
       enabled,
@@ -79,12 +95,30 @@ export const proxyApi = {
 
   // 指定路由目标（聚合模式下是默认那家）：直连时只记下来、下次进入路由 / 聚合模式时用它，
   // 已经在路由 / 聚合模式时当场生效
-  async setProxyRoute(appType: string, providerId: string): Promise<void> {
+  async setProxyRoute(
+    appType: string,
+    providerId: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<void> {
+    if (target.type === "remote") {
+      return remoteApi.setAppRoute(
+        target.profile,
+        appType,
+        providerId,
+        target.secret,
+      );
+    }
     return invoke("set_proxy_route", { appType, providerId });
   },
 
   // 应用页模式行：生效的模式、路由目标（直连时是上次路由的那家）、直连那家
-  async getAppMode(appType: string): Promise<AppModeView> {
+  async getAppMode(
+    appType: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<AppModeView> {
+    if (target.type === "remote") {
+      return remoteApi.getAppMode(target.profile, appType, target.secret);
+    }
     return invoke("get_app_mode", { appType });
   },
 
@@ -95,19 +129,45 @@ export const proxyApi = {
 
   // 设置里在路由和 Stack 之间换时：处于另一种模式（stack 为真是 Stack 模式）的 Claude Code、
   // Codex 先退回直连。返回退回直连的应用
-  async exitProxyAppsInMode(stack: boolean): Promise<string[]> {
+  async exitProxyAppsInMode(
+    stack: boolean,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<string[]> {
+    if (target.type === "remote") {
+      return remoteApi.exitProxyAppsInMode(
+        target.profile,
+        stack,
+        target.secret,
+      );
+    }
     return invoke("exit_proxy_apps_in_mode", { stack });
   },
 
   // 直连供应商：路由模式下退出路由时写回的那家（和路由到的那家互相独立）
-  async getDirectProvider(appType: string): Promise<string | null> {
+  async getDirectProvider(
+    appType: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<string | null> {
+    if (target.type === "remote") {
+      return remoteApi.getDirectProvider(
+        target.profile,
+        appType,
+        target.secret,
+      );
+    }
     return invoke("get_direct_provider", { appType });
   },
 
   // ========== Stack 模型 API ==========
 
   // Stack 模型名单：每一家和它发布的模型 id，以及提示
-  async getProxyStack(appType: string): Promise<ProxyStack> {
+  async getProxyStack(
+    appType: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<ProxyStack> {
+    if (target.type === "remote") {
+      return remoteApi.getProxyStack(target.profile, appType, target.secret);
+    }
     return invoke("get_proxy_stack", { appType });
   },
 
@@ -117,19 +177,42 @@ export const proxyApi = {
     appType: string,
     providerId: string,
     enabled: boolean,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
   ): Promise<ProxyStackNotice | null> {
+    if (target.type === "remote") {
+      return remoteApi.setProxyStackMember(
+        target.profile,
+        appType,
+        providerId,
+        enabled,
+        target.secret,
+      );
+    }
     return invoke("set_proxy_stack_member", { appType, providerId, enabled });
   },
 
   // Codex 聚合的模型被别的模型目录挡住时，改用 CC Switch 生成的目录（去掉指向别的文件的
   // model_catalog_json）。返回之后还剩的提示
-  async adoptCodexStackCatalog(): Promise<ProxyStackNotice | null> {
+  async adoptCodexStackCatalog(
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<ProxyStackNotice | null> {
+    if (target.type === "remote") {
+      return remoteApi.adoptCodexStackCatalog(target.profile, target.secret);
+    }
     return invoke("adopt_codex_stack_catalog");
   },
 
   // 重启 Codex 的托管守护进程（codex 命令行连的那个），让它重读模型目录。会中断正在运行的
   // 任务，只在用户确认之后调
-  async restartCodexAppServerDaemon(): Promise<CodexDaemonRestartOutcome> {
+  async restartCodexAppServerDaemon(
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<CodexDaemonRestartOutcome> {
+    if (target.type === "remote") {
+      return remoteApi.restartCodexAppServerDaemon(
+        target.profile,
+        target.secret,
+      );
+    }
     return invoke("restart_codex_app_server_daemon");
   },
 
