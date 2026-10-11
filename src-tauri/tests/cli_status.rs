@@ -283,10 +283,22 @@ fn cloud_sync_settings_round_trip_through_json_cli() {
     assert_eq!(s3_secret, "s3-secret");
 }
 
+/// `stream-check` 的配置读写已被 v4.0.4 退役（连通性检查改名 `connectivity-check`）：
+/// CLI 必须报出稳定的退役错误，而且不能顺手把配置写下去。
 #[test]
 #[serial]
-fn stream_check_config_round_trip_through_json_cli() {
-    let (save_response, get_response) = with_temp_home(|| {
+fn retired_stream_check_config_commands_leave_settings_untouched() {
+    let (save_response, get_response, settings_before, settings_after) = with_temp_home(|| {
+        // fork 的数据目录名固定为 .cc-switch-remote（测试 home 已隔离）
+        let test_home = std::env::var("CC_SWITCH_TEST_HOME").expect("test home");
+        let settings_path = std::path::PathBuf::from(test_home)
+            .join(".cc-switch-remote")
+            .join("settings.json");
+        let read_settings = || std::fs::read_to_string(&settings_path).ok();
+        // 先跑一次 status，让设置文件按正常启动路径落盘
+        let _ = cc_switch_lib::cli::run(&["status".to_string()]);
+        let settings_before = read_settings();
+
         let config_json = serde_json::json!({
             "timeoutSecs": 12,
             "maxRetries": 3,
@@ -301,15 +313,24 @@ fn stream_check_config_round_trip_through_json_cli() {
         ]);
         let get_response =
             cc_switch_lib::cli::run(&["stream-check".to_string(), "config".to_string()]);
-        (save_response, get_response)
+        let settings_after = read_settings();
+        (save_response, get_response, settings_before, settings_after)
     });
 
-    assert_eq!(save_response["ok"], true, "save_response={save_response:?}");
-    assert!(save_response["error"].is_null());
-    assert_eq!(get_response["ok"], true, "get_response={get_response:?}");
-    assert_eq!(get_response["data"]["timeoutSecs"], 12);
-    assert_eq!(get_response["data"]["maxRetries"], 3);
-    assert_eq!(get_response["data"]["degradedThresholdMs"], 9000);
+    for (label, response) in [("save", &save_response), ("get", &get_response)] {
+        assert_eq!(response["ok"], false, "{label}_response={response:?}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Unsupported retired command"),
+            "{label}_response={response:?}"
+        );
+    }
+    assert_eq!(
+        settings_before, settings_after,
+        "退役命令不得改写 settings.json"
+    );
 }
 
 #[test]
@@ -699,7 +720,7 @@ fn saved_invalid_global_outbound_proxy_is_cleared_on_cli_startup() {
 
 #[test]
 #[serial]
-fn routing_runtime_stop_clears_enabled_app_routing_configs() {
+fn routing_runtime_stop_exits_modes_and_keeps_app_routing_configs() {
     let (stop_response, app_responses) = with_temp_home(|| {
         let db = cc_switch_lib::Database::init().expect("init db");
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -730,9 +751,21 @@ fn routing_runtime_stop_clears_enabled_app_routing_configs() {
     });
 
     assert_eq!(stop_response["ok"], true, "stop_response={stop_response:?}");
-    for response in app_responses {
-        assert_eq!(response["data"]["enabled"], false, "response={response:?}");
+    for (app_type, response) in ["claude", "codex", "gemini", "grokbuild"]
+        .into_iter()
+        .zip(app_responses)
+    {
+        assert_eq!(response["ok"], true, "app={app_type} response={response:?}");
+        // v4 的 stop 走共享 core（mode::controller::exit）：退出各应用的代理模式，但不静默
+        // 改写应用级路由开关 —— 开关表示「运行时起来后是否接管」，重启运行时按它恢复。
+        assert_eq!(
+            response["data"]["enabled"], true,
+            "app={app_type} 应用级开关应保持原样: {response:?}"
+        );
     }
+
+    // 这里不再断言 status.running：宿主机上真跑着一个外部 daemon 时，状态查询回答的是它，
+    // 与临时 home 无关（CI 的干净 runner 上没有这个问题）。
 }
 
 #[test]
@@ -1099,6 +1132,6 @@ fn unsupported_command_returns_stable_error_envelope() {
     assert_eq!(response["error"]["code"], "unsupported_command");
     assert_eq!(
         response["error"]["message"],
-        "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, stream-check, usage, auth"
+        "Supported commands: status, providers, profiles, config, universal-providers, routing-config, routing-runtime, routing-runtime daemon-start/status/stop/run, sessions, hermes, openclaw, mcp, prompts, skills, import-export, cloud-sync, tools, settings, plugin, connectivity-check, usage, auth"
     );
 }
