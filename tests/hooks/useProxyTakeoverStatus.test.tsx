@@ -61,11 +61,17 @@ describe("useProxyTakeoverStatus", () => {
     expect(getProxyTakeoverStatusMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does not query local takeover status for remote targets", () => {
+  it("reads a remote target's takeover status through the target, not the local one", async () => {
     const { wrapper } = createWrapper();
+    getProxyTakeoverStatusMock.mockResolvedValue({});
 
-    renderHook(() => useProxyTakeoverStatus(remoteTarget), { wrapper });
+    const { result } = renderHook(() => useProxyTakeoverStatus(remoteTarget), {
+      wrapper,
+    });
 
-    expect(getProxyTakeoverStatusMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // 远端走 Helper（同一个 API 入口带 target），不会去读本机的接管状态
+    expect(getProxyTakeoverStatusMock).toHaveBeenCalledTimes(1);
+    expect(getProxyTakeoverStatusMock).toHaveBeenCalledWith(remoteTarget);
   });
 });
