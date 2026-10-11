@@ -50,12 +50,40 @@ This document tracks how remote management maps to the local CC Switch feature s
 | MCP | parity | List, upsert, delete, app toggles, and import aggregation are target-aware. |
 | Prompts | parity | CRUD, enable, import, and current prompt file content are target-aware. |
 | Skills | parity | Install, uninstall, backups, restore, app toggles, unmanaged scan, app import, repos, update check, and update are target-aware. |
-| Sessions | parity | List, view messages, delete, and batch delete are target-aware. Terminal resume remains local-only for now. |
+| Sessions | remote-adapted | List, delete, batch delete, and the copy/resume-command payloads are target-aware. **Session body reading is not supported on a remote target**: the v4 reader streams through a Tauri Channel from the local filesystem, and there is no helper equivalent yet, so the remote view keeps the list/delete actions only. Terminal resume stays local-only. |
 | Hermes memory | parity | Memory, model config, limits, and enabled state are target-aware. |
 | OpenClaw | parity | Default model, env, tools, and agents defaults are target-aware. |
-| Tool environment lifecycle | parity | Version check, install/update/uninstall, conflict diagnosis, and installation listing are remote-adapted through the shared `tool_environment` logic; the Apps page (`appsPage`) now follows the management target, so the same rows work for a remote host via the helper (`tools versions` / `tools run` / `tools probe-installations` / `tools installations`). Local-only pieces stay hidden for a remote target: the Claude Desktop row, the Windows WSL shell override, and the client startup update check (that one keeps informing the local sidebar dot). Helper install/status checks additionally run a remote-only Claude Code native installer PATH postflight. The remote settings environment tab still lists the same tools (legacy surface, same helper commands) and is slated for consolidation into the Apps page. |
+| Apps page | parity | The v4 Apps page follows the management target: tool versions, install/update/uninstall, conflict diagnosis, installation listing and the per-host visible-app switches all run against the selected host through the shared `tool_environment` logic. Local-only parts are hidden on a remote target (the Claude Desktop row, the Windows WSL shell override, and the client startup update check that feeds the local sidebar dot). |
+| App mode / stack panel | local-only | The v4 direct/route/stack panel drives the desktop proxy runtime, so it is not rendered for a remote target; remote routing shows the helper runtime controls plus a hint that per-app mode switching has no helper equivalent yet. |
+| Pi (live status) | remote-adapted | Remote shows the provider row and its stored `liveConfigManaged` flag. The helper's `live-ids` covers OpenCode/OpenClaw/Hermes only, so remote Pi live state is not readable. |
+| Hermes Web UI | local-only | The embedded Hermes web panel and its ZIP/folder pickers are desktop features; remote Hermes work uses the target-aware memory/config surfaces. |
+| Workspace view | local-only | The workspace/aggregate shell reads local runtimes and filesystem paths. |
+| Project switcher (profiles) | local-only | Project profiles switch the local live config; the remote equivalent is the host profile list in Remote Servers. |
+| Tray, terminal launch, deeplinks | local-only | These act on the desktop OS session; they never run against a remote target. |
+| Open folder / copy path / ZIP picker / discovery cache | local-only | Filesystem and picker actions stay on the desktop. Skill discovery results are cached for the local target only so a remote scan can never fill the local cache. |
+| Tool environment lifecycle | parity | Version check, install/update/uninstall, conflict diagnosis, and installation listing are remote-adapted through the shared `tool_environment` logic; the Apps page (`appsPage`) now follows the management target, so the same rows work for a remote host via the helper (`tools versions` / `tools run` / `tools probe-installations` / `tools installations`). Local-only pieces stay hidden for a remote target: the Claude Desktop row, the Windows WSL shell override, and the client startup update check (that one keeps informing the local sidebar dot). Helper install/status checks additionally run a remote-only Claude Code native installer PATH postflight. The tool lifecycle has exactly one entry point per target: the Apps page. The remote settings environment tab keeps only the helper health/capability panel plus a link to the Apps page, and states the missing-`tools`-capability case instead of offering controls that would fail. |
+
+## Known Unsupported / Next
+
+| Item | Status | Why |
+| --- | --- | --- |
+| Remote session body reading | unsupported | v4 reads transcripts through a Tauri Channel over local files; no helper protocol equivalent yet. List, delete and copy/resume payloads remain available. |
+| Remote Pi live state | unsupported | helper `live-ids` covers OpenCode / OpenClaw / Hermes only. |
+| Remote terminal resume | local-only | Opens a local terminal. |
+| Remote local proxy takeover / hot switch | local-only | The takeover runtime is the desktop app's; remote routing uses the host's own runtime through helper commands. |
+| Per-app mode / stack switching for a remote host | next | Needs a helper mode command before the v4 mode panel can be reused remotely. |
 
 ## Current Next Items
 
 1. Keep local-only proxy takeover and hot-switch hooks out of remote UI paths. Remote app routing must continue to use routing app config and helper runtime commands instead.
 2. Keep checking new upstream local settings additions against this matrix during upstream merges.
+
+## Audit Note
+
+Audited while landing the upstream v4.0.4 baseline (fork 4.0.5). The mechanical pass behind this table:
+
+- every capability string the UI gates on (`useTargetCapability`, `capabilities.includes`) is advertised by the helper's `remote_capabilities` list, so no working remote feature is hidden as unsupported;
+- the only frontend files that mix `target.type === "remote"` with local `invoke(` calls are the `src/lib/api/*` adapter modules, each branching remote → helper and local → Tauri command (covered by the target-routing tests);
+- local-only surfaces are guarded at the entry point: the app mode/stack panel (`if (proxyAppId && !isRemoteTarget)`), the tray/terminal/deeplink actions, the workspace view, the project switcher, the Hermes web panel, the Apps desktop row, and the WSL shell override.
+
+Unverified in this audit: a real SSH host run (needs a dedicated test host and a backup) and the release chain (tag, `latest.json`, signatures, asset names) — both belong to the release-preparation step, not to the merge.
