@@ -3,7 +3,9 @@ use regex::Regex;
 use std::collections::HashMap;
 #[cfg(not(target_os = "windows"))]
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -2593,18 +2595,6 @@ fn merge_path_envs(preferred: Option<OsString>, fallback: Option<OsString>) -> O
 
 /// 合并两段 PATH：`primary` 全部保留在前，`extra` 中未出现过的段按序追加。
 /// 空段直接丢弃（`a::b` 里的空段在 POSIX 下语义是"当前目录"，注入时不该带上）。
-#[cfg(not(target_os = "windows"))]
-fn merge_path_segments(primary: &str, extra: &str) -> String {
-    let mut seen = std::collections::HashSet::new();
-    let mut merged: Vec<&str> = Vec::new();
-    for segment in primary.split(':').chain(extra.split(':')) {
-        if segment.is_empty() || !seen.insert(segment) {
-            continue;
-        }
-        merged.push(segment);
-    }
-    merged.join(":")
-}
 
 /// 用与 `resolve_path_default` 相同的登录 shell 解析用户的真实 PATH，
 /// 供 `run_tool_lifecycle_silently` 注入给安装/升级脚本。
@@ -7048,20 +7038,6 @@ mod tests {
             assert_eq!(path_line_from_env_output(poisoned), Some("/usr/bin:/bin"));
             // 完全没有 PATH 行 → None，调用方保持不注入。
             assert_eq!(path_line_from_env_output("HOME=/Users/me\n"), None);
-        }
-
-        #[test]
-        fn merge_path_segments_dedupes_preserving_login_order() {
-            // 登录 shell 的段全部在前且保序；继承 PATH 里的新段追加在后。
-            assert_eq!(
-                merge_path_segments(
-                    "/Users/me/.nvm/versions/node/v22/bin:/usr/bin:/bin",
-                    "/usr/bin:/bin:/usr/sbin"
-                ),
-                "/Users/me/.nvm/versions/node/v22/bin:/usr/bin:/bin:/usr/sbin"
-            );
-            // 空段（`a::b` 在 POSIX 下意为当前目录）不该被注入。
-            assert_eq!(merge_path_segments("/usr/bin::/bin", ""), "/usr/bin:/bin");
         }
 
         #[test]
