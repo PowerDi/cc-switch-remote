@@ -929,6 +929,11 @@ fn app_mode_commands_round_trip_through_json_cli() {
             "codex".to_string(),
         ]);
         let _ = cc_switch_lib::cli::run(&["routing-runtime".to_string(), "stop".to_string()]);
+        // daemon-stop 才会禁用 systemd user service / 杀掉 pid 文件里的后台进程：这两个
+        // 不随临时 home 消失，留着会让后面的 routing-config 用例被「外部 daemon 在跑」
+        // 的守卫挡下。
+        let _ =
+            cc_switch_lib::cli::run(&["routing-runtime".to_string(), "daemon-stop".to_string()]);
 
         (
             direct_before,
