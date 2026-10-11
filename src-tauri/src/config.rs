@@ -322,6 +322,16 @@ fn uses_isolated_dev_config_dir() -> bool {
             != Some("1")
 }
 
+/// 这台设备自己的状态目录：`live-state.json`、写入引擎的备份、旧版接管备份转存都放这里。
+///
+/// 与 `default_app_config_dir()` 一样**不跟随** `app_paths.json` 的配置目录覆盖（覆盖目录
+/// 可能指向网盘同步目录，而写前意图和备份都是这台设备的事实），但必须落在 fork 自己的
+/// 数据目录里：上游的 `~/.cc-switch` 属于另一个产品，fork 不能往里写。开发构建同样走
+/// `-dev` 目录，避免开发态碰生产数据。
+pub(crate) fn device_state_dir() -> PathBuf {
+    default_app_config_dir()
+}
+
 fn default_app_config_dir() -> PathBuf {
     if uses_isolated_dev_config_dir() {
         return get_home_dir().join(DEV_APP_CONFIG_DIR_NAME);

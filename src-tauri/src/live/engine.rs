@@ -24,8 +24,9 @@ use super::patch::{LivePatch, LiveWriteError};
 
 /// 这台设备自己的状态目录：`live-state.json` 和首写备份都放在这里。
 ///
-/// 路径固定为 `get_home_dir()/.cc-switch`，和 `settings.json` 一样不跟随配置目录
-/// 覆盖：覆盖目录可能指向网盘同步目录，而写前意图和备份都是这台设备的事实。
+/// 路径固定为 fork 自己的数据目录（release 为 `~/.cc-switch-remote`，开发构建为
+/// `-dev`），和 `settings.json` 一样不跟随配置目录覆盖：覆盖目录可能指向网盘同步目录，
+/// 而写前意图和备份都是这台设备的事实。绝不能写上游 CC Switch 的 `~/.cc-switch`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceStore {
     root: PathBuf,
@@ -33,7 +34,7 @@ pub struct DeviceStore {
 
 impl DeviceStore {
     pub fn for_device() -> Self {
-        Self::at(crate::config::get_home_dir().join(".cc-switch"))
+        Self::at(crate::config::device_state_dir())
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
@@ -232,6 +233,25 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// 设备状态（live-state / 写前备份 / 旧接管备份转存）只能落在 fork 自己的数据目录：
+    /// 上游 CC Switch 的 `~/.cc-switch` 属于另一个产品，fork 不许往里写。
+    #[test]
+    fn device_state_stays_in_the_fork_data_dir() {
+        let root = crate::config::device_state_dir();
+        assert!(
+            DeviceStore::for_device().state_path().starts_with(&root),
+            "live-state 必须落在设备状态目录下"
+        );
+        assert!(
+            !root.ends_with(".cc-switch"),
+            "设备状态目录不能指向上游的 ~/.cc-switch"
+        );
+        assert!(
+            crate::services::backup_storage::device_backup_dir().starts_with(&root),
+            "设备备份目录必须落在设备状态目录下"
+        );
+    }
 
     fn set_patch(key: &str, value: &str) -> JsonPatch {
         JsonPatch {

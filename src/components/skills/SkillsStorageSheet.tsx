@@ -29,7 +29,8 @@ interface SkillsStorageSheetProps {
 
 const appName = (app: string) => APP_DISPLAY_NAME[app as AppId] ?? app;
 
-const DEFAULT_CC_SWITCH_DIR = "~/.cc-switch/skills";
+// fork 的 SSOT 目录（后端未上报时的展示兜底）
+const DEFAULT_CC_SWITCH_DIR = "~/.cc-switch-remote/skills";
 const UNIFIED_DIR = "~/.agents/skills";
 
 /** 和后端 SyncMethod（auto / symlink / copy）一一对应。 */

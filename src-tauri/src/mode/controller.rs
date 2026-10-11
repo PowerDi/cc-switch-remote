@@ -1635,8 +1635,7 @@ async fn drain_legacy_backup(state: &AppState, app: &AppType) -> bool {
             return false;
         }
     };
-    let dir = crate::config::get_home_dir()
-        .join(".cc-switch")
+    let dir = crate::config::device_state_dir()
         .join("backups")
         .join("proxy-live-backup");
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
@@ -2863,7 +2862,10 @@ mod mode_tests {
                 state.db.get_live_backup("claude").await.unwrap().is_none(),
                 "the old version would replay a leftover backup row after a downgrade"
             );
-            let drained = home.dir.path().join(".cc-switch/backups/proxy-live-backup");
+            // 转存目录与生产同一处：fork 自己的数据目录（测试 home 已隔离）
+            let drained = crate::config::device_state_dir()
+                .join("backups")
+                .join("proxy-live-backup");
             assert_eq!(
                 fs::read_dir(&drained).unwrap().count(),
                 1,
