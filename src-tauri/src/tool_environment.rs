@@ -2593,9 +2593,6 @@ fn merge_path_envs(preferred: Option<OsString>, fallback: Option<OsString>) -> O
     }
 }
 
-/// 合并两段 PATH：`primary` 全部保留在前，`extra` 中未出现过的段按序追加。
-/// 空段直接丢弃（`a::b` 里的空段在 POSIX 下语义是"当前目录"，注入时不该带上）。
-
 /// 用与 `resolve_path_default` 相同的登录 shell 解析用户的真实 PATH，
 /// 供 `run_tool_lifecycle_silently` 注入给安装/升级脚本。
 ///
