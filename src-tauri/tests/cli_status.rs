@@ -798,7 +798,9 @@ fn app_mode_commands_round_trip_through_json_cli() {
                         "model_provider = \"test\"\nmodel = \"gpt-5\"\n\n[model_providers.test]\nname = \"Test\"\nbase_url = \"https://example.com:{port}/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
                     )
                 },
-                "sortIndex": 1
+                // 大 sortIndex：本文件里共享同一个 home 的 routing 用例按顺序断言
+                // 「可用故障转移供应商」的第一位，别把它们的行挤到前面
+                "sortIndex": 4000
             })
             .to_string()
         };
