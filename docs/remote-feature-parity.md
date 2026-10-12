@@ -86,4 +86,14 @@ Audited while landing the upstream v4.0.4 baseline (fork 4.0.5). The mechanical 
 - the only frontend files that mix `target.type === "remote"` with local `invoke(` calls are the `src/lib/api/*` adapter modules, each branching remote → helper and local → Tauri command (covered by the target-routing tests);
 - local-only surfaces are guarded at the entry point: the tray/terminal/deeplink actions, the workspace view, the project switcher, the Hermes web panel, the Apps desktop row, and the WSL shell override. The app mode/stack panel is shared with the remote target, and only its desktop-specific extras (startup attach failures, tray-routed prompts) stay local.
 
-Unverified in this audit: a real SSH host run (needs a dedicated test host and a backup) and the release chain (tag, `latest.json`, signatures, asset names) — both belong to the release-preparation step, not to the merge.
+### Real-host run (B10, first pass)
+
+Executed against a throwaway Ubuntu 22.04 x86_64 host over SSH (no pre-existing CC Switch data; nothing left behind afterwards):
+
+- The app's own helper install command ran end to end: release download on the host, capability check, `status` verification. It installed the **published 3.20.2 helper** (the fork's `remote-helper-latest` line is still the 3.20.x build), so this pass covered the upgrade path "v4 app + older helper".
+- 24 of 34 read commands and 6 of 16 write commands succeeded on that host (providers, settings, routing config/runtime, MCP, prompts, skills, sessions, usage, auth, import-export, tools versions, openclaw, universal providers). The rest were `unsupported_command` — exactly the v4-era additions (`app-mode` *, `tools probe-installations` / `tools installations`, `connectivity-check`) — or payload differences in the probe script itself.
+- Isolation held on real hardware: `/root/.cc-switch` was never created (`find` returned zero files), all state stayed in `~/.cc-switch-remote` (`cc-switch.db`, `settings.json` with 0600, `model-pricing.json`), and a remote provider switch wrote the host's `~/.codex/config.toml` as designed.
+- Failure preservation held: a broken `settings save` payload returned an error and left `settings.json` byte-identical (md5 unchanged).
+- Finding fixed because of this run: an older helper **advertises a capability group but not the v4 subcommands inside it** (`tools`, `sessions` spellings, `app-mode`), which capability gating cannot catch. The remote layer now maps `unsupported_command` / "Unsupported retired command" to a "remote helper is too old, update it" message in both the one-shot SSH path and the long-lived session path, so users get an actionable notice instead of "Supported commands: …".
+
+Still unverified: a **v4.0.5 helper binary on a real host** (the published helper is 3.20.2; cross-compiling a Linux build from this workstation needs a Linux OpenSSL toolchain, and building on the host needs crates.io at the link speeds available there), non-x86_64/ macOS hosts, and the release chain (tag, `latest.json`, signatures, asset names) — the latter belongs to the release-preparation step.
