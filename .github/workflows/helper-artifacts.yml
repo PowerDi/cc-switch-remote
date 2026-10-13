@@ -148,12 +148,15 @@ jobs:
               --notes "Latest pure CLI remote helper binaries for cc-switch-remote." \
               --prerelease
           fi
-          gh release view "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name' |
-            grep -E '^(cc-switch-remote-helper|cc-switch-cli)-' |
-            while read -r asset; do
-              gh release delete-asset "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" -y
-            done
+          # 首次在该仓库发布时 release 还没有任何资产，grep 找不到匹配会以 1 退出；
+          # 在 set -euo pipefail 下这会被当成失败，资产永远上传不上去（2026-10-13 实际发生）。
+          while read -r asset; do
+            gh release delete-asset "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" -y
+          done < <(
+            gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq '.assets[].name' |
+              grep -E '^(cc-switch-remote-helper|cc-switch-cli)-' || true
+          )
           gh release upload "$TAG" helper-release/* --clobber --repo "$GITHUB_REPOSITORY"
