@@ -9,7 +9,7 @@ use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
 
-const HELPER_RELEASE_REPO: &str = "xiaoY233/cc-switch-remote";
+const HELPER_RELEASE_REPO: &str = "PowerDi/cc-switch-remote";
 const HELPER_RELEASE_TAG: &str = "remote-helper-latest";
 const HELPER_RELEASE_REPO_ENV: &str = "CC_SWITCH_REMOTE_HELPER_RELEASE_REPO";
 const HELPER_RELEASE_TAG_ENV: &str = "CC_SWITCH_REMOTE_HELPER_RELEASE_TAG";

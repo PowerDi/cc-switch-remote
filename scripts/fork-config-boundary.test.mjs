@@ -81,9 +81,24 @@ test("fork packaging and helper artifacts are not replaced by official names", (
   assert.match(release, /verify-tauri-updater-signatures\.mjs/);
   assert.match(helper, /remote-helper-latest/);
   assert.match(helper, /cc-switch-remote-helper-latest-/);
+  // 工作流按 $GITHUB_REPOSITORY 发布，所以在哪个仓库跑就发到哪个仓库。
+  assert.match(helper, /--repo "\$GITHUB_REPOSITORY"/);
   assert.match(helper, /--no-default-features --features proxy-runtime/);
   for (const workflow of [release, helper]) {
     assert.doesNotMatch(workflow, /farion1231\/cc-switch/);
+  }
+});
+
+test("helper downloads come from this fork's release chain, not the inherited repo", () => {
+  // 继承来的 xiaoY233 仓库不再由本项目维护，也不该再有新工件；helper 的下载源
+  // （Rust 安装命令 + 独立安装脚本）必须和发布工作流的仓库一致，否则用户永远装到旧 helper。
+  const sources = [
+    read("src-tauri/src/remote/ssh.rs"),
+    read("scripts/install-remote-helper.sh"),
+  ];
+  for (const source of sources) {
+    assert.match(source, /PowerDi\/cc-switch-remote/);
+    assert.doesNotMatch(source, /xiaoY233/);
   }
 });
 
