@@ -20,6 +20,7 @@ import type { AppId } from "./types";
 import type { TemplateType } from "@/config/constants";
 import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import { remoteApi, type ManagementTarget } from "./remote";
+import { requireLocalUsageRead } from "./usageSupport";
 
 export const usageApi = {
   // Provider usage script methods
@@ -110,6 +111,15 @@ export const usageApi = {
       providerName,
       model,
     });
+  },
+
+  getSessionUsageSummary: async (
+    appType: string,
+    sessionId: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<UsageSummary> => {
+    requireLocalUsageRead(target, "sessionSummary");
+    return invoke("get_session_usage_summary", { appType, sessionId });
   },
 
   getUsageSummaryByApp: async (
@@ -367,7 +377,9 @@ export const usageApi = {
   checkProviderLimits: async (
     providerId: string,
     appType: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
   ): Promise<ProviderLimitStatus> => {
+    requireLocalUsageRead(target, "providerLimits");
     return invoke("check_provider_limits", { providerId, appType });
   },
 
@@ -379,6 +391,14 @@ export const usageApi = {
       return remoteApi.syncSessionUsage(target.profile, target.secret);
     }
     return invoke("sync_session_usage");
+  },
+
+  /** Latest completed scan in this desktop process; no helper equivalent yet. */
+  getSessionUsageLastSync: async (
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<number | null> => {
+    requireLocalUsageRead(target, "lastSessionSync");
+    return invoke("get_session_usage_last_sync");
   },
 
   rebuildCodexUsage: async (

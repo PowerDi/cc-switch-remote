@@ -34,6 +34,7 @@ pub mod log_codes;
 pub(crate) mod managed_auth_runtime;
 pub mod media_sanitizer;
 pub mod model_mapper;
+pub mod opaque_state_rectifier;
 pub mod provider_router;
 pub mod providers;
 #[cfg(any(feature = "desktop", feature = "proxy-runtime"))]

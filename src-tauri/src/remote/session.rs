@@ -73,7 +73,19 @@ impl std::fmt::Display for RemoteSessionError {
                 write!(f, "Remote session returned invalid JSON: {message}")
             }
             Self::MissingData => write!(f, "Remote session returned ok without data"),
-            Self::CommandFailed(error) => write!(f, "{}: {}", error.code, error.message),
+            Self::CommandFailed(error) => {
+                // 与 ssh 路径同一套说法：老 helper 广告了能力组、但没有 v4 新增的子命令时，
+                // 别把「Supported commands: …」原样丢给用户。
+                if crate::remote::ssh::is_stale_helper_command_error(&error.code, &error.message) {
+                    write!(
+                        f,
+                        "远程 Helper 版本过旧，不支持该操作。请在远端更新 Helper 后重试；若 Helper 已是最新，请连同下面原文一并反馈 (helper does not support this command; update the remote helper, or report the raw message below if it is already current): {}",
+                        error.message
+                    )
+                } else {
+                    write!(f, "{}: {}", error.code, error.message)
+                }
+            }
             Self::Transport(message) => write!(f, "{message}"),
             Self::Io(message) => write!(f, "Remote session I/O failed: {message}"),
             Self::Timeout => write!(f, "Remote session command timed out"),

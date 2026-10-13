@@ -9,8 +9,13 @@ import {
   useCodexOauthQuotaByAccountId,
   useSubscriptionQuota,
   useXaiOauthQuota,
+  useXaiOauthQuotaByAccountId,
 } from "./subscription";
 import type { SubscriptionQuota } from "@/types/subscription";
+import {
+  useTargetConnectionEpoch,
+  withConnectionEpoch,
+} from "@/hooks/useTargetConnectionEpoch";
 
 const remoteProfile: RemoteHostProfile = {
   id: "server-a",
@@ -108,12 +113,10 @@ describe("Codex OAuth quota target isolation", () => {
       expect.anything(),
     );
     expect(
-      queryClient.getQueryData([
-        "codex_oauth",
-        "quota",
-        "remote:server-a",
-        "remote-account",
-      ]),
+      queryClient.getQueryCache().find({
+        exact: false,
+        queryKey: ["codex_oauth", "quota", "remote:server-a", "remote-account"],
+      })?.state.data,
     ).toEqual(expect.objectContaining({ tool: "codex_oauth" }));
   });
 
@@ -256,12 +259,10 @@ describe("quota sibling target isolation", () => {
 
     await waitFor(() => expect(result.current.data?.queriedAt).toBe(1));
     expect(
-      queryClient.getQueryData([
-        "subscription",
-        "quota",
-        "remote:server-a",
-        "claude",
-      ]),
+      queryClient.getQueryCache().find({
+        exact: false,
+        queryKey: ["subscription", "quota", "remote:server-a", "claude"],
+      })?.state.data,
     ).toEqual(expect.objectContaining({ queriedAt: 1 }));
 
     rerender({ target: nextRemoteTarget });
@@ -297,12 +298,10 @@ describe("quota sibling target isolation", () => {
 
     await waitFor(() => expect(result.current.data?.queriedAt).toBe(1));
     expect(
-      queryClient.getQueryData([
-        "xai_oauth",
-        "quota",
-        "remote:server-a",
-        "xai-account",
-      ]),
+      queryClient.getQueryCache().find({
+        exact: false,
+        queryKey: ["xai_oauth", "quota", "remote:server-a", "xai-account"],
+      })?.state.data,
     ).toEqual(expect.objectContaining({ queriedAt: 1 }));
 
     rerender({ target: nextRemoteTarget });
@@ -310,6 +309,162 @@ describe("quota sibling target isolation", () => {
     await waitFor(() => expect(getQuotaSpy).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(result.current.data?.queriedAt).toBe(2));
     expect(result.current.data?.success).toBe(false);
+  });
+
+  it("shares the xAI account-row and provider-footer query for the same target", async () => {
+    const spy = vi
+      .spyOn(subscriptionApi, "getXaiOauthQuota")
+      .mockResolvedValue(quotaResult("xai_oauth", 12));
+    const { wrapper, queryClient } = createWrapper();
+    const meta = {
+      authBinding: {
+        source: "managed_account" as const,
+        authProvider: "xai_oauth",
+        accountId: "xai-account",
+      },
+    };
+    const { result } = renderHook(
+      () => ({
+        row: useXaiOauthQuotaByAccountId("xai-account", {
+          target: remoteTarget,
+        }),
+        footer: useXaiOauthQuota(meta, { target: remoteTarget }),
+      }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.row.data?.queriedAt).toBe(12));
+    expect(result.current.footer.data?.queriedAt).toBe(12);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith("xai-account", remoteTarget);
+    const keys = queryClient
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.queryKey);
+    expect(keys).toHaveLength(1);
+    expect(keys[0].slice(0, 4)).toEqual(
+      subscriptionKeys.xaiOauthQuota("xai-account", remoteTarget),
+    );
+    expect(keys[0].slice(4)).toEqual(["connection", expect.any(Number)]);
+    expect(JSON.stringify(keys)).not.toContain("secret");
+    expect(JSON.stringify(keys)).not.toContain(remoteProfile.host);
+  });
+
+  it.each([
+    ["credentials", nextRemoteTarget],
+    ["hostname", nextRemoteHostTarget],
+  ] as const)(
+    "does not flash cached quota when remounting after a %s change",
+    async (_change, target) => {
+      let complete!: (value: SubscriptionQuota) => void;
+      const next = new Promise<SubscriptionQuota>((resolve) => {
+        complete = resolve;
+      });
+      const spy = vi
+        .spyOn(subscriptionApi, "getCodexOauthQuota")
+        .mockResolvedValueOnce(quotaResult("codex_oauth", 1))
+        .mockReturnValueOnce(next);
+      const { wrapper, queryClient } = createWrapper();
+      const first = renderHook(
+        () =>
+          useCodexOauthQuotaByAccountId("account", { target: remoteTarget }),
+        { wrapper },
+      );
+      await waitFor(() => expect(first.result.current.data?.queriedAt).toBe(1));
+      first.unmount();
+      const rendered: Array<number | null | undefined> = [];
+      const second = renderHook(
+        () => {
+          const quota = useCodexOauthQuotaByAccountId("account", { target });
+          rendered.push(quota.data?.queriedAt);
+          return quota;
+        },
+        { wrapper },
+      );
+      expect(second.result.current.data).toBeUndefined();
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+      await act(async () =>
+        complete(
+          quotaResult("codex_oauth", 2, { success: false, error: "HTTP 503" }),
+        ),
+      );
+      await waitFor(() =>
+        expect(second.result.current.data?.queriedAt).toBe(2),
+      );
+      expect(second.result.current.data?.success).toBe(false);
+      expect(rendered).not.toContain(1);
+      const keys = queryClient
+        .getQueryCache()
+        .getAll()
+        .map((query) => query.queryKey);
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).not.toEqual(keys[1]);
+      expect(JSON.stringify(keys)).not.toContain("secret");
+    },
+  );
+
+  it("keeps last-good only for the same xAI account and target", async () => {
+    const spy = vi
+      .spyOn(subscriptionApi, "getXaiOauthQuota")
+      .mockResolvedValueOnce(quotaResult("xai_oauth", 1))
+      .mockResolvedValueOnce(
+        quotaResult("xai_oauth", 2, { success: false, error: "HTTP 503" }),
+      )
+      .mockResolvedValueOnce(
+        quotaResult("xai_oauth", 3, { success: false, error: "HTTP 503" }),
+      );
+    const { wrapper } = createWrapper();
+    const { result, rerender } = renderHook(
+      ({ accountId }) =>
+        useXaiOauthQuotaByAccountId(accountId, { target: remoteTarget }),
+      { initialProps: { accountId: "first" }, wrapper },
+    );
+    await waitFor(() => expect(result.current.data?.queriedAt).toBe(1));
+    await act(async () => {
+      await result.current.refetch();
+    });
+    expect(result.current.data?.queriedAt).toBe(1);
+    rerender({ accountId: "second" });
+    await waitFor(() => expect(result.current.data?.queriedAt).toBe(3));
+    expect(result.current.data?.success).toBe(false);
+    expect(spy).toHaveBeenLastCalledWith("second", remoteTarget);
+  });
+
+  it("publishes manual quota results only into the matching connection cache", async () => {
+    const spy = vi
+      .spyOn(subscriptionApi, "getQuota")
+      .mockResolvedValueOnce(quotaResult("claude", 1))
+      .mockResolvedValueOnce(quotaResult("claude", 2));
+    const { queryClient, wrapper } = createWrapper();
+    const { result, rerender } = renderHook(
+      ({ target }: { target: ManagementTarget }) => {
+        const epoch = useTargetConnectionEpoch(target);
+        const quota = useSubscriptionQuota("claude", true, false, 5, target);
+        const key =
+          target.type === "remote" ? `remote:${target.profile.id}` : "local";
+        return {
+          quota,
+          publish: (data: SubscriptionQuota) =>
+            queryClient.setQueryData(
+              withConnectionEpoch(subscriptionKeys.quota("claude", key), epoch),
+              data,
+            ),
+        };
+      },
+      { initialProps: { target: remoteTarget }, wrapper },
+    );
+    await waitFor(() => expect(result.current.quota.data?.queriedAt).toBe(1));
+    const publishOld = result.current.publish;
+    rerender({ target: nextRemoteTarget });
+    await waitFor(() => expect(result.current.quota.data?.queriedAt).toBe(2));
+    await act(async () => {
+      publishOld(quotaResult("claude", 99));
+    });
+    expect(result.current.quota.data?.queriedAt).toBe(2);
+    await act(async () => {
+      result.current.publish(quotaResult("claude", 3));
+    });
+    await waitFor(() => expect(result.current.quota.data?.queriedAt).toBe(3));
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 
   it("does not reset local quota when an equivalent local target object is rerendered", async () => {

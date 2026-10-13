@@ -1225,6 +1225,51 @@ pub async fn remote_probe_tool_installations(
     .map_err(|e| format!("Remote tool probe task failed: {e}"))?
 }
 
+#[tauri::command]
+pub async fn remote_list_tool_installations(
+    profile: RemoteHostProfile,
+    tools: Option<Vec<String>>,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Vec<crate::tool_environment::ToolInstallationReport>, String> {
+    validate_profile(&profile).map_err(|e| e.to_string())?;
+    let tools_json =
+        serde_json::to_string(&tools.unwrap_or_default()).map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let primary = run_helper_json(
+            &profile,
+            &[
+                "tools".to_string(),
+                "installations".to_string(),
+                tools_json.clone(),
+            ],
+            secret.as_ref(),
+        );
+        match primary {
+            Ok(value) => Ok(value),
+            // 3.20.x 的 helper 只有 `tools probe-installations`；v4 才把这条命令改名成
+            // `tools installations`，共享实现里两者互为别名（list = probe）。旧 helper
+            // 上退回旧命令，用户照样拿到路径/来源/多处安装，而不是"帮不上忙"。
+            Err(error)
+                if crate::remote::ssh::is_stale_helper_command_error("", &error.to_string()) =>
+            {
+                run_helper_json(
+                    &profile,
+                    &[
+                        "tools".to_string(),
+                        "probe-installations".to_string(),
+                        tools_json,
+                    ],
+                    secret.as_ref(),
+                )
+                .map_err(|fallback| fallback.to_string())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| format!("Remote tool installations task failed: {e}"))?
+}
+
 fn remote_health_from_status_with_latest_result(
     status: serde_json::Value,
     latest: Result<Option<RemoteHelperLatest>, String>,
@@ -1574,6 +1619,7 @@ fn parse_remote_capability(value: &str) -> Option<RemoteCapability> {
         "cloud-sync" => Some(RemoteCapability::CloudSync),
         "tools" => Some(RemoteCapability::Tools),
         "stream-check" => Some(RemoteCapability::StreamCheck),
+        "connectivity-check" => Some(RemoteCapability::ConnectivityCheck),
         "usage" => Some(RemoteCapability::Usage),
         "usage-manual-session-sync" => Some(RemoteCapability::UsageManualSessionSync),
         "usage-model-pricing-sync" => Some(RemoteCapability::UsageModelPricingSync),
@@ -1659,6 +1705,7 @@ pub async fn remote_get_provider_state(
     .map_err(|e| format!("Remote provider state task failed: {e}"))?
 }
 
+const REMOTE_CONNECTIVITY_CHECK_CAPABILITY: &str = "connectivity-check";
 const REMOTE_AUTH_CAPABILITY: &str = "auth";
 const REMOTE_CODEX_CONFIG_ONLY_CAPABILITY: &str = "codex-config-only";
 const REMOTE_USAGE_MANUAL_SESSION_SYNC_CAPABILITY: &str = "usage-manual-session-sync";
@@ -2150,46 +2197,6 @@ pub async fn remote_delete_model_pricing(
 }
 
 #[tauri::command]
-pub async fn remote_get_default_cost_multiplier(
-    profile: RemoteHostProfile,
-    app_type: String,
-    secret: Option<RemoteConnectionSecret>,
-) -> Result<String, String> {
-    run_remote_helper_json(
-        profile,
-        vec![
-            "routing-config".to_string(),
-            "default-cost-multiplier".to_string(),
-            app_type,
-        ],
-        secret,
-        "Remote default cost multiplier",
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn remote_set_default_cost_multiplier(
-    profile: RemoteHostProfile,
-    app_type: String,
-    value: String,
-    secret: Option<RemoteConnectionSecret>,
-) -> Result<(), String> {
-    run_remote_helper_json(
-        profile,
-        vec![
-            "routing-config".to_string(),
-            "set-default-cost-multiplier".to_string(),
-            app_type,
-            value,
-        ],
-        secret,
-        "Remote default cost multiplier update",
-    )
-    .await
-}
-
-#[tauri::command]
 pub async fn remote_get_pricing_model_source(
     profile: RemoteHostProfile,
     app_type: String,
@@ -2252,23 +2259,23 @@ pub async fn remote_add_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] addToLive: Option<bool>,
+    #[allow(non_snake_case)] editorSave: Option<serde_json::Value>,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<bool, String> {
     ensure_remote_codex_provider_mutation_supported(profile.clone(), &app, secret.clone()).await?;
     let provider_json = serde_json::to_string(&provider).map_err(|e| e.to_string())?;
-    run_remote_helper_json(
-        profile,
-        vec![
-            "providers".to_string(),
-            "add".to_string(),
-            app,
-            provider_json,
-            addToLive.unwrap_or(true).to_string(),
-        ],
-        secret,
-        "Remote provider add",
-    )
-    .await
+    let mut args = vec![
+        "providers".to_string(),
+        "add".to_string(),
+        app,
+        provider_json,
+        addToLive.unwrap_or(true).to_string(),
+    ];
+    if let Some(editor) = editorSave {
+        args[1] = "add-editor".to_string();
+        args.push(serde_json::to_string(&editor).map_err(|e| e.to_string())?);
+    }
+    run_remote_helper_json(profile, args, secret, "Remote provider add").await
 }
 
 #[tauri::command]
@@ -2292,21 +2299,53 @@ pub async fn remote_update_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
+    #[allow(non_snake_case)] editorSave: Option<serde_json::Value>,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<bool, String> {
     ensure_remote_codex_provider_mutation_supported(profile.clone(), &app, secret.clone()).await?;
     let provider_json = serde_json::to_string(&provider).map_err(|e| e.to_string())?;
+    let mut args = vec![
+        "providers".to_string(),
+        "update".to_string(),
+        app,
+        provider_json,
+        originalId.unwrap_or_else(|| "-".to_string()),
+    ];
+    if let Some(editor) = editorSave {
+        args[1] = "update-editor".to_string();
+        args.push(serde_json::to_string(&editor).map_err(|e| e.to_string())?);
+    }
+    run_remote_helper_json(profile, args, secret, "Remote provider update").await
+}
+
+/// 远端供应商编辑器的显示内容：与 desktop 的 `get_provider_editor_view` 同一投影，
+/// 返回的是 helpers 端已脱敏的配置（密钥为 `[redacted]`，保存时由 helper 按行还原）。
+#[tauri::command]
+pub async fn remote_get_provider_editor_view(
+    profile: RemoteHostProfile,
+    app: String,
+    #[allow(non_snake_case)] settingsConfig: serde_json::Value,
+    category: Option<String>,
+    #[allow(non_snake_case)] providerId: Option<String>,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<serde_json::Value, String> {
+    let settings_json = serde_json::to_string(&settingsConfig).map_err(|e| e.to_string())?;
+    let options_json = serde_json::to_string(&serde_json::json!({
+        "category": category,
+        "providerId": providerId,
+    }))
+    .map_err(|e| e.to_string())?;
     run_remote_helper_json(
         profile,
         vec![
             "providers".to_string(),
-            "update".to_string(),
+            "editor-view".to_string(),
             app,
-            provider_json,
-            originalId.unwrap_or_else(|| "-".to_string()),
+            settings_json,
+            options_json,
         ],
         secret,
-        "Remote provider update",
+        "Remote provider editor view",
     )
     .await
 }
@@ -2366,10 +2405,16 @@ pub async fn remote_stream_check_provider(
     providerId: String,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<crate::services::stream_check::StreamCheckResult, String> {
+    ensure_remote_helper_capability(
+        profile.clone(),
+        secret.clone(),
+        REMOTE_CONNECTIVITY_CHECK_CAPABILITY,
+    )
+    .await?;
     run_remote_helper_json(
         profile,
         vec![
-            "stream-check".to_string(),
+            "connectivity-check".to_string(),
             "provider".to_string(),
             app,
             providerId,
@@ -2670,7 +2715,7 @@ pub async fn remote_get_subscription_quota(
 pub async fn remote_get_stream_check_config(
     profile: RemoteHostProfile,
     secret: Option<RemoteConnectionSecret>,
-) -> Result<crate::services::stream_check::StreamCheckConfig, String> {
+) -> Result<serde_json::Value, String> {
     run_remote_helper_json(
         profile,
         vec!["stream-check".to_string(), "config".to_string()],
@@ -2683,7 +2728,7 @@ pub async fn remote_get_stream_check_config(
 #[tauri::command]
 pub async fn remote_save_stream_check_config(
     profile: RemoteHostProfile,
-    config: crate::services::stream_check::StreamCheckConfig,
+    config: serde_json::Value,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<bool, String> {
     let config_json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
@@ -3274,6 +3319,229 @@ pub async fn remote_set_routing_global_outbound_proxy(
         ],
         secret,
         "Remote routing global outbound proxy set",
+    )
+    .await
+}
+
+/// helper `app-mode` 返回值的镜像类型。
+///
+/// 上游的 `AppModeView` / `StackView` 里带 `&'static str`（只实现 Serialize），桌面端要把
+/// helper 的 JSON 读进来的话需要 Deserialize，这里按同样的 camelCase 形状接住。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAppModeView {
+    pub mode: String,
+    pub attached: bool,
+    pub route_provider_id: Option<String>,
+    pub direct_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStackMember {
+    pub provider_id: String,
+    pub model_ids: Vec<String>,
+    pub route: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStaleClients {
+    pub daemon: bool,
+    pub others: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStackView {
+    pub active: bool,
+    pub members: Vec<RemoteStackMember>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_clients: Option<RemoteStaleClients>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteCodexDaemonRestartOutcome {
+    Restarted,
+    NotRunning,
+}
+
+// ===== 远端应用页模式行（直连 / 路由 / 聚合）：helper 的 app-mode 命令组 =====
+
+#[tauri::command]
+pub async fn remote_get_app_mode(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<RemoteAppModeView, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "get".to_string(), appType],
+        secret,
+        "Remote app mode view",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_set_app_mode(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    enabled: bool,
+    stack: Option<bool>,
+    route: Option<String>,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<(), String> {
+    let mut args = vec![
+        "app-mode".to_string(),
+        if enabled { "enter" } else { "exit" }.to_string(),
+        appType,
+    ];
+    if enabled {
+        args.push(stack.unwrap_or(false).to_string());
+        args.push(route.unwrap_or_else(|| "-".to_string()));
+    }
+    run_remote_helper_json(profile, args, secret, "Remote app mode set").await
+}
+
+#[tauri::command]
+pub async fn remote_set_app_route(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    #[allow(non_snake_case)] providerId: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<(), String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "set-route".to_string(),
+            appType,
+            providerId,
+        ],
+        secret,
+        "Remote app route set",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_direct_provider(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Option<String>, String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "direct-provider".to_string(),
+            appType,
+        ],
+        secret,
+        "Remote direct provider",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_proxy_takeover_status(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<crate::proxy::types::ProxyTakeoverStatus, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "takeover-status".to_string()],
+        secret,
+        "Remote takeover status",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_exit_proxy_apps_in_mode(
+    profile: RemoteHostProfile,
+    stack: bool,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Vec<String>, String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "exit-apps-in-mode".to_string(),
+            stack.to_string(),
+        ],
+        secret,
+        "Remote exit apps in mode",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_proxy_stack(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<RemoteStackView, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "stack".to_string(), appType],
+        secret,
+        "Remote proxy stack",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_set_proxy_stack_member(
+    profile: RemoteHostProfile,
+    #[allow(non_snake_case)] appType: String,
+    #[allow(non_snake_case)] providerId: String,
+    enabled: bool,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<crate::cli::commands::AppModeStackWriteResult, String> {
+    run_remote_helper_json(
+        profile,
+        vec![
+            "app-mode".to_string(),
+            "set-stack-member".to_string(),
+            appType,
+            providerId,
+            enabled.to_string(),
+        ],
+        secret,
+        "Remote proxy stack member",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_adopt_codex_stack_catalog(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Option<String>, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "adopt-codex-catalog".to_string()],
+        secret,
+        "Remote adopt codex stack catalog",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_restart_codex_daemon(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<RemoteCodexDaemonRestartOutcome, String> {
+    run_remote_helper_json(
+        profile,
+        vec!["app-mode".to_string(), "restart-codex-daemon".to_string()],
+        secret,
+        "Remote restart codex daemon",
     )
     .await
 }
@@ -4232,7 +4500,7 @@ mod tests {
         let command = args.last().expect("remote command");
 
         assert!(command.contains(
-            "https://api.github.com/repos/xiaoY233/cc-switch-remote/releases/tags/remote-helper-latest"
+            "https://api.github.com/repos/PowerDi/cc-switch-remote/releases/tags/remote-helper-latest"
         ));
         assert!(command.contains("cc-switch-remote-helper"));
         assert!(command.contains("cc-switch-cli"));
@@ -4248,6 +4516,28 @@ mod tests {
         assert!(command.contains(&REMOTE_HELPER_REQUIRED_CAPABILITIES.join(", ")));
         assert!(!command.contains("rustup.rs"));
         assert!(!command.contains("cargo install --git"));
+    }
+
+    #[test]
+    fn connectivity_checks_require_the_new_non_billing_capability() {
+        let old = RemoteHelperStatus {
+            capabilities: vec!["stream-check".into()],
+        };
+        assert_eq!(
+            validate_remote_helper_capability(&old, REMOTE_CONNECTIVITY_CHECK_CAPABILITY),
+            Err(remote_helper_upgrade_required("connectivity-check"))
+        );
+        let current = RemoteHelperStatus {
+            capabilities: vec!["connectivity-check".into()],
+        };
+        assert!(
+            validate_remote_helper_capability(&current, REMOTE_CONNECTIVITY_CHECK_CAPABILITY)
+                .is_ok()
+        );
+        assert_eq!(
+            parse_remote_capability("connectivity-check"),
+            Some(RemoteCapability::ConnectivityCheck)
+        );
     }
 
     #[test]

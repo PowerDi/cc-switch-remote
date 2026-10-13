@@ -8,7 +8,10 @@ import { useState, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { HoverTip } from "@/components/ui/hover-tip";
 import { Loader2, TestTube2, Search, Eye, EyeOff, X } from "lucide-react";
+import type { ManagementTarget } from "@/lib/api/remote";
+import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import {
   useGlobalProxyUrl,
   useSetGlobalProxyUrl,
@@ -16,8 +19,6 @@ import {
   useScanProxies,
   type DetectedProxy,
 } from "@/hooks/useGlobalProxy";
-import type { ManagementTarget } from "@/lib/api/remote";
-import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 
 /** 从完整 URL 提取认证信息 */
 function extractAuth(url: string): {
@@ -71,19 +72,18 @@ function mergeAuth(
   }
 }
 
-interface GlobalProxySettingsProps {
-  target?: ManagementTarget;
-}
-
 export function GlobalProxySettings({
   target = LOCAL_MANAGEMENT_TARGET,
-}: GlobalProxySettingsProps) {
+}: {
+  /** 管理目标：默认本机；远端目标时读写的是远端主机上的出站代理 */
+  target?: ManagementTarget;
+} = {}) {
   const { t } = useTranslation();
   const { data: savedUrl, isLoading } = useGlobalProxyUrl(target);
   const setMutation = useSetGlobalProxyUrl(target);
+  const isRemoteTarget = target.type === "remote";
   const testMutation = useTestProxy();
   const scanMutation = useScanProxies();
-  const isRemoteTarget = target.type === "remote";
 
   const [url, setUrl] = useState("");
   const [username, setUsername] = useState("");
@@ -151,7 +151,7 @@ export function GlobalProxySettings({
   if (isLoading && savedUrl === undefined) {
     return (
       <div className="flex items-center justify-center p-4">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-fg-2" />
       </div>
     );
   }
@@ -159,7 +159,7 @@ export function GlobalProxySettings({
   return (
     <div className="space-y-3">
       {/* 描述 */}
-      <p className="text-sm text-muted-foreground">
+      <p className="text-sm text-fg-2">
         {isRemoteTarget
           ? t("remote.settings.routing.globalProxyHint", {
               defaultValue:
@@ -180,52 +180,59 @@ export function GlobalProxySettings({
           onKeyDown={handleKeyDown}
           className="font-mono text-sm flex-1"
         />
+        {/* 扫描/测试走的是本机网络能力，远端目标下没有对应 helper 能力 */}
         {!isRemoteTarget && (
           <>
-            <Button
-              variant="outline"
-              size="icon"
-              disabled={scanMutation.isPending}
-              onClick={handleScan}
-              title={t("settings.globalProxy.scan")}
-            >
-              {scanMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Search className="h-4 w-4" />
-              )}
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              disabled={!fullUrl || testMutation.isPending}
-              onClick={handleTest}
-              title={t("settings.globalProxy.test")}
-            >
-              {testMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <TestTube2 className="h-4 w-4" />
-              )}
-            </Button>
+            <HoverTip content={t("settings.globalProxy.scan")}>
+              <Button
+                variant="outline"
+                size="icon"
+                disabled={scanMutation.isPending}
+                onClick={handleScan}
+                aria-label={t("settings.globalProxy.scan")}
+              >
+                {scanMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Search className="h-4 w-4" />
+                )}
+              </Button>
+            </HoverTip>
+            <HoverTip content={t("settings.globalProxy.test")}>
+              <Button
+                variant="outline"
+                size="icon"
+                disabled={!fullUrl || testMutation.isPending}
+                onClick={handleTest}
+                aria-label={t("settings.globalProxy.test")}
+              >
+                {testMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <TestTube2 className="h-4 w-4" />
+                )}
+              </Button>
+            </HoverTip>
           </>
         )}
-        <Button
-          variant="outline"
-          size="icon"
-          disabled={!url && !username && !password}
-          onClick={handleClear}
-          title={t("settings.globalProxy.clear")}
-        >
-          <X className="h-4 w-4" />
-        </Button>
+        <HoverTip content={t("settings.globalProxy.clear")}>
+          <Button
+            variant="outline"
+            size="icon"
+            disabled={!url && !username && !password}
+            onClick={handleClear}
+            aria-label={t("settings.globalProxy.clear")}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </HoverTip>
         <Button
           onClick={handleSave}
           disabled={!dirty || setMutation.isPending}
           size="sm"
         >
           {setMutation.isPending && (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            <Loader2 className="h-4 w-4 animate-spin" />
           )}
           {t("common.save")}
         </Button>
@@ -264,9 +271,9 @@ export function GlobalProxySettings({
             tabIndex={-1}
           >
             {showPassword ? (
-              <EyeOff className="h-4 w-4 text-muted-foreground" />
+              <EyeOff className="h-4 w-4 text-fg-2" />
             ) : (
-              <Eye className="h-4 w-4 text-muted-foreground" />
+              <Eye className="h-4 w-4 text-fg-2" />
             )}
           </Button>
         </div>

@@ -11,14 +11,21 @@ import {
   type ImportSkillSelection,
   type InstalledSkill,
   type SkillRepo,
+  type SkillDiscoveryResult,
+  type SkillUpdateCheckResult,
   type SkillUpdateInfo,
   type SkillsShSearchResult,
 } from "@/lib/api/skills";
 import type { AppId } from "@/lib/api/types";
+import type { MutableRefObject } from "react";
 import type { ManagementTarget } from "@/lib/api/remote";
 import { mergeImportedSkills } from "@/hooks/useSkills.helpers";
+import { readLocalCache, writeLocalCache } from "@/lib/localCache";
 import { runSequentialBulkAction } from "@/lib/utils/sequentialBulkAction";
-import { useTargetQueryIdentityReset } from "@/hooks/useTargetQueryIdentityReset";
+import {
+  useLatestTarget,
+  useTargetQueryIdentityReset,
+} from "@/hooks/useTargetQueryIdentityReset";
 
 const LOCAL_TARGET: ManagementTarget = { type: "local" };
 
@@ -32,9 +39,10 @@ const getTargetKey = (target: ManagementTarget) =>
  */
 export function useInstalledSkills(target: ManagementTarget = LOCAL_TARGET) {
   const targetKey = getTargetKey(target);
+  const targetRef = useLatestTarget(target);
   const query = useQuery({
     queryKey: ["skills", "installed", targetKey],
-    queryFn: () => skillsApi.getInstalled(target),
+    queryFn: () => skillsApi.getInstalled(targetRef.current),
     staleTime: Infinity,
   });
   useTargetQueryIdentityReset("skills", target, targetKey);
@@ -43,9 +51,10 @@ export function useInstalledSkills(target: ManagementTarget = LOCAL_TARGET) {
 
 export function useSkillBackups(target: ManagementTarget = LOCAL_TARGET) {
   const targetKey = getTargetKey(target);
+  const targetRef = useLatestTarget(target);
   const query = useQuery({
     queryKey: ["skills", "backups", targetKey],
-    queryFn: () => skillsApi.getBackups(target),
+    queryFn: () => skillsApi.getBackups(targetRef.current),
     enabled: false,
   });
   useTargetQueryIdentityReset("skills", target, targetKey);
@@ -75,15 +84,74 @@ export function useDeleteSkillBackup(target: ManagementTarget = LOCAL_TARGET) {
  * 使用 staleTime: Infinity 实现首次进入使用缓存，只有刷新时才重新获取。
  * 不跨 query key 保留占位数据，避免切换管理目标时短暂显示另一目标的 Skill。
  */
+// 发现要从 GitHub 下载每个仓库，很慢：上次的结果存在本地，打开时先显示，
+// 每次启动只在后台重新拉一次（之后同一次运行里不再自动拉，手动刷新照常）。
+// 本地缓存只对**本机**有效：远端每台机器目录不同，不能拿本机缓存冒充。
+const DISCOVER_CACHE_KEY = "skills.discoverable.v1";
+let discoverRevalidated = false;
+
+const discoverableQuery = (
+  target: ManagementTarget,
+  targetRef: MutableRefObject<ManagementTarget>,
+) => {
+  const targetKey = getTargetKey(target);
+  const isLocal = target.type === "local";
+  return {
+    queryKey: ["skills", "discoverable", targetKey],
+    queryFn: async () => {
+      const result = await skillsApi.discoverAvailable(targetRef.current);
+      if (isLocal) {
+        discoverRevalidated = true;
+        writeLocalCache(DISCOVER_CACHE_KEY, result);
+      }
+      return result;
+    },
+    // Switching targets can reuse the same observer without a mount. Until
+    // this process has refreshed local discovery, persisted data stays stale
+    // so refetchOnMount is not the only trigger for that first local read.
+    staleTime: isLocal && !discoverRevalidated ? 0 : Infinity,
+    ...(isLocal
+      ? {
+          initialData: () =>
+            readLocalCache<SkillDiscoveryResult>(DISCOVER_CACHE_KEY),
+          // 本地缓存是旧数据：时间记成 0，配合 refetchOnMount 在后台刷新
+          initialDataUpdatedAt: 0,
+          refetchOnMount: () =>
+            discoverRevalidated ? false : ("always" as const),
+          placeholderData: (
+            previous: SkillDiscoveryResult | undefined,
+            previousQuery: { queryKey: readonly unknown[] } | undefined,
+          ) => (previousQuery?.queryKey[2] === "local" ? previous : undefined),
+        }
+      : {}),
+  };
+};
+
+const selectDiscoveredSkills = (result: SkillDiscoveryResult) => result.skills;
+const selectDiscoveryFailures = (result: SkillDiscoveryResult) =>
+  result.failures;
+
 export function useDiscoverableSkills(target: ManagementTarget = LOCAL_TARGET) {
   const targetKey = getTargetKey(target);
-  const query = useQuery({
-    queryKey: ["skills", "discoverable", targetKey],
-    queryFn: () => skillsApi.discoverAvailable(target),
-    staleTime: Infinity,
-  });
+  const targetRef = useLatestTarget(target);
   useTargetQueryIdentityReset("skills", target, targetKey);
-  return query;
+  return useQuery({
+    ...discoverableQuery(target, targetRef),
+    select: selectDiscoveredSkills,
+  });
+}
+
+/** 发现时没读到的仓库（和 useDiscoverableSkills 共用一次请求） */
+export function useDiscoverableSkillsFailures(
+  target: ManagementTarget = LOCAL_TARGET,
+) {
+  const targetKey = getTargetKey(target);
+  const targetRef = useLatestTarget(target);
+  useTargetQueryIdentityReset("skills", target, targetKey);
+  return useQuery({
+    ...discoverableQuery(target, targetRef),
+    select: selectDiscoveryFailures,
+  });
 }
 
 /**
@@ -101,33 +169,12 @@ export function useInstallSkill(target: ManagementTarget = LOCAL_TARGET) {
       skill: DiscoverableSkill;
       currentApp: AppId;
     }) => skillsApi.installUnified(skill, currentApp, target),
-    onSuccess: (installedSkill, _vars) => {
-      const { skill } = _vars;
-      // 直接更新 installed 缓存
+    onSuccess: (installedSkill) => {
+      // v4 derives installed status from this target's installed list, not
+      // from discovery metadata (which also carries repository failures).
       queryClient.setQueryData<InstalledSkill[]>(
         ["skills", "installed", targetKey],
-        (oldData) => {
-          return mergeImportedSkills(oldData, [installedSkill]);
-        },
-      );
-
-      // 更新 discoverable 缓存中对应技能的 installed 状态
-      const installName =
-        skill.directory.split(/[/\\]/).pop()?.toLowerCase() ||
-        skill.directory.toLowerCase();
-      const skillKey = `${installName}:${skill.repoOwner.toLowerCase()}:${skill.repoName.toLowerCase()}`;
-
-      queryClient.setQueryData<DiscoverableSkill[]>(
-        ["skills", "discoverable", targetKey],
-        (oldData) => {
-          if (!oldData) return oldData;
-          return oldData.map((s) => {
-            if (s.key === skillKey) {
-              return { ...s, installed: true };
-            }
-            return s;
-          });
-        },
+        (oldData) => mergeImportedSkills(oldData, [installedSkill]),
       );
     },
     onSettled: () =>
@@ -150,12 +197,8 @@ export function useUninstallSkill(target: ManagementTarget = LOCAL_TARGET) {
   const queryClient = useQueryClient();
   const targetKey = getTargetKey(target);
   return useMutation({
-    mutationFn: ({ id, skillKey }: { id: string; skillKey: string }) => {
-      return skillsApi
-        .uninstallUnified(id, target)
-        .then((result) => ({ ...result, skillKey }));
-    },
-    onSuccess: ({ skillKey }, { id }) => {
+    mutationFn: (id: string) => skillsApi.uninstallUnified(id, target),
+    onSuccess: (_result, id) => {
       // 直接更新 installed 缓存，移除该 skill
       queryClient.setQueryData<InstalledSkill[]>(
         ["skills", "installed", targetKey],
@@ -165,22 +208,15 @@ export function useUninstallSkill(target: ManagementTarget = LOCAL_TARGET) {
         },
       );
 
-      // 更新 discoverable 缓存中对应技能的 installed 状态
-      queryClient.setQueryData<DiscoverableSkill[]>(
-        ["skills", "discoverable", targetKey],
-        (oldData) => {
-          if (!oldData) return oldData;
-          return oldData.map((s) => {
-            if (s.key === skillKey) {
-              return { ...s, installed: false };
-            }
-            return s;
-          });
-        },
-      );
-      queryClient.setQueryData<SkillUpdateInfo[]>(
+      // A completed update check may still contain this Skill. Remove it so
+      // Update All cannot target an ID that was just uninstalled.
+      queryClient.setQueryData<SkillUpdateCheckResult>(
         ["skills", "updates", targetKey],
-        (oldData) => oldData?.filter((update) => update.id !== id),
+        (oldData) =>
+          oldData && {
+            ...oldData,
+            updates: oldData.updates.filter((update) => update.id !== id),
+          },
       );
     },
     onSettled: () =>
@@ -234,11 +270,35 @@ export function useToggleSkillApp(target: ManagementTarget = LOCAL_TARGET) {
       app: AppId;
       enabled: boolean;
     }) => skillsApi.toggleApp(id, app, enabled, target),
-    onSuccess: () => {
+    // 乐观更新：点了格子立刻翻过来，不等写完再刷新；失败时回滚
+    onMutate: async ({ id, app, enabled }) => {
+      const key = ["skills", "installed", targetKey];
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<InstalledSkill[]>(key);
+      if (previous) {
+        queryClient.setQueryData<InstalledSkill[]>(
+          key,
+          previous.map((skill) =>
+            skill.id === id
+              ? { ...skill, apps: { ...skill.apps, [app]: enabled } }
+              : skill,
+          ),
+        );
+      }
+      return { previous };
+    },
+    onError: (_error, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(
+          ["skills", "installed", targetKey],
+          context.previous,
+        );
+      }
+    },
+    onSuccess: () =>
       queryClient.invalidateQueries({
         queryKey: ["skills", "installed", targetKey],
-      });
-    },
+      }),
   });
 }
 
@@ -279,9 +339,10 @@ export function useScanUnmanagedSkills(
   options?: { enabled?: boolean },
 ) {
   const targetKey = getTargetKey(target);
+  const targetRef = useLatestTarget(target);
   const query = useQuery({
     queryKey: ["skills", "unmanaged", targetKey],
-    queryFn: () => skillsApi.scanUnmanaged(target),
+    queryFn: () => skillsApi.scanUnmanaged(targetRef.current),
     enabled: options?.enabled ?? false,
     staleTime: 30 * 1000,
   });
@@ -331,9 +392,10 @@ export function useImportSkillsFromApps(
  */
 export function useSkillRepos(target: ManagementTarget = LOCAL_TARGET) {
   const targetKey = getTargetKey(target);
+  const targetRef = useLatestTarget(target);
   const query = useQuery({
     queryKey: ["skills", "repos", targetKey],
-    queryFn: () => skillsApi.getRepos(target),
+    queryFn: () => skillsApi.getRepos(targetRef.current),
   });
   useTargetQueryIdentityReset("skills", target, targetKey);
   return query;
@@ -392,13 +454,10 @@ export function useInstallSkillsFromZip() {
       filePath: string;
       currentApp: AppId;
     }) => skillsApi.installFromZip(filePath, currentApp),
-    onSuccess: (installedSkills) => {
-      // 直接更新 installed 缓存
+    onSuccess: (result) => {
       queryClient.setQueryData<InstalledSkill[]>(
         ["skills", "installed", "local"],
-        (oldData) => {
-          return mergeImportedSkills(oldData, installedSkills);
-        },
+        (oldData) => mergeImportedSkills(oldData, result.installed),
       );
     },
     onSettled: () =>
@@ -416,13 +475,14 @@ export function useInstallSkillsFromZip() {
 // ========== 更新检测 ==========
 
 /**
- * 检查 Skills 更新（手动触发）
+ * 检查 Skills 更新（手动触发）；结果里带着没读到的仓库
  */
 export function useCheckSkillUpdates(target: ManagementTarget = LOCAL_TARGET) {
   const targetKey = getTargetKey(target);
+  const targetRef = useLatestTarget(target);
   const query = useQuery({
     queryKey: ["skills", "updates", targetKey],
-    queryFn: () => skillsApi.checkUpdates(target),
+    queryFn: () => skillsApi.checkUpdates(targetRef.current),
     enabled: false,
     staleTime: 5 * 60 * 1000,
   });
@@ -448,11 +508,14 @@ export function useUpdateSkill(target: ManagementTarget = LOCAL_TARGET) {
           );
         },
       );
-      queryClient.setQueryData<SkillUpdateInfo[]>(
+      queryClient.setQueryData<SkillUpdateCheckResult>(
         ["skills", "updates", targetKey],
         (oldData) => {
           if (!oldData) return oldData;
-          return oldData.filter((u) => u.id !== updatedSkill.id);
+          return {
+            ...oldData,
+            updates: oldData.updates.filter((u) => u.id !== updatedSkill.id),
+          };
         },
       );
     },
@@ -494,3 +557,27 @@ export type {
   SkillsShSearchResult,
   AppId,
 };
+
+/**
+ * 立即重新同步：按开关和当前同步方式把 Skill 重新投影到各应用目录
+ */
+export function useResyncSkillsToApps() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => skillsApi.resyncToApps(),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+  });
+}
+
+/**
+ * CC Switch 目录下放 Skill 主副本的真实路径（改过配置目录就是改后的）
+ */
+export function useCcSwitchSkillsDir(enabled = true) {
+  return useQuery({
+    queryKey: ["skills", "ccSwitchDir"],
+    queryFn: () => skillsApi.getCcSwitchSkillsDir(),
+    enabled,
+    staleTime: Infinity,
+  });
+}

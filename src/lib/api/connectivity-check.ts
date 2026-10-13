@@ -8,15 +8,6 @@ import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 
 export type HealthStatus = "operational" | "degraded" | "failed";
 
-export interface StreamCheckConfig {
-  /** 单次探测超时（秒） */
-  timeoutSecs: number;
-  /** 超时类失败的最大重试次数 */
-  maxRetries: number;
-  /** 降级阈值（毫秒）：可达但 TTFB 超过该值判定为"较慢" */
-  degradedThresholdMs: number;
-}
-
 export interface StreamCheckResult {
   status: HealthStatus;
   success: boolean;
@@ -46,44 +37,4 @@ export async function streamCheckProvider(
     );
   }
   return invoke("stream_check_provider", { appType, providerId });
-}
-
-/**
- * 批量连通性检查
- */
-export async function streamCheckAllProviders(
-  appType: AppId,
-  proxyTargetsOnly: boolean = false,
-): Promise<Array<[string, StreamCheckResult]>> {
-  return invoke("stream_check_all_providers", { appType, proxyTargetsOnly });
-}
-
-/**
- * 获取连通性检查配置
- */
-export async function getStreamCheckConfig(
-  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
-): Promise<StreamCheckConfig> {
-  if (target.type === "remote") {
-    return remoteApi.getStreamCheckConfig(target.profile, target.secret);
-  }
-  return invoke("get_stream_check_config");
-}
-
-/**
- * 保存连通性检查配置
- */
-export async function saveStreamCheckConfig(
-  config: StreamCheckConfig,
-  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
-): Promise<void> {
-  if (target.type === "remote") {
-    await remoteApi.saveStreamCheckConfig(
-      target.profile,
-      config,
-      target.secret,
-    );
-    return;
-  }
-  return invoke("save_stream_check_config", { config });
 }

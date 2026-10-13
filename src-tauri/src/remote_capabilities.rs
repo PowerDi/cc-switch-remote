@@ -1,7 +1,11 @@
 pub const REMOTE_HELPER_CAPABILITIES: &[&str] = &[
     "providers",
+    // v4 editor projection: helper `providers editor-view` / `add-editor` /
+    // `update-editor` reuse the desktop EditorSave path (redacted view,
+    // restored base, row rollback when the live write fails).
+    "provider-editor",
     "profiles",
-    "common-config",
+    // The legacy TOML patch command was retired upstream.
     "omo",
     "provider-official-seed",
     "provider-model-fetch",
@@ -12,6 +16,10 @@ pub const REMOTE_HELPER_CAPABILITIES: &[&str] = &[
     "routing-runtime",
     #[cfg(feature = "proxy-runtime")]
     "routing-daemon",
+    // App-page mode row (direct / route / stack): helper `app-mode` reuses the same
+    // mode::controller logic the desktop app uses.
+    #[cfg(feature = "proxy-runtime")]
+    "app-mode",
     "openclaw",
     "mcp",
     "prompts",
@@ -22,7 +30,8 @@ pub const REMOTE_HELPER_CAPABILITIES: &[&str] = &[
     "restore-preflight",
     "cloud-sync",
     "tools",
-    "stream-check",
+    // Reachability-only checks replace the retired real-model test/settings API.
+    "connectivity-check",
     "usage",
     "usage-manual-session-sync",
     "usage-model-pricing-sync",

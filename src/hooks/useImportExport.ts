@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { remoteApi, settingsApi } from "@/lib/api";
 import { openCodeRuntimeModelsQueryKey } from "@/lib/query/omo";
 import type {

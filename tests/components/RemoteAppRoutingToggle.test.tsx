@@ -109,9 +109,9 @@ describe("RemoteAppRoutingToggle", () => {
         enabled: true,
       });
     });
-    expect(
-      mocks.startProxyServer.mock.invocationCallOrder[0],
-    ).toBeLessThan(mocks.updateAppConfig.mock.invocationCallOrder[0]);
+    expect(mocks.startProxyServer.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.updateAppConfig.mock.invocationCallOrder[0],
+    );
   });
 
   it("does not stop the remote routing runtime when disabling an app route", async () => {

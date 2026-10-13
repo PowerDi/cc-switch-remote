@@ -2,8 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagementTarget, RemoteHostProfile } from "./remote";
 
 const invokeMock = vi.fn();
-const remoteGetDefaultCostMultiplierMock = vi.fn();
-const remoteSetDefaultCostMultiplierMock = vi.fn();
 const remoteGetPricingModelSourceMock = vi.fn();
 const remoteSetPricingModelSourceMock = vi.fn();
 
@@ -13,10 +11,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("./remote", () => ({
   remoteApi: {
-    getDefaultCostMultiplier: (...args: unknown[]) =>
-      remoteGetDefaultCostMultiplierMock(...args),
-    setDefaultCostMultiplier: (...args: unknown[]) =>
-      remoteSetDefaultCostMultiplierMock(...args),
     getPricingModelSource: (...args: unknown[]) =>
       remoteGetPricingModelSourceMock(...args),
     setPricingModelSource: (...args: unknown[]) =>
@@ -45,36 +39,20 @@ const remoteTarget: ManagementTarget = {
 describe("remote proxy pricing API", () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    remoteGetDefaultCostMultiplierMock.mockReset();
-    remoteSetDefaultCostMultiplierMock.mockReset();
     remoteGetPricingModelSourceMock.mockReset();
     remoteSetPricingModelSourceMock.mockReset();
   });
 
-  it("routes billing defaults to the selected remote target", async () => {
+  // v4 取消了应用级默认成本倍率：前端不再暴露该方法，helper 只对旧客户端显式拒绝。
+  it("routes the billing model source to the selected remote target", async () => {
     const { proxyApi } = await import("./proxy");
 
-    remoteGetDefaultCostMultiplierMock.mockResolvedValue("1.5");
-    remoteSetDefaultCostMultiplierMock.mockResolvedValue(undefined);
     remoteGetPricingModelSourceMock.mockResolvedValue("request");
     remoteSetPricingModelSourceMock.mockResolvedValue(undefined);
 
-    await proxyApi.getDefaultCostMultiplier("codex", remoteTarget);
-    await proxyApi.setDefaultCostMultiplier("codex", "2", remoteTarget);
     await proxyApi.getPricingModelSource("codex", remoteTarget);
     await proxyApi.setPricingModelSource("codex", "response", remoteTarget);
 
-    expect(remoteGetDefaultCostMultiplierMock).toHaveBeenCalledWith(
-      profile,
-      "codex",
-      remoteTarget.secret,
-    );
-    expect(remoteSetDefaultCostMultiplierMock).toHaveBeenCalledWith(
-      profile,
-      "codex",
-      "2",
-      remoteTarget.secret,
-    );
     expect(remoteGetPricingModelSourceMock).toHaveBeenCalledWith(
       profile,
       "codex",

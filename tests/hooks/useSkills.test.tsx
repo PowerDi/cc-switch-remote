@@ -17,6 +17,7 @@ import type {
   ImportSkillSelection,
   InstalledSkill,
   SkillRepo,
+  SkillDiscoveryResult,
 } from "@/lib/api/skills";
 
 const getInstalledMock = vi.hoisted(() => vi.fn());
@@ -86,6 +87,13 @@ const discoverableSkill: DiscoverableSkill = {
   repoBranch: "main",
 };
 
+const discoveryReport: SkillDiscoveryResult = {
+  skills: [discoverableSkill],
+  failures: [
+    { owner: "unavailable", name: "repo", branch: "main", error: "offline" },
+  ],
+};
+
 interface WrapperProps {
   children: ReactNode;
 }
@@ -153,7 +161,7 @@ describe("useSkills remote target", () => {
     const { queryClient, wrapper } = createWrapper();
     queryClient.setQueryData(
       ["skills", "discoverable", "remote:remote-1"],
-      [discoverableSkill],
+      discoveryReport,
     );
     const { result, rerender } = renderHook(
       ({ target }: { target: ManagementTarget }) => useInstalledSkills(target),
@@ -214,7 +222,7 @@ describe("useSkills remote target", () => {
     queryClient.setQueryData(["skills", "installed", "remote:remote-1"], []);
     queryClient.setQueryData(
       ["skills", "discoverable", "remote:remote-1"],
-      [discoverableSkill],
+      discoveryReport,
     );
 
     const install = renderHook(() => useInstallSkill(remoteTarget), {
@@ -229,10 +237,7 @@ describe("useSkills remote target", () => {
         skill: discoverableSkill,
         currentApp: "claude",
       });
-      await uninstall.result.current.mutateAsync({
-        id: installedSkill.id,
-        skillKey: discoverableSkill.key,
-      });
+      await uninstall.result.current.mutateAsync(installedSkill.id);
     });
 
     expect(installUnifiedMock).toHaveBeenCalledWith(
@@ -252,7 +257,7 @@ describe("useSkills remote target", () => {
     ).toEqual([]);
     expect(
       queryClient.getQueryData(["skills", "discoverable", "remote:remote-1"]),
-    ).toEqual([{ ...discoverableSkill, installed: false }]);
+    ).toEqual(discoveryReport);
   });
 
   it("routes toggle, import, and repo mutations through the remote target", async () => {

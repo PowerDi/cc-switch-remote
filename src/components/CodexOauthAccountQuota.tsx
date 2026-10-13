@@ -1,18 +1,33 @@
 import React from "react";
-import { Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useCodexOauthQuotaByAccountId } from "@/lib/query/subscription";
-import { SubscriptionQuotaView } from "@/components/SubscriptionQuotaFooter";
+import {
+  AccountQuotaColumn,
+  subscriptionQuotaState,
+} from "@/components/settings/auth/AccountQuota";
 import type { ManagementTarget } from "@/lib/api";
 
 interface CodexOauthAccountQuotaProps {
+  /** cc-switch 自管的 ChatGPT 账号 ID */
   accountId: string;
+  /** 账号名，拼进刷新按钮的无障碍名字 */
+  login?: string;
+  /** 管理目标：默认本机；远端目标时额度查询走 helper */
   target?: ManagementTarget;
 }
 
+/**
+ * 授权中心里单个 ChatGPT (Codex OAuth) 账号的额度：账号行右侧的额度条 + 「x 分钟前 ↻」。
+ *
+ * 按 accountId 查 cc-switch 自管 OAuth token 的订阅额度（和绑定同一账号的供应商卡片共用缓存），
+ * 打开页面时查一次，不轮询；点 ↻ 手动重查。
+ */
 const CodexOauthAccountQuota: React.FC<CodexOauthAccountQuotaProps> = ({
   accountId,
+  login = "",
   target,
 }) => {
+  const { t, i18n } = useTranslation();
   const {
     data: quota,
     isFetching: loading,
@@ -23,21 +38,13 @@ const CodexOauthAccountQuota: React.FC<CodexOauthAccountQuotaProps> = ({
     target,
   });
 
-  if (loading && !quota) {
-    return (
-      <div className="mt-3 flex items-center justify-center rounded-xl border border-border-default bg-card py-5 shadow-sm">
-        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
   return (
-    <SubscriptionQuotaView
-      quota={quota}
+    <AccountQuotaColumn
+      login={login}
+      state={subscriptionQuotaState(t, quota, loading, i18n.language)}
+      queriedAt={quota?.queriedAt ?? null}
       loading={loading}
-      refetch={refetch}
-      appIdForExpiredHint="codex_oauth"
-      inline={false}
+      onRefresh={() => void refetch()}
     />
   );
 };

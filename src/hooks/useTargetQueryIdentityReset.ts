@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import {
   useQueryClient,
   type Query,
@@ -93,6 +93,21 @@ export const hasSameConnectionIdentity = (
  * repopulate the cache. Equivalent local targets and equivalent remote object
  * copies keep their existing upstream-compatible cache behavior.
  */
+/**
+ * 始终指向当前管理目标的 ref。
+ *
+ * 用途：带 `useTargetQueryIdentityReset` 的查询在连接身份变化时会被 reset 并立即
+ * 重新拉取，而这次重新拉取可能仍然带着上一轮的 `queryFn` 闭包。queryFn 从 ref 读
+ * 最新目标，才能保证同一个 query key 下不会用上一个连接的结果回答新连接。
+ */
+export function useLatestTarget(
+  target: ManagementTarget,
+): MutableRefObject<ManagementTarget> {
+  const ref = useRef(target);
+  ref.current = target;
+  return ref;
+}
+
 export function useTargetQueryIdentityReset(
   domain: TargetQueryDomain,
   target: ManagementTarget,

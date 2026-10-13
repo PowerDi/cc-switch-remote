@@ -1,17 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Activity,
   AlertTriangle,
-  ChevronDown,
-  Copy,
+  ChevronRight,
   Download,
   Globe,
   Loader2,
   RefreshCw,
   Server,
   ShieldAlert,
-  Zap,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -26,47 +24,34 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { AppVisibilitySettings } from "@/components/settings/AppVisibilitySettings";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
 import { CodexAuthSettings } from "@/components/settings/CodexAuthSettings";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { BackupListSection } from "@/components/settings/BackupListSection";
-import { SkillStorageLocationSettings } from "@/components/settings/SkillStorageLocationSettings";
-import { SkillSyncMethodSettings } from "@/components/settings/SkillSyncMethodSettings";
-import { WindowSettings } from "@/components/settings/WindowSettings";
+import { GeneralSection } from "@/components/settings/sections/GeneralSection";
+import {
+  SettingsBlock,
+  SettingsCard,
+} from "@/components/settings/SettingsLayout";
+import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
+import { APP_IDS } from "@/config/appConfig";
+import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
+import type { VisibleApps } from "@/types";
+import { RoutingSection } from "@/components/settings/sections/RoutingSection";
+import type { SettingsFormState } from "@/hooks/useSettings";
 import { AdvancedSettingsAccordion } from "@/components/settings/AdvancedSettingsAccordion";
 import { RemoteDirectorySettings } from "@/components/settings/RemoteDirectorySettings";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
-import { ConnectivityCheckConfigPanel } from "@/components/usage/ConnectivityCheckConfigPanel";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
-import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
-import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
-import { ProxyPanel } from "@/components/proxy/ProxyPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
-import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
-import {
-  TOOL_DISPLAY_NAMES,
-  TOOL_NAMES,
-  ToolEnvironmentSection,
-  ToolDiagnoseButton,
-  type ToolLifecycleAction,
-  type ToolName,
-} from "@/components/settings/ToolEnvironmentSection";
-import { ToolInstallRow } from "@/components/settings/ToolInstallRow";
 import { useImportExport } from "@/hooks/useImportExport";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useRemoteSettings } from "@/hooks/useRemoteSettings";
 import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
-import { useAppProxyConfig } from "@/lib/query/proxy";
-import { REMOTE_ROUTABLE_APPS } from "@/lib/remoteRoutingApps";
 import { remoteApi } from "@/lib/api";
-import type {
-  ManagementTarget,
-  RemoteHealth,
-  RemoteToolVersion,
-} from "@/lib/api";
-import { isUpdateAvailable } from "@/lib/version";
+import type { AppId } from "@/lib/api/types";
+import type { ManagementTarget, RemoteHealth } from "@/lib/api";
 import {
   formatRemoteCapabilitySummary,
   formatRemoteHelperBuild,
@@ -77,14 +62,8 @@ import {
   formatRemotePlatform,
 } from "@/lib/remoteHealth";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import type { Settings, SkillStorageLocation } from "@/types";
-import type { MigrationResult } from "@/lib/api/skills";
-import type { ToolInstallation } from "@/lib/api/settings";
-import { POSIX_ONE_CLICK_INSTALL_COMMANDS } from "@/lib/toolInstallCommands";
-import {
-  shouldConfirmRemoteFailoverToggle,
-  shouldConfirmRemoteRoutingStart,
-} from "@/components/settings/remoteRoutingGuards";
+import type { Settings } from "@/types";
+import { shouldConfirmRemoteFailoverToggle } from "@/components/settings/remoteRoutingGuards";
 
 interface RemoteSettingsPageProps {
   open: boolean;
@@ -92,6 +71,10 @@ interface RemoteSettingsPageProps {
   onImportSuccess?: () => void | Promise<void>;
   onSettingsSaved?: (settings: Settings) => void;
   onInteractionBlockedChange?: (blocked: boolean) => void;
+  /** 「应用」页入口：工具环境已统一到那里（按当前管理目标执行） */
+  onOpenApps?: () => void;
+  /** 从路由页的「正在使用」行跳到对应应用页（与本地设置页同一个行为） */
+  onOpenApp?: (app: AppId) => void;
   defaultTab?: string;
   target: Extract<ManagementTarget, { type: "remote" }>;
 }
@@ -116,6 +99,8 @@ export function RemoteSettingsPage({
   onSettingsSaved,
   onInteractionBlockedChange,
   defaultTab = "environment",
+  onOpenApps,
+  onOpenApp,
   target,
 }: RemoteSettingsPageProps) {
   const { t } = useTranslation();
@@ -125,34 +110,14 @@ export function RemoteSettingsPage({
   const [health, setHealth] = useState<RemoteHealth | null>(null);
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
   const [isInstallingHelper, setIsInstallingHelper] = useState(false);
-  const [toolVersions, setToolVersions] = useState<RemoteToolVersion[]>([]);
-  const [isLoadingTools, setIsLoadingTools] = useState(false);
-  const [toolActions, setToolActions] = useState<
-    Partial<Record<ToolName, ToolLifecycleAction>>
-  >({});
-  const [batchAction, setBatchAction] = useState<ToolLifecycleAction | null>(
-    null,
-  );
   const [activeRemoteTask, setActiveRemoteTask] = useState<string | null>(null);
-  const [toolDiagnostics, setToolDiagnostics] = useState<
-    Partial<Record<ToolName, ToolInstallation[]>>
-  >({});
-  const [isDiagnosingTools, setIsDiagnosingTools] = useState(false);
-  const [showInstallCommands, setShowInstallCommands] = useState(false);
   const [authCenterBusy, setAuthCenterBusy] = useState(false);
 
   useEffect(() => {
     setHealth(null);
     setIsCheckingHealth(false);
     setIsInstallingHelper(false);
-    setToolVersions([]);
-    setIsLoadingTools(false);
-    setToolActions({});
-    setBatchAction(null);
     setActiveRemoteTask(null);
-    setToolDiagnostics({});
-    setIsDiagnosingTools(false);
-    setShowInstallCommands(false);
     setAuthCenterBusy(false);
   }, [revision]);
 
@@ -161,27 +126,21 @@ export function RemoteSettingsPage({
     settings: remoteSettings,
     isLoading: isLoadingRemoteSettings,
     isSaving: isSavingRemoteSettings,
-    installedSkillCount: remoteInstalledSkillCount,
     activeTask: remoteSettingsTask,
     loadSettings: loadRemoteSettings,
     clearSettings: clearRemoteSettings,
     saveSettings: saveRemoteSettings,
-    migrateSkillStorage: migrateRemoteSkillStorage,
   } = useRemoteSettings({ target, onSettingsSaved });
 
   const interactionBlocked =
     isCheckingHealth ||
     isInstallingHelper ||
-    isLoadingTools ||
     isLoadingRemoteSettings ||
     isSavingRemoteSettings ||
-    isDiagnosingTools ||
     authCenterBusy ||
     importExport.isSelectingFile ||
     importExport.isImporting ||
-    importExport.isExporting ||
-    batchAction !== null ||
-    Object.keys(toolActions).length > 0;
+    importExport.isExporting;
   useEffect(() => {
     onInteractionBlockedChange?.(interactionBlocked);
     return () => onInteractionBlockedChange?.(false);
@@ -191,14 +150,10 @@ export function RemoteSettingsPage({
   const settingsCapability = health?.capabilities.includes("settings") ?? false;
   const appConfigDirCapability =
     health?.capabilities.includes("settings-app-config-dir") ?? false;
-  const pluginCapability = health?.capabilities.includes("plugin") ?? false;
-  const skillsCapability = health?.capabilities.includes("skills") ?? false;
   const importExportCapability =
     health?.capabilities.includes("import-export") ?? false;
   const cloudSyncCapability =
     health?.capabilities.includes("cloud-sync") ?? false;
-  const streamCheckCapability =
-    health?.capabilities.includes("stream-check") ?? false;
   const usageCapability = health?.capabilities.includes("usage") ?? false;
   const usageManualSessionSyncCapability =
     health?.capabilities.includes("usage-manual-session-sync") ?? false;
@@ -210,34 +165,6 @@ export function RemoteSettingsPage({
   const routingRuntimeCapability =
     health?.capabilities.includes("routing-runtime") ?? false;
   const helperReady = Boolean(health?.reachable && health.helperInstalled);
-  const toolsDisabled = !helperReady || !toolsCapability;
-  const toolsDisabledMessage = !helperReady
-    ? t("remote.settings.environment.helperRequired", {
-        defaultValue: "请先完成健康检查并安装可用的远程 Helper。",
-      })
-    : t("remote.settings.environment.helperUnsupported", {
-        defaultValue:
-          "当前远程 Helper 不支持环境检查更新。请安装包含 tools capability 的新版 Helper。",
-      });
-
-  const toolVersionByName = useMemo(
-    () => new Map(toolVersions.map((tool) => [tool.name, tool])),
-    [toolVersions],
-  );
-
-  const updatableTools = useMemo(
-    () =>
-      TOOL_NAMES.filter((name) => {
-        const tool = toolVersionByName.get(name);
-        return Boolean(
-          tool?.version &&
-            tool.latest_version &&
-            isUpdateAvailable(tool.version, tool.latest_version),
-        );
-      }),
-    [toolVersionByName],
-  );
-
   const loadHealth = useCallback(async () => {
     const generation = capture();
     setIsCheckingHealth(true);
@@ -264,41 +191,6 @@ export function RemoteSettingsPage({
     } finally {
       if (isCurrent(generation)) {
         setIsCheckingHealth(false);
-        setActiveRemoteTask(null);
-      }
-    }
-  }, [capture, isCurrent, t, target.profile, target.secret]);
-
-  const loadToolVersions = useCallback(async () => {
-    const generation = capture();
-    setIsLoadingTools(true);
-    setActiveRemoteTask(
-      t("remote.settings.tasks.loadTools", {
-        defaultValue: "正在读取远程工具版本和更新信息...",
-      }),
-    );
-    try {
-      const result = await remoteApi.getToolVersions(
-        target.profile,
-        [...TOOL_NAMES],
-        target.secret,
-      );
-      if (!isCurrent(generation)) return [];
-      setToolVersions(result);
-      return result;
-    } catch (error) {
-      if (!isCurrent(generation)) return [];
-      console.error("[RemoteSettingsPage] Failed to load tools", error);
-      toast.error(
-        t("remote.settings.environment.loadToolsFailed", {
-          defaultValue: "远程环境检查失败",
-        }),
-        { description: extractErrorMessage(error) },
-      );
-      return [];
-    } finally {
-      if (isCurrent(generation)) {
-        setIsLoadingTools(false);
         setActiveRemoteTask(null);
       }
     }
@@ -364,151 +256,6 @@ export function RemoteSettingsPage({
     }
   };
 
-  const runToolAction = async (
-    toolNames: ToolName[],
-    action: ToolLifecycleAction,
-  ) => {
-    if (toolNames.length === 0) return;
-    const generation = capture();
-    const isBatch = toolNames.length > 1;
-    if (isBatch) setBatchAction(action);
-
-    const failures: string[] = [];
-    let succeeded = 0;
-    for (const toolName of toolNames) {
-      setActiveRemoteTask(
-        t("remote.settings.tasks.runToolAction", {
-          defaultValue: "正在远程{{action}}{{tool}}...",
-          action:
-            action === "install"
-              ? t("settings.toolInstall")
-              : t("settings.toolUpdate"),
-          tool: TOOL_DISPLAY_NAMES[toolName],
-        }),
-      );
-      setToolActions((prev) => ({ ...prev, [toolName]: action }));
-      try {
-        await remoteApi.runToolLifecycleAction(
-          target.profile,
-          [toolName],
-          action,
-          target.secret,
-        );
-        if (!isCurrent(generation)) return;
-        succeeded += 1;
-        await loadToolVersions();
-      } catch (error) {
-        if (!isCurrent(generation)) return;
-        console.error(
-          `[RemoteSettingsPage] Failed to ${action} ${toolName}`,
-          error,
-        );
-        failures.push(
-          `${TOOL_DISPLAY_NAMES[toolName]}: ${extractErrorMessage(error)}`,
-        );
-      } finally {
-        if (isCurrent(generation))
-          setToolActions((prev) => {
-            const next = { ...prev };
-            delete next[toolName];
-            return next;
-          });
-      }
-    }
-
-    if (!isCurrent(generation)) return;
-    if (isBatch) setBatchAction(null);
-    setActiveRemoteTask(null);
-    const actionLabel =
-      action === "install"
-        ? t("settings.toolInstall")
-        : t("settings.toolUpdate");
-    if (failures.length === 0) {
-      toast.success(
-        t("settings.toolActionDone", {
-          count: succeeded,
-          action: actionLabel,
-        }),
-      );
-    } else if (succeeded === 0) {
-      toast.error(t("settings.toolActionFailed"), {
-        description: failures.join("\n"),
-      });
-    } else {
-      toast.warning(
-        t("settings.toolActionPartial", {
-          succeeded,
-          failed: failures.length,
-        }),
-        { description: failures.join("\n") },
-      );
-    }
-  };
-
-  const diagnoseToolInstallations = async () => {
-    if (toolsDisabled || isDiagnosingTools) return;
-    const generation = capture();
-    setIsDiagnosingTools(true);
-    setActiveRemoteTask(
-      t("remote.settings.tasks.diagnoseTools", {
-        defaultValue: "正在诊断远程工具安装冲突...",
-      }),
-    );
-    try {
-      const reports = await remoteApi.probeToolInstallations(
-        target.profile,
-        [...TOOL_NAMES],
-        target.secret,
-      );
-      if (!isCurrent(generation)) return;
-      const next: Partial<Record<ToolName, ToolInstallation[]>> = {};
-      let conflicts = 0;
-      for (const report of reports) {
-        if (report.is_conflict) {
-          next[report.tool as ToolName] = report.installs;
-          conflicts += 1;
-        }
-      }
-      setToolDiagnostics(next);
-      if (conflicts === 0) {
-        toast.info(
-          t("settings.toolNoConflicts", {
-            defaultValue: "未发现安装冲突",
-          }),
-        );
-      }
-    } catch (error) {
-      if (!isCurrent(generation)) return;
-      console.error("[RemoteSettingsPage] Failed to diagnose tools", error);
-      toast.error(
-        t("settings.toolDiagnoseFailed", {
-          defaultValue: "诊断安装冲突失败",
-        }),
-        { description: extractErrorMessage(error) },
-      );
-    } finally {
-      if (isCurrent(generation)) {
-        setIsDiagnosingTools(false);
-        setActiveRemoteTask(null);
-      }
-    }
-  };
-
-  const copyRemoteInstallCommands = async () => {
-    try {
-      await navigator.clipboard.writeText(POSIX_ONE_CLICK_INSTALL_COMMANDS);
-      toast.success(t("settings.installCommandsCopied"), {
-        closeButton: true,
-      });
-    } catch (error) {
-      console.error(
-        "[RemoteSettingsPage] Failed to copy install commands",
-        error,
-      );
-      toast.error(t("settings.installCommandsCopyFailed"));
-    }
-  };
-
   return (
     <div className="flex flex-col h-full overflow-hidden px-6">
       <span data-testid="settings-target" className="sr-only">
@@ -559,91 +306,28 @@ export function RemoteSettingsPage({
               <RemoteTaskBanner
                 message={activeRemoteTask ?? remoteSettingsTask}
               />
-              <ToolEnvironmentSection
-                title={t("remote.settings.environment.toolsTitle", {
-                  defaultValue: "远程环境检查更新",
-                })}
-                description={t("remote.settings.environment.toolsDescription", {
-                  defaultValue:
-                    "检查远程服务器上的 Claude Code、Codex、Gemini、OpenCode、OpenClaw 和 Hermes",
-                })}
-                disabled={toolsDisabled}
-                disabledMessage={toolsDisabledMessage}
-                toolVersions={toolVersions}
-                isLoading={isLoadingTools}
-                toolActions={toolActions}
-                batchAction={batchAction}
-                updatableToolNames={updatableTools}
-                isAnyBusy={
-                  Boolean(batchAction) || Object.keys(toolActions).length > 0
-                }
-                actionPrefix={
-                  <ToolDiagnoseButton
-                    loading={isDiagnosingTools}
-                    disabled={toolsDisabled || isLoadingTools}
-                    onClick={diagnoseToolInstallations}
-                  />
-                }
-                onRefresh={() => {
-                  void loadToolVersions();
-                }}
-                onRunToolAction={runToolAction}
-                renderToolDiagnostics={(toolName) => {
-                  const conflicts = toolDiagnostics[toolName];
-                  if (!conflicts || conflicts.length === 0) return null;
-                  return (
-                    <div className="space-y-1.5 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-2.5">
-                      <div className="text-[11px] font-medium text-yellow-600 dark:text-yellow-400">
-                        {t("settings.toolConflictTitle")}
-                      </div>
-                      <p className="text-[10px] leading-snug text-muted-foreground">
-                        {t("settings.toolConflictHint")}
-                      </p>
-                      <ul className="space-y-1.5">
-                        {conflicts.map((inst) => (
-                          <li key={inst.path}>
-                            <ToolInstallRow inst={inst} />
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  );
-                }}
-              />
-              <div className="space-y-3 px-1">
-                <button
-                  type="button"
-                  onClick={() => setShowInstallCommands((value) => !value)}
-                  aria-expanded={showInstallCommands}
-                  className="flex w-full items-center gap-1.5 text-sm font-medium text-foreground transition-colors hover:text-primary"
-                >
-                  <ChevronDown
-                    className={`h-3.5 w-3.5 transition-transform ${
-                      showInstallCommands ? "" : "-rotate-90"
-                    }`}
-                  />
-                  {t("settings.manualInstallCommands")}
-                </button>
-                {showInstallCommands ? (
-                  <div className="rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 space-y-3 shadow-sm">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-muted-foreground">
-                        {t("settings.oneClickInstallHint")}
-                      </p>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={copyRemoteInstallCommands}
-                        className="h-7 gap-1.5 text-xs"
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                        {t("common.copy")}
-                      </Button>
-                    </div>
-                    <pre className="text-xs font-mono bg-background/80 px-3 py-2.5 rounded-lg border border-border/60 overflow-x-auto">
-                      {POSIX_ONE_CLICK_INSTALL_COMMANDS}
-                    </pre>
-                  </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                <span>
+                  {toolsCapability
+                    ? t("remote.settings.environment.toolsMovedHint", {
+                        defaultValue:
+                          "工具环境的安装与升级已统一在「应用」页，并按当前管理目标执行。",
+                      })
+                    : t("remote.settings.environment.helperUnsupported", {
+                        defaultValue:
+                          "当前远程 Helper 不支持环境检查更新。请安装包含 tools capability 的新版 Helper。",
+                      })}
+                </span>
+                {onOpenApps ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={onOpenApps}
+                  >
+                    {t("nav.apps")}
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </Button>
                 ) : null}
               </div>
             </motion.div>
@@ -659,17 +343,12 @@ export function RemoteSettingsPage({
               <RemoteGeneralSettingsSection
                 helperReady={helperReady}
                 settingsCapability={settingsCapability}
-                pluginCapability={pluginCapability}
-                skillsCapability={skillsCapability}
                 target={target}
                 settings={remoteSettings}
-                installedSkillCount={remoteInstalledSkillCount}
                 isLoading={isLoadingRemoteSettings}
-                isSaving={isSavingRemoteSettings}
                 onSave={(updates) => {
                   void saveRemoteSettings(updates);
                 }}
-                onMigrateSkillStorage={migrateRemoteSkillStorage}
               />
             </motion.div>
           </TabsContent>
@@ -683,6 +362,7 @@ export function RemoteSettingsPage({
               isSavingSettings={isSavingRemoteSettings}
               onSaveSettings={saveRemoteSettings}
               target={target}
+              onOpenApp={onOpenApp}
             />
           </TabsContent>
 
@@ -898,22 +578,6 @@ export function RemoteSettingsPage({
                         }}
                       />
                     ),
-                  test:
-                    !helperReady || !streamCheckCapability ? (
-                      <div className="rounded-xl border border-border bg-card/50 px-4 py-3 text-sm text-muted-foreground">
-                        {!helperReady
-                          ? t("remote.settings.environment.helperRequired", {
-                              defaultValue:
-                                "请先完成健康检查并安装可用的远程 Helper。",
-                            })
-                          : t("remote.settings.advanced.unsupported.test", {
-                              defaultValue:
-                                "当前远程 Helper 不支持模型测试配置。请更新到包含 stream-check capability 的新版 Helper。",
-                            })}
-                      </div>
-                    ) : (
-                      <ConnectivityCheckConfigPanel target={target} />
-                    ),
                   logConfig:
                     !helperReady || !settingsCapability ? (
                       <div className="rounded-xl border border-border bg-card/50 px-4 py-3 text-sm text-muted-foreground">
@@ -951,6 +615,8 @@ interface RemoteRoutingRuntimePanelProps {
   onSaveSettings: (
     updates: Partial<Settings>,
   ) => boolean | void | Promise<boolean | void>;
+  /** 从路由页的「正在使用」行跳到对应应用页 */
+  onOpenApp?: (app: AppId) => void;
 }
 
 function RemoteRoutingRuntimePanel({
@@ -959,60 +625,9 @@ function RemoteRoutingRuntimePanel({
   settings,
   isSavingSettings,
   onSaveSettings,
+  onOpenApp,
 }: RemoteRoutingRuntimePanelProps) {
   const { t } = useTranslation();
-  const [showProxyConfirm, setShowProxyConfirm] = useState(false);
-  const { startProxyServer, stopWithRestore, isStarting, isStopping } =
-    useProxyStatus(target);
-
-  const handleToggleProxy = async (checked: boolean) => {
-    if (!enabled || isStarting || isStopping) return;
-    try {
-      if (checked) {
-        if (settings && shouldConfirmRemoteRoutingStart(settings)) {
-          setShowProxyConfirm(true);
-          return;
-        }
-        await startProxyServer();
-      } else {
-        await stopWithRestore();
-      }
-    } catch (error) {
-      console.error(
-        "[RemoteRoutingRuntimePanel] Failed to toggle remote runtime",
-        error,
-      );
-      toast.error(
-        checked
-          ? t("remote.settings.routing.runtimeStartFailed", {
-              defaultValue: "远程路由启动失败",
-            })
-          : t("remote.settings.routing.runtimeStopFailed", {
-              defaultValue: "远程路由停止失败",
-            }),
-        { description: extractErrorMessage(error) },
-      );
-    }
-  };
-
-  const handleProxyConfirm = async () => {
-    setShowProxyConfirm(false);
-    try {
-      await onSaveSettings({ proxyConfirmed: true });
-      await startProxyServer();
-    } catch (error) {
-      console.error(
-        "[RemoteRoutingRuntimePanel] Failed to confirm remote routing",
-        error,
-      );
-      toast.error(
-        t("remote.settings.routing.runtimeStartFailed", {
-          defaultValue: "远程路由启动失败",
-        }),
-        { description: extractErrorMessage(error) },
-      );
-    }
-  };
 
   if (!enabled) {
     return (
@@ -1026,46 +641,31 @@ function RemoteRoutingRuntimePanel({
   }
 
   return (
-    <>
-      <div className="space-y-4">
-        {settings ? (
-          <ToggleRow
-            icon={<Server className="h-4 w-4 text-green-500" />}
-            title={t("remote.settings.routing.showRemoteRoutingToggle", {
-              defaultValue: "在主页面显示远程路由开关",
-            })}
-            description={t(
-              "remote.settings.routing.showRemoteRoutingToggleDescription",
-              {
-                defaultValue:
-                  "开启后，主页面顶部显示当前应用的远程路由开关；开启应用路由时远程路由服务会自动启动。",
-              },
-            )}
-            checked={!!settings.enableRemoteRoutingToggle}
-            disabled={isSavingSettings}
-            onCheckedChange={(value) =>
-              onSaveSettings({ enableRemoteRoutingToggle: value })
-            }
-          />
-        ) : null}
-        <ProxyPanel
-          target={target}
-          enableLocalProxy={false}
-          onEnableLocalProxyChange={() => undefined}
-          onToggleProxy={handleToggleProxy}
-          isProxyPending={isStarting || isStopping}
+    <div className="space-y-4">
+      {settings ? (
+        <ToggleRow
+          icon={<Server className="h-4 w-4 text-green-500" />}
+          title={t("remote.settings.routing.showRemoteRoutingToggle", {
+            defaultValue: "在主页面显示远程路由开关",
+          })}
+          description={t(
+            "remote.settings.routing.showRemoteRoutingToggleDescription",
+            {
+              defaultValue:
+                "开启后，主页面顶部显示当前应用的远程路由开关；开启应用路由时远程路由服务会自动启动。",
+            },
+          )}
+          checked={!!settings.enableRemoteRoutingToggle}
+          disabled={isSavingSettings}
+          onCheckedChange={(value) =>
+            onSaveSettings({ enableRemoteRoutingToggle: value })
+          }
         />
-      </div>
-      <ConfirmDialog
-        isOpen={showProxyConfirm}
-        variant="info"
-        title={t("confirm.proxy.title")}
-        message={t("confirm.proxy.message")}
-        confirmText={t("confirm.proxy.confirm")}
-        onConfirm={() => void handleProxyConfirm()}
-        onCancel={() => setShowProxyConfirm(false)}
-      />
-    </>
+      ) : null}
+      {/* 远端路由服务（启动/停止/状态/监听/日志）、故障转移参数与整流都复用本机同一套
+          RoutingSection，只是 target 指向远端；应用级模式视图在应用页的模式面板里。 */}
+      <RoutingSection target={target} onOpenApp={onOpenApp} />
+    </div>
   );
 }
 
@@ -1078,6 +678,8 @@ interface RemoteRoutingSettingsSectionProps {
   onSaveSettings: (
     updates: Partial<Settings>,
   ) => boolean | void | Promise<boolean | void>;
+  /** 从路由页的「正在使用」行跳到对应应用页 */
+  onOpenApp?: (app: AppId) => void;
   target: Extract<ManagementTarget, { type: "remote" }>;
 }
 
@@ -1088,21 +690,12 @@ function RemoteRoutingSettingsSection({
   settings,
   isSavingSettings,
   onSaveSettings,
+  onOpenApp,
   target,
 }: RemoteRoutingSettingsSectionProps) {
   const { t } = useTranslation();
   const [showFailoverConfirm, setShowFailoverConfirm] = useState(false);
   const { isRunning } = useProxyStatus(target);
-  const { data: claudeAppConfig } = useAppProxyConfig("claude", target);
-  const { data: codexAppConfig } = useAppProxyConfig("codex", target);
-  const { data: geminiAppConfig } = useAppProxyConfig("gemini", target);
-  const { data: grokbuildAppConfig } = useAppProxyConfig("grokbuild", target);
-  const appConfigs = {
-    claude: claudeAppConfig,
-    codex: codexAppConfig,
-    gemini: geminiAppConfig,
-    grokbuild: grokbuildAppConfig,
-  };
   const disabledMessage = !helperReady
     ? t("remote.settings.environment.helperRequired", {
         defaultValue: "请先完成健康检查并安装可用的远程 Helper。",
@@ -1179,6 +772,7 @@ function RemoteRoutingSettingsSection({
               settings={settings}
               isSavingSettings={isSavingSettings}
               onSaveSettings={onSaveSettings}
+              onOpenApp={onOpenApp}
             />
           </AccordionContent>
         </AccordionItem>
@@ -1192,10 +786,18 @@ function RemoteRoutingSettingsSection({
               <Activity className="h-5 w-5 text-orange-500" />
               <div className="text-left">
                 <h3 className="text-base font-semibold">
-                  {t("settings.advanced.failover.title")}
+                  {t("remote.settings.routing.homepageTitle", {
+                    defaultValue: "主页面开关",
+                  })}
                 </h3>
                 <p className="text-sm text-muted-foreground font-normal">
-                  {t("settings.advanced.failover.description")}
+                  {t(
+                    "remote.settings.routing.showRemoteFailoverToggleDescription",
+                    {
+                      defaultValue:
+                        "开启后，主页面顶部显示当前应用的远程故障转移开关；需要当前应用已启用远程路由。",
+                    },
+                  )}
                 </p>
               </div>
             </div>
@@ -1229,69 +831,7 @@ function RemoteRoutingSettingsSection({
                   })}
                 </span>
               </div>
-              <Tabs defaultValue="claude" className="w-full">
-                <TabsList className="grid w-full grid-cols-4">
-                  {REMOTE_ROUTABLE_APPS.map(({ id, label }) => (
-                    <TabsTrigger key={id} value={id}>
-                      {label}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-                {REMOTE_ROUTABLE_APPS.map(({ id: appType }) => {
-                  const failoverDisabled =
-                    !routingRuntimeCapability ||
-                    !isRunning ||
-                    !(appConfigs[appType]?.enabled ?? false);
-                  return (
-                    <TabsContent key={appType} value={appType} className="mt-4">
-                      <div className="space-y-4">
-                        {failoverDisabled ? (
-                          <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-700 dark:text-yellow-300">
-                            {t("remote.settings.routing.failoverRequired", {
-                              app: appType,
-                              defaultValue:
-                                "需要先启动远程路由，并启用当前应用的远程路由后才能配置故障转移。",
-                            })}
-                          </div>
-                        ) : null}
-                        <FailoverQueueManager
-                          appType={appType}
-                          target={target}
-                          autoSwitchDisabled={failoverDisabled}
-                        />
-                        <AutoFailoverConfigPanel
-                          appType={appType}
-                          target={target}
-                          disabled={failoverDisabled}
-                        />
-                      </div>
-                    </TabsContent>
-                  );
-                })}
-              </Tabs>
             </div>
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem
-          value="rectifier"
-          className="rounded-xl glass-card overflow-hidden"
-        >
-          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-            <div className="flex items-center gap-3">
-              <Zap className="h-5 w-5 text-purple-500" />
-              <div className="text-left">
-                <h3 className="text-base font-semibold">
-                  {t("settings.advanced.rectifier.title")}
-                </h3>
-                <p className="text-sm text-muted-foreground font-normal">
-                  {t("settings.advanced.rectifier.description")}
-                </p>
-              </div>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-            <RectifierConfigPanel target={target} />
           </AccordionContent>
         </AccordionItem>
 
@@ -1342,31 +882,19 @@ interface RemoteHealthSectionProps {
 interface RemoteGeneralSettingsSectionProps {
   helperReady: boolean;
   settingsCapability: boolean;
-  pluginCapability: boolean;
-  skillsCapability: boolean;
   target: Extract<ManagementTarget, { type: "remote" }>;
   settings: Settings | null;
-  installedSkillCount: number;
   isLoading: boolean;
-  isSaving: boolean;
   onSave: (updates: Partial<Settings>) => void | Promise<void>;
-  onMigrateSkillStorage: (
-    target: SkillStorageLocation,
-  ) => Promise<MigrationResult>;
 }
 
 function RemoteGeneralSettingsSection({
   helperReady,
   settingsCapability,
-  pluginCapability,
-  skillsCapability,
   target,
   settings,
-  installedSkillCount,
   isLoading,
-  isSaving,
   onSave,
-  onMigrateSkillStorage,
 }: RemoteGeneralSettingsSectionProps) {
   const { t } = useTranslation();
   const unavailableMessage = !helperReady
@@ -1399,34 +927,22 @@ function RemoteGeneralSettingsSection({
 
   return (
     <div className="space-y-6">
-      <AppVisibilitySettings
-        settings={settings}
-        onChange={(updates) => void onSave(updates)}
+      {/* v4 把外观 / 侧栏 / 窗口 / 终端都收进了 GeneralSection（含 visibleApps、
+          showProfileSwitcher），远端设置页沿用同一套模块，而不是另建 Remote 专属区块。 */}
+      <GeneralSection
+        settings={settings as SettingsFormState}
+        onAutoSave={async (updates) => {
+          await onSave(updates as Partial<Settings>);
+          return true;
+        }}
+        // 本机的「前往应用」入口在远端不适用（应用页管理的是本机工具环境），
+        // 这里换成那台主机自己的可见应用开关。
+        hideVisibleAppsRow
+        onOpenApps={() => undefined}
       />
-
-      <SkillStorageLocationSettings
-        value={settings.skillStorageLocation ?? "cc_switch"}
-        installedCount={installedSkillCount}
-        onMigrated={(location) =>
-          void onSave({ skillStorageLocation: location })
-        }
-        onMigrate={
-          skillsCapability
-            ? onMigrateSkillStorage
-            : async () => {
-                throw new Error(
-                  t("remote.settings.general.skillsUnsupported", {
-                    defaultValue:
-                      "当前远程 Helper 不支持 Skills 存储位置迁移。",
-                  }),
-                );
-              }
-        }
-      />
-
-      <SkillSyncMethodSettings
-        value={settings.skillSyncMethod ?? "auto"}
-        onChange={(method) => void onSave({ skillSyncMethod: method })}
+      <RemoteAppVisibilityCard
+        settings={settings as SettingsFormState}
+        onSave={(updates) => onSave(updates as Partial<Settings>)}
       />
 
       <CodexAuthSettings
@@ -1435,13 +951,57 @@ function RemoteGeneralSettingsSection({
         onChange={(updates) => void onSave(updates)}
       />
 
-      <WindowSettings
-        settings={settings}
-        mode="remote"
-        disabled={!pluginCapability || isSaving}
-        onChange={(updates) => void onSave(updates)}
-      />
+      {/* Skill 存储位置在 v4 移到 Skills 页的 SkillsStorageSheet（远端由 skills 能力门控），
+          不再放在设置里；远端 Skills 页批次接上。 */}
     </div>
+  );
+}
+
+/**
+ * 远端主机的可见应用：写进那台主机自己的设置（visibleApps），本机目标不受影响。
+ * 与「应用」页的本机开关同一套语义：至少留一个应用。
+ */
+function RemoteAppVisibilityCard({
+  settings,
+  onSave,
+}: {
+  settings: SettingsFormState;
+  onSave: (updates: Partial<SettingsFormState>) => void | Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const visibleApps: VisibleApps = {
+    ...DEFAULT_VISIBLE_APPS,
+    ...settings.visibleApps,
+  };
+  const visibleCount = Object.values(visibleApps).filter(Boolean).length;
+
+  return (
+    <SettingsBlock title={t("settings.general.sidebarAndHeader")}>
+      <SettingsCard>
+        <div className="flex flex-wrap gap-2 px-4 py-3">
+          {APP_IDS.map((app) => {
+            const visible = visibleApps[app];
+            return (
+              <Button
+                key={app}
+                type="button"
+                variant={visible ? "solid" : "quiet"}
+                size="compact"
+                aria-pressed={visible}
+                disabled={visible && visibleCount <= 1}
+                onClick={() =>
+                  void onSave({
+                    visibleApps: { ...visibleApps, [app]: !visible },
+                  })
+                }
+              >
+                {APP_DISPLAY_NAME[app]}
+              </Button>
+            );
+          })}
+        </div>
+      </SettingsCard>
+    </SettingsBlock>
   );
 }
 

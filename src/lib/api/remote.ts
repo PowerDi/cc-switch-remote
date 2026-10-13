@@ -20,10 +20,8 @@ import type {
 } from "@/types";
 import type { AppId } from "./types";
 import type { ProviderSortUpdate, SwitchResult } from "./providers";
-import type {
-  StreamCheckConfig,
-  StreamCheckResult,
-} from "./connectivity-check";
+import type { ProviderEditorSave, ProviderEditorView } from "./providers";
+import type { StreamCheckResult } from "./connectivity-check";
 import type { BackupEntry, LogConfig, SettingsSaveResult } from "./settings";
 import type { SubscriptionQuota } from "@/types/subscription";
 import type { Prompt } from "./prompts";
@@ -32,9 +30,10 @@ import type {
   ImportSkillSelection,
   InstalledSkill,
   SkillBackupEntry,
+  SkillDiscoveryResult,
   SkillRepo,
   SkillUninstallResult,
-  SkillUpdateInfo,
+  SkillUpdateCheckResult,
   UnmanagedSkill,
   MigrationResult,
 } from "./skills";
@@ -50,11 +49,15 @@ import type {
   AppRoutingPreflight,
   CircuitBreakerConfig,
   CircuitBreakerStats,
+  CodexDaemonRestartOutcome,
   FailoverQueueItem,
   GlobalProxyConfig,
   ProviderHealth,
   ProxyServerInfo,
+  ProxyStack,
+  ProxyStackNotice,
   ProxyStatus,
+  ProxyTakeoverStatus,
 } from "@/types/proxy";
 import type {
   OptimizerConfig,
@@ -85,10 +88,6 @@ import type {
 import type { CopilotModel, CopilotUsageResponse } from "./copilot";
 import type { FetchedModel, OpenCodeModelRef } from "./model-fetch";
 import type { Profile, ProfileScope, ProfilesResponse } from "./profiles";
-import type {
-  AppType as ConfigAppType,
-  ExtractCommonConfigSnippetOptions,
-} from "./config";
 import type { OmoLocalFileData } from "@/types/omo";
 
 export type RemoteAuthMethod =
@@ -515,62 +514,6 @@ export const remoteApi = {
     return invoke<void>("remote_clear_current_project_profile", {
       profile,
       scope,
-      secret,
-    });
-  },
-
-  getCommonConfigSnippet(
-    profile: RemoteHostProfile,
-    appType: ConfigAppType,
-    secret?: RemoteConnectionSecret,
-  ): Promise<string | null> {
-    return invoke<string | null>("remote_get_common_config_snippet", {
-      profile,
-      appType,
-      secret,
-    });
-  },
-
-  setCommonConfigSnippet(
-    profile: RemoteHostProfile,
-    appType: ConfigAppType,
-    snippet: string,
-    secret?: RemoteConnectionSecret,
-  ): Promise<void> {
-    return invoke<void>("remote_set_common_config_snippet", {
-      profile,
-      appType,
-      snippet,
-      secret,
-    });
-  },
-
-  updateTomlCommonConfigSnippet(
-    profile: RemoteHostProfile,
-    configToml: string,
-    snippetToml: string,
-    enabled: boolean,
-    secret?: RemoteConnectionSecret,
-  ): Promise<string> {
-    return invoke<string>("remote_update_toml_common_config_snippet", {
-      profile,
-      configToml,
-      snippetToml,
-      enabled,
-      secret,
-    });
-  },
-
-  extractCommonConfigSnippet(
-    profile: RemoteHostProfile,
-    appType: Exclude<ConfigAppType, "omo">,
-    options?: ExtractCommonConfigSnippetOptions,
-    secret?: RemoteConnectionSecret,
-  ): Promise<string> {
-    return invoke<string>("remote_extract_common_config_snippet", {
-      profile,
-      appType,
-      settingsConfig: options?.settingsConfig ?? null,
       secret,
     });
   },
@@ -1039,6 +982,18 @@ export const remoteApi = {
     });
   },
 
+  listToolInstallations(
+    profile: RemoteHostProfile,
+    tools?: string[],
+    secret?: RemoteConnectionSecret,
+  ): Promise<ToolInstallationReport[]> {
+    return invoke<ToolInstallationReport[]>("remote_list_tool_installations", {
+      profile,
+      tools,
+      secret,
+    });
+  },
+
   getProviders(
     profile: RemoteHostProfile,
     app: AppId,
@@ -1095,6 +1050,7 @@ export const remoteApi = {
     provider: Provider,
     addToLive?: boolean,
     secret?: RemoteConnectionSecret,
+    editorSave?: ProviderEditorSave,
   ): Promise<boolean> {
     return invoke<boolean>("remote_add_provider", {
       profile,
@@ -1102,6 +1058,7 @@ export const remoteApi = {
       provider,
       addToLive,
       secret,
+      ...(editorSave ? { editorSave } : {}),
     });
   },
 
@@ -1123,12 +1080,34 @@ export const remoteApi = {
     provider: Provider,
     originalId?: string,
     secret?: RemoteConnectionSecret,
+    editorSave?: ProviderEditorSave,
   ): Promise<boolean> {
     return invoke<boolean>("remote_update_provider", {
       profile,
       app,
       provider,
       originalId,
+      secret,
+      ...(editorSave ? { editorSave } : {}),
+    });
+  },
+
+  /** 远端编辑器显示内容：与 desktop 的 `get_provider_editor_view` 同一投影；
+   * 返回的配置里密钥是 `[redacted]`，保存时由 helper 按库里那一行还原。 */
+  getProviderEditorView(
+    profile: RemoteHostProfile,
+    app: AppId,
+    settingsConfig: Record<string, unknown>,
+    category?: string,
+    providerId?: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProviderEditorView> {
+    return invoke<ProviderEditorView>("remote_get_provider_editor_view", {
+      profile,
+      app,
+      settingsConfig,
+      ...(category ? { category } : {}),
+      ...(providerId ? { providerId } : {}),
       secret,
     });
   },
@@ -1335,28 +1314,6 @@ export const remoteApi = {
     return invoke<SubscriptionQuota>("remote_get_subscription_quota", {
       profile,
       tool,
-      secret,
-    });
-  },
-
-  getStreamCheckConfig(
-    profile: RemoteHostProfile,
-    secret?: RemoteConnectionSecret,
-  ): Promise<StreamCheckConfig> {
-    return invoke<StreamCheckConfig>("remote_get_stream_check_config", {
-      profile,
-      secret,
-    });
-  },
-
-  saveStreamCheckConfig(
-    profile: RemoteHostProfile,
-    config: StreamCheckConfig,
-    secret?: RemoteConnectionSecret,
-  ): Promise<boolean> {
-    return invoke<boolean>("remote_save_stream_check_config", {
-      profile,
-      config,
       secret,
     });
   },
@@ -1605,32 +1562,6 @@ export const remoteApi = {
   ): Promise<SessionSyncResult> {
     return invoke<SessionSyncResult>("remote_rebuild_codex_usage", {
       profile,
-      secret,
-    });
-  },
-
-  getDefaultCostMultiplier(
-    profile: RemoteHostProfile,
-    appType: string,
-    secret?: RemoteConnectionSecret,
-  ): Promise<string> {
-    return invoke<string>("remote_get_default_cost_multiplier", {
-      profile,
-      appType,
-      secret,
-    });
-  },
-
-  setDefaultCostMultiplier(
-    profile: RemoteHostProfile,
-    appType: string,
-    value: string,
-    secret?: RemoteConnectionSecret,
-  ): Promise<void> {
-    return invoke<void>("remote_set_default_cost_multiplier", {
-      profile,
-      appType,
-      value,
       secret,
     });
   },
@@ -2037,6 +1968,125 @@ export const remoteApi = {
       url,
       secret,
     });
+  },
+
+  // ===== 应用页模式行（直连 / 路由 / 聚合）：helper `app-mode` =====
+  getAppMode(
+    profile: RemoteHostProfile,
+    appType: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<{
+    mode: "direct" | "route" | "stack";
+    attached: boolean;
+    routeProviderId: string | null;
+    directProviderId: string | null;
+  }> {
+    return invoke("remote_get_app_mode", { profile, appType, secret });
+  },
+
+  setAppMode(
+    profile: RemoteHostProfile,
+    appType: string,
+    enabled: boolean,
+    stack?: boolean,
+    route?: string | null,
+    secret?: RemoteConnectionSecret,
+  ): Promise<void> {
+    return invoke("remote_set_app_mode", {
+      profile,
+      appType,
+      enabled,
+      stack,
+      route,
+      secret,
+    });
+  },
+
+  setAppRoute(
+    profile: RemoteHostProfile,
+    appType: string,
+    providerId: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<void> {
+    return invoke("remote_set_app_route", {
+      profile,
+      appType,
+      providerId,
+      secret,
+    });
+  },
+
+  getDirectProvider(
+    profile: RemoteHostProfile,
+    appType: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<string | null> {
+    return invoke("remote_get_direct_provider", { profile, appType, secret });
+  },
+
+  getProxyTakeoverStatus(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyTakeoverStatus> {
+    return invoke("remote_get_proxy_takeover_status", { profile, secret });
+  },
+
+  exitProxyAppsInMode(
+    profile: RemoteHostProfile,
+    stack: boolean,
+    secret?: RemoteConnectionSecret,
+  ): Promise<string[]> {
+    return invoke("remote_exit_proxy_apps_in_mode", { profile, stack, secret });
+  },
+
+  getProxyStack(
+    profile: RemoteHostProfile,
+    appType: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyStack> {
+    return invoke("remote_get_proxy_stack", { profile, appType, secret });
+  },
+
+  /**
+   * Stack 名单写入。helper 用结构化 data 回传写入结果（`partial` 对调用方有意义），
+   * 这里还原成本机同样的契约：`error` 非空即抛 `ProxyStackWriteError`。
+   */
+  async setProxyStackMember(
+    profile: RemoteHostProfile,
+    appType: string,
+    providerId: string,
+    enabled: boolean,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyStackNotice | null> {
+    const result = await invoke<{
+      notice: string | null;
+      error: string | null;
+      partial: boolean;
+    }>("remote_set_proxy_stack_member", {
+      profile,
+      appType,
+      providerId,
+      enabled,
+      secret,
+    });
+    if (result.error) {
+      throw { partial: result.partial, message: result.error };
+    }
+    return (result.notice ?? null) as ProxyStackNotice | null;
+  },
+
+  adoptCodexStackCatalog(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<ProxyStackNotice | null> {
+    return invoke("remote_adopt_codex_stack_catalog", { profile, secret });
+  },
+
+  restartCodexAppServerDaemon(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<CodexDaemonRestartOutcome> {
+    return invoke("remote_restart_codex_daemon", { profile, secret });
   },
 
   getRoutingRuntimeStatus(
@@ -2534,11 +2584,12 @@ export const remoteApi = {
     });
   },
 
+  /** v4 起与本机一样返回「读到的 + 没读到的仓库」；helper 走同一 report 实现。 */
   discoverAvailableSkills(
     profile: RemoteHostProfile,
     secret?: RemoteConnectionSecret,
-  ): Promise<DiscoverableSkill[]> {
-    return invoke<DiscoverableSkill[]>("remote_discover_available_skills", {
+  ): Promise<SkillDiscoveryResult> {
+    return invoke<SkillDiscoveryResult>("remote_discover_available_skills", {
       profile,
       secret,
     });
@@ -2547,8 +2598,8 @@ export const remoteApi = {
   checkSkillUpdates(
     profile: RemoteHostProfile,
     secret?: RemoteConnectionSecret,
-  ): Promise<SkillUpdateInfo[]> {
-    return invoke<SkillUpdateInfo[]>("remote_check_skill_updates", {
+  ): Promise<SkillUpdateCheckResult> {
+    return invoke<SkillUpdateCheckResult>("remote_check_skill_updates", {
       profile,
       secret,
     });

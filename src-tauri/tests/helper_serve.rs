@@ -1,21 +1,30 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// 写入一份 Codex rollout fixture。
+///
+/// 时间必须落在 Database::init 的 30 天明细保留窗口内：写死日期会让这个用例随日历
+/// 过期（明细被当成历史数据清理掉，导入数对得上但明细查不到）。
 fn write_codex_rollout(sessions: &std::path::Path, session_id: &str, first: u64, second: u64) {
-    let path = sessions.join(format!("rollout-2026-08-10T03-00-00-{session_id}.jsonl"));
+    let started = chrono::Utc::now() - chrono::Duration::minutes(5);
+    let stamp = |seconds: i64| (started + chrono::Duration::seconds(seconds)).to_rfc3339();
+    let path = sessions.join(format!(
+        "rollout-{}-{session_id}.jsonl",
+        started.format("%Y-%m-%dT%H-%M-%S")
+    ));
     let lines = [
         serde_json::json!({
-            "timestamp": "2026-08-10T03:00:00Z",
+            "timestamp": stamp(0),
             "type": "session_meta",
             "payload": { "id": session_id, "source": "cli" }
         }),
         serde_json::json!({
-            "timestamp": "2026-08-10T03:00:01Z",
+            "timestamp": stamp(1),
             "type": "turn_context",
             "payload": { "model": "gpt-5.6-sol" }
         }),
         serde_json::json!({
-            "timestamp": "2026-08-10T03:00:02Z",
+            "timestamp": stamp(2),
             "type": "event_msg",
             "payload": { "type": "token_count", "info": {
                 "total_token_usage": {
@@ -27,7 +36,7 @@ fn write_codex_rollout(sessions: &std::path::Path, session_id: &str, first: u64,
             }}
         }),
         serde_json::json!({
-            "timestamp": "2026-08-10T03:00:04Z",
+            "timestamp": stamp(4),
             "type": "event_msg",
             "payload": { "type": "token_count", "info": {
                 "total_token_usage": {
@@ -50,7 +59,11 @@ fn write_codex_rollout(sessions: &std::path::Path, session_id: &str, first: u64,
 #[test]
 fn production_helper_serve_keeps_session_and_uses_shared_codex_sync() {
     let test_home = tempfile::tempdir().expect("serve test home");
-    let sessions = test_home.path().join(".codex/sessions/2026/08/10");
+    let started = chrono::Utc::now() - chrono::Duration::minutes(5);
+    let sessions = test_home
+        .path()
+        .join(".codex/sessions")
+        .join(started.format("%Y/%m/%d").to_string());
     std::fs::create_dir_all(&sessions).expect("create Codex session directory");
     let session_a = "00000000-0000-4000-8000-0000000000a1";
     let session_b = "00000000-0000-4000-8000-0000000000b2";

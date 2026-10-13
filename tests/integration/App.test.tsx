@@ -1,27 +1,36 @@
 import { Suspense, type ComponentType } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { providersApi } from "@/lib/api/providers";
 import {
   resetProviderState,
   getLastRemoteSaveSecret,
-  getRemoteHermesMemory,
   getRemoteOpenClawDefaultModel,
   setCurrentProviderId,
   setLiveProviderIds,
   setProviders,
-  setRemoteHermesMemoryFixtures,
   setRemoteProviderStateError,
   setRemoteProfiles,
   setRemoteSettings,
-  setRemoteSessionFixtures,
+  setSessionFixtures,
   setSettings,
 } from "../msw/state";
+import { http, HttpResponse } from "msw";
+import { server } from "../msw/server";
 import { emitTauriEvent } from "../msw/tauriMocks";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
+const skillsPanelMocks = vi.hoisted(() => ({
+  initialViews: [] as string[],
+}));
 
 vi.mock("sonner", () => ({
   toast: {
@@ -41,7 +50,11 @@ vi.mock("@/components/providers/ProviderList", () => ({
     onConfigureUsage,
     onOpenWebsite,
     onCreate,
+    onDelete,
+    onRemoveFromConfig,
     onSetAsDefault,
+    onTest,
+    onToggleFailover,
   }: any) => (
     <div>
       <div data-testid="provider-list">{JSON.stringify(providers)}</div>
@@ -61,6 +74,20 @@ vi.mock("@/components/providers/ProviderList", () => ({
         open-website
       </button>
       <button onClick={() => onCreate?.()}>create</button>
+      <button onClick={() => onDelete(Object.values(providers)[0])}>
+        delete
+      </button>
+      <button onClick={() => onRemoveFromConfig?.(Object.values(providers)[0])}>
+        remove
+      </button>
+      <button onClick={() => onTest?.(providers[currentProviderId])}>
+        test
+      </button>
+      <button
+        onClick={() => onToggleFailover?.(true, providers[currentProviderId])}
+      >
+        toggle-failover
+      </button>
       <button onClick={() => onSetAsDefault?.(providers[currentProviderId])}>
         set-default
       </button>
@@ -89,27 +116,35 @@ vi.mock("@/components/providers/AddProviderDialog", () => ({
     ) : null,
 }));
 
-vi.mock("@/components/providers/EditProviderDialog", () => ({
-  EditProviderDialog: ({ open, provider, onSubmit, onOpenChange }: any) =>
-    open ? (
-      <div data-testid="edit-provider-dialog">
-        <button
-          onClick={() =>
-            onSubmit({
-              provider: {
-                ...provider,
-                name: `${provider.name}-edited`,
-              },
-              originalId: provider.id,
-            })
-          }
-        >
-          confirm-edit
-        </button>
-        <button onClick={() => onOpenChange(false)}>close-edit</button>
-      </div>
-    ) : null,
-}));
+vi.mock("@/components/providers/EditProviderDialog", async () => {
+  const { useUnsavedChangesTracker } = await vi.importActual<
+    typeof import("@/lib/unsavedChanges")
+  >("@/lib/unsavedChanges");
+  // 和真的编辑页一样登记改动（真的由 FullScreenPanel 的 trackUnsavedChanges 负责）
+  const Body = ({ provider, onSubmit, onOpenChange }: any) => (
+    <div data-testid="edit-provider-dialog" {...useUnsavedChangesTracker()}>
+      <input aria-label="edit-field" />
+      <button
+        onClick={() =>
+          onSubmit({
+            provider: {
+              ...provider,
+              name: `${provider.name}-edited`,
+            },
+            originalId: provider.id,
+          })
+        }
+      >
+        confirm-edit
+      </button>
+      <button onClick={() => onOpenChange(false)}>close-edit</button>
+    </div>
+  );
+  return {
+    EditProviderDialog: (props: any) =>
+      props.open ? <Body {...props} /> : null,
+  };
+});
 
 vi.mock("@/components/UsageScriptModal", () => ({
   default: ({ isOpen, provider, onSave, onClose }: any) =>
@@ -123,30 +158,26 @@ vi.mock("@/components/UsageScriptModal", () => ({
 }));
 
 vi.mock("@/components/ConfirmDialog", () => ({
-  ConfirmDialog: ({ isOpen, onConfirm, onCancel }: any) =>
+  ConfirmDialog: ({ isOpen, message, onConfirm, onCancel }: any) =>
     isOpen ? (
       <div data-testid="confirm-dialog">
+        <div data-testid="confirm-message">{message}</div>
         <button onClick={() => onConfirm()}>confirm-delete</button>
         <button onClick={() => onCancel()}>cancel-delete</button>
       </div>
     ) : null,
 }));
 
-vi.mock("@/components/AppSwitcher", () => ({
-  AppSwitcher: ({ activeApp, onSwitch, visibleApps }: any) => (
-    <div data-testid="app-switcher">
-      <span>{activeApp}</span>
-      <span data-testid="app-switcher-visible-apps">
-        {JSON.stringify(visibleApps)}
-      </span>
-      <button onClick={() => onSwitch("claude")}>switch-claude</button>
-      <button onClick={() => onSwitch("codex")}>switch-codex</button>
-      <button onClick={() => onSwitch("grokbuild")}>switch-grokbuild</button>
-      <button onClick={() => onSwitch("openclaw")}>switch-openclaw</button>
-    </div>
-  ),
+const updateMocks = vi.hoisted(() => ({ hasUpdate: false }));
+
+vi.mock("@/contexts/UpdateContext", () => ({
+  useUpdate: () => ({
+    hasUpdate: updateMocks.hasUpdate,
+    updateInfo: updateMocks.hasUpdate ? { version: "9.9.9" } : null,
+  }),
 }));
 
+// v4 已删除 AppSwitcher（应用切换在 Sidebar 里），这里只保留远程目标切换器
 vi.mock("@/components/remote/ManagementTargetSwitcher", () => ({
   ManagementTargetSwitcher: ({
     profiles,
@@ -169,12 +200,6 @@ vi.mock("@/components/remote/ManagementTargetSwitcher", () => ({
       ))}
       <button onClick={() => onManageServers?.()}>manage-servers</button>
     </div>
-  ),
-}));
-
-vi.mock("@/components/UpdateBadge", () => ({
-  UpdateBadge: ({ onClick }: any) => (
-    <button onClick={onClick}>update-badge</button>
   ),
 }));
 
@@ -201,10 +226,10 @@ vi.mock("@/components/proxy/ClaudeDesktopRouteToggle", () => ({
 }));
 
 vi.mock("@/components/settings/SettingsPage", () => ({
-  SettingsPage: ({ defaultTab, onImportSuccess, target }: any) => (
+  SettingsPage: ({ section, defaultTab, onImportSuccess, target }: any) => (
     <div data-testid="settings-page">
       <span data-testid="settings-target">{target?.type ?? "local"}</span>
-      <span data-testid="settings-default-tab">{defaultTab}</span>
+      <span data-testid="settings-default-tab">{section ?? defaultTab}</span>
       <button onClick={() => onImportSuccess?.()}>
         simulate-import-success
       </button>
@@ -291,15 +316,23 @@ vi.mock("@/components/mcp/UnifiedMcpPanel", async () => {
 vi.mock("@/components/skills/UnifiedSkillsPanel", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {
+    // 既要记录上游的 initialView（发现段），也要暴露目标与忙碌回调
     default: React.forwardRef(function UnifiedSkillsPanelMock(
-      { target, onInteractionBlockedChange, onNavigationBlockedChange }: any,
+      {
+        target,
+        initialView,
+        onInteractionBlockedChange,
+        onNavigationBlockedChange,
+      }: any,
       _ref,
     ) {
+      skillsPanelMocks.initialViews.push(initialView ?? "installed");
       return (
         <div data-testid="unified-skills-panel">
           <span data-testid="skills-management-target">
             {target?.type === "remote" ? target.profile.id : "local"}
           </span>
+          <span data-testid="skills-initial-view">{initialView}</span>
           <button
             onClick={() => {
               onInteractionBlockedChange?.(true);
@@ -323,6 +356,27 @@ vi.mock("@/components/MarkdownEditor", () => ({
     />
   ),
 }));
+/** 侧栏里的应用行（v7 侧栏取代了原来页头的应用切换器） */
+const sidebarApp = (name: string) =>
+  // 首次启动提示是模态对话框，会把侧栏标成 aria-hidden，所以带上 hidden
+  within(document.querySelector("nav") as HTMLElement).getByRole("button", {
+    name,
+    hidden: true,
+  });
+
+/** 侧栏里有没有这个应用行（用于"按主机隐藏应用"的断言） */
+const querySidebarApp = (name: string) =>
+  within(document.querySelector("nav") as HTMLElement).queryByRole("button", {
+    name,
+    hidden: true,
+  });
+
+/** 侧栏的全局入口（MCP / Skills / 提示词 / 会话 / 授权中心 / 用量统计 / 设置） */
+const navButton = (name: string) =>
+  within(document.querySelector("nav") as HTMLElement).getByRole("button", {
+    name,
+    hidden: true,
+  });
 
 const renderApp = (AppComponent: ComponentType) => {
   const client = new QueryClient();
@@ -342,23 +396,12 @@ describe("App integration with MSW", () => {
     resetProviderState();
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
+    updateMocks.hasUpdate = false;
+    // ── fork 远程集成用例（保留） ───────────────────────────────────────────
   });
 
-  it("keeps the remote target switcher and MCP header actions visible while management writes are guarded", async () => {
-    setSettings({
-      firstRunNoticeConfirmed: true,
-      visibleApps: {
-        claude: true,
-        "claude-desktop": true,
-        codex: true,
-        gemini: true,
-        grokbuild: true,
-        opencode: true,
-        openclaw: true,
-        hermes: true,
-        pi: true,
-      },
-    });
+  it("keeps the remote target switcher and MCP actions usable while management writes are guarded", async () => {
+    setSettings({ firstRunNoticeConfirmed: true });
     setRemoteProfiles([
       {
         id: "server-a",
@@ -377,36 +420,29 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     fireEvent.click(await screen.findByText("Server A"));
-    fireEvent.click(screen.getByTitle("mcp.title"));
+    fireEvent.click(navButton("MCP"));
 
-    expect(
-      await screen.findByTestId("mcp-management-target"),
-    ).toHaveTextContent("server-a");
+    // MCP panel reads the selected target (and shows it)
+    await waitFor(() =>
+      expect(screen.getByTestId("mcp-management-target")).toHaveTextContent(
+        "server-a",
+      ),
+    );
     expect(
       screen.getByTestId("management-target-switcher"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "mcp.importExisting" }),
-    ).toBeVisible();
-    expect(screen.getByRole("button", { name: "mcp.addMcp" })).toBeVisible();
 
+    // A write is in flight: the switcher stays visible, but switching does nothing
     fireEvent.click(screen.getByText("set-mcp-busy"));
-
-    expect(
-      screen.getByRole("button", { name: "mcp.importExisting" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "mcp.addMcp" })).toBeDisabled();
-    expect(
-      screen.getByTestId("management-target-switcher"),
-    ).toBeInTheDocument();
-
     fireEvent.click(screen.getByText("target-local"));
-    fireEvent.click(screen.getByText("manage-servers"));
-
     expect(screen.getByTestId("mcp-management-target")).toHaveTextContent(
       "server-a",
     );
-  });
+    expect(
+      screen.getByTestId("management-target-switcher"),
+    ).toBeInTheDocument();
+    // 这个用例要等完整 App + MSW 起来再跑两次交互，并行跑全量时 20s 不够
+  }, 45_000);
 
   it("keeps the selected target fixed while managed authentication is busy", async () => {
     setSettings({ firstRunNoticeConfirmed: true });
@@ -428,14 +464,14 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     fireEvent.click(await screen.findByText("Server A"));
-    fireEvent.click(screen.getByTitle("common.settings"));
+    fireEvent.click(navButton("nav.settings"));
     await waitFor(() =>
       expect(screen.getByTestId("settings-target")).toHaveTextContent("remote"),
     );
 
+    // 认证/设备码轮询在跑：目标选择还在，但切目标不生效
     fireEvent.click(screen.getByText("remote-settings-busy"));
     fireEvent.click(screen.getByText("target-local"));
-    fireEvent.click(screen.getByText("manage-servers"));
     expect(screen.getByTestId("settings-target")).toHaveTextContent("remote");
 
     fireEvent.click(screen.getByText("remote-settings-idle"));
@@ -443,7 +479,7 @@ describe("App integration with MSW", () => {
     await waitFor(() =>
       expect(screen.getByTestId("settings-target")).toHaveTextContent("local"),
     );
-  });
+  }, 20_000);
 
   it("keeps the selected target fixed while Skills checks for updates", async () => {
     setSettings({ firstRunNoticeConfirmed: true });
@@ -465,18 +501,25 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     fireEvent.click(await screen.findByText("Server A"));
-    fireEvent.click(screen.getByTitle("skills.manage"));
-    expect(
-      await screen.findByTestId("skills-management-target"),
-    ).toHaveTextContent("server-a");
+    fireEvent.click(navButton("Skills"));
+    await waitFor(() =>
+      expect(screen.getByTestId("skills-management-target")).toHaveTextContent(
+        "server-a",
+      ),
+    );
 
+    // 检查更新进行中：目标选择还在，但切目标不生效
     fireEvent.click(screen.getByText("set-skills-checking"));
     fireEvent.click(screen.getByText("target-local"));
 
     expect(screen.getByTestId("skills-management-target")).toHaveTextContent(
       "server-a",
     );
-  });
+    expect(
+      screen.getByTestId("management-target-switcher"),
+    ).toBeInTheDocument();
+    skillsPanelMocks.initialViews = [];
+  }, 20_000);
 
   it("covers basic provider flows via real hooks", async () => {
     const { default: App } = await import("@/App");
@@ -488,7 +531,7 @@ describe("App integration with MSW", () => {
       ),
     );
 
-    fireEvent.click(screen.getByText("switch-codex"));
+    fireEvent.click(sidebarApp("Codex"));
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(
         "codex-1",
@@ -533,6 +576,134 @@ describe("App integration with MSW", () => {
 
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
+  }, 10_000);
+
+  it("resets provider view scroll when switching apps", async () => {
+    const { default: App } = await import("@/App");
+    const { container } = renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "claude-1",
+      ),
+    );
+
+    const mainScrollContainer = container.querySelector("main") as HTMLElement;
+    // 列表的滚动区在模式行下面（切换式应用每个应用一份）
+    const providerScrollContainer = () =>
+      container.querySelector<HTMLElement>("#main-content");
+
+    expect(mainScrollContainer).not.toBeNull();
+    expect(providerScrollContainer()).not.toBeNull();
+
+    mainScrollContainer.scrollTop = 320;
+    mainScrollContainer.scrollLeft = 12;
+    providerScrollContainer()!.scrollTop = 640;
+    providerScrollContainer()!.scrollLeft = 24;
+
+    fireEvent.click(sidebarApp("Codex"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "codex-1",
+      ),
+    );
+
+    expect(mainScrollContainer.scrollTop).toBe(0);
+    expect(mainScrollContainer.scrollLeft).toBe(0);
+    expect(providerScrollContainer()!.scrollTop).toBe(0);
+    expect(providerScrollContainer()!.scrollLeft).toBe(0);
+  }, 10_000);
+
+  it("closes provider panels when navigating away from the app page", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "claude-1",
+      ),
+    );
+
+    // 面板只盖住内容区，侧栏还能点：切应用时编辑面板必须关掉，否则 Claude 的
+    // 供应商会以 appId=codex 保存进 Codex
+    fireEvent.click(screen.getByText("edit"));
+    expect(screen.getByTestId("edit-provider-dialog")).toBeInTheDocument();
+    fireEvent.click(sidebarApp("Codex"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "codex-1",
+      ),
+    );
+    expect(
+      screen.queryByTestId("edit-provider-dialog"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("usage"));
+    expect(screen.getByTestId("usage-modal")).toBeInTheDocument();
+    fireEvent.click(sidebarApp("nav.usage"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("usage-modal")).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(sidebarApp("Codex"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "codex-1",
+      ),
+    );
+    fireEvent.click(screen.getByText("create"));
+    expect(screen.getByTestId("add-provider-dialog")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    expect(await screen.findByTestId("settings-page")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-provider-dialog")).not.toBeInTheDocument();
+  }, 10_000);
+
+  it("asks before leaving an editor page with unsaved changes", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "claude-1",
+      ),
+    );
+
+    // 没改过：照常离开，不问
+    fireEvent.click(screen.getByText("edit"));
+    fireEvent.click(sidebarApp("Codex"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "codex-1",
+      ),
+    );
+    expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument();
+
+    // 改过：先问；继续编辑就留在原页
+    // （ConfirmDialog 在这个文件里是 mock：只渲染消息和 confirm-delete / cancel-delete）
+    fireEvent.click(screen.getByText("edit"));
+    fireEvent.input(screen.getByLabelText("edit-field"), {
+      target: { value: "draft" },
+    });
+    fireEvent.click(sidebarApp("Claude Code"));
+    expect(await screen.findByTestId("confirm-message")).toHaveTextContent(
+      "common.unsavedLeaveMessage",
+    );
+    fireEvent.click(screen.getByText("cancel-delete"));
+    expect(screen.getByTestId("edit-provider-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-list").textContent).toContain(
+      "codex-1",
+    );
+
+    // ⌘, 也问；放弃后才离开
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    expect(await screen.findByTestId("confirm-message")).toHaveTextContent(
+      "common.unsavedLeaveMessage",
+    );
+    fireEvent.click(screen.getByText("confirm-delete"));
+    expect(await screen.findByTestId("settings-page")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("edit-provider-dialog"),
+    ).not.toBeInTheDocument();
   }, 10_000);
 
   it("shows toast when auto sync fails in background", async () => {
@@ -599,7 +770,7 @@ describe("App integration with MSW", () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    fireEvent.click(screen.getByText("switch-openclaw"));
+    fireEvent.click(sidebarApp("OpenClaw"));
 
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(
@@ -617,6 +788,295 @@ describe("App integration with MSW", () => {
 
     expect(toastErrorMock).not.toHaveBeenCalledWith(
       expect.stringContaining("Provider key is required for openclaw"),
+    );
+  });
+
+  it.each([
+    { options: { apiKey: "test-key" } },
+    { npm: "@ai-sdk/openai-compatible", models: {} },
+    { models: { "glm-5": { name: "GLM 5" } } },
+  ])(
+    "blocks incomplete OpenCode copies before saving or sorting: %j",
+    async (settingsConfig) => {
+      localStorage.setItem("cc-switch-last-app", "opencode");
+      setProviders("opencode", {
+        "opencode-go": {
+          id: "opencode-go",
+          name: "OpenCode Go",
+          settingsConfig,
+          sortIndex: 0,
+        },
+        other: { id: "other", name: "Other", settingsConfig: {}, sortIndex: 1 },
+      });
+      setCurrentProviderId("opencode", "opencode-go");
+      setLiveProviderIds("opencode", ["opencode-go"]);
+      const add = vi.spyOn(providersApi, "add");
+      const sort = vi.spyOn(providersApi, "updateSortOrder");
+      try {
+        const { default: App } = await import("@/App");
+        renderApp(App);
+        await waitFor(() =>
+          expect(screen.getByTestId("provider-list").textContent).toContain(
+            "opencode-go",
+          ),
+        );
+        fireEvent.click(screen.getByText("duplicate"));
+        await waitFor(() =>
+          expect(toastErrorMock).toHaveBeenCalledWith(
+            "opencode.duplicateRequiresDefinition",
+          ),
+        );
+        expect(add).not.toHaveBeenCalled();
+        expect(sort).not.toHaveBeenCalled();
+        expect(screen.getByTestId("provider-list").textContent).not.toContain(
+          "opencode-go-copy",
+        );
+      } finally {
+        add.mockRestore();
+        sort.mockRestore();
+      }
+    },
+  );
+
+  it("duplicates complete OpenCode providers using an unused ID", async () => {
+    localStorage.setItem("cc-switch-last-app", "opencode");
+    setProviders("opencode", {
+      custom: {
+        id: "custom",
+        name: "Custom",
+        sortIndex: 0,
+        settingsConfig: {
+          npm: "@ai-sdk/openai-compatible",
+          models: { "glm-5": { name: "GLM 5" } },
+        },
+      },
+    });
+    setCurrentProviderId("opencode", "custom");
+    setLiveProviderIds("opencode", ["custom-copy"]);
+    const { default: App } = await import("@/App");
+    renderApp(App);
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "custom",
+      ),
+    );
+    fireEvent.click(screen.getByText("duplicate"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "custom-copy-2",
+      ),
+    );
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { settingsConfig: { settings: { baseURL: "https://native.example" } } },
+    {
+      settingsConfig: { models: { "glm-5": { name: "GLM 5" } } },
+      meta: { opencodeConfigFormat: "v2" as const },
+    },
+  ])(
+    "blocks incomplete native OpenCode copies with a V2 message: %j",
+    async ({ settingsConfig, meta }) => {
+      localStorage.setItem("cc-switch-last-app", "opencode");
+      setProviders("opencode", {
+        native: {
+          id: "native",
+          name: "Native",
+          settingsConfig,
+          meta,
+          sortIndex: 0,
+        },
+      });
+      setCurrentProviderId("opencode", "native");
+      setLiveProviderIds("opencode", ["native"]);
+      const add = vi.spyOn(providersApi, "add");
+      try {
+        const { default: App } = await import("@/App");
+        renderApp(App);
+        await waitFor(() =>
+          expect(screen.getByTestId("provider-list").textContent).toContain(
+            "native",
+          ),
+        );
+        fireEvent.click(screen.getByText("duplicate"));
+        await waitFor(() =>
+          expect(toastErrorMock).toHaveBeenCalledWith(
+            "opencode.duplicateRequiresNativeDefinition",
+          ),
+        );
+        expect(add).not.toHaveBeenCalled();
+      } finally {
+        add.mockRestore();
+      }
+    },
+  );
+
+  it("duplicates complete native OpenCode providers using an unused ID", async () => {
+    localStorage.setItem("cc-switch-last-app", "opencode");
+    setProviders("opencode", {
+      native: {
+        id: "native",
+        name: "Native",
+        sortIndex: 0,
+        settingsConfig: {
+          package: "@opencode/ai/providers/openai",
+          models: { "gpt-5": { name: "GPT 5" } },
+        },
+        meta: { opencodeConfigFormat: "v2" },
+      },
+    });
+    setCurrentProviderId("opencode", "native");
+    setLiveProviderIds("opencode", ["native-copy"]);
+    const { default: App } = await import("@/App");
+    renderApp(App);
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "native",
+      ),
+    );
+    fireEvent.click(screen.getByText("duplicate"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "native-copy-2",
+      ),
+    );
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("duplicates MiniMax Code providers under a generated unused key", async () => {
+    localStorage.setItem("cc-switch-last-app", "mcode");
+    const provider = (id: string, name: string) => ({
+      id,
+      name,
+      settingsConfig: {},
+      category: "custom" as const,
+      sortIndex: 0,
+      createdAt: Date.now(),
+    });
+    setProviders("mcode", {
+      kimi: provider("kimi", "Kimi"),
+      "kimi-copy": provider("kimi-copy", "Kimi copy"),
+    });
+    setCurrentProviderId("mcode", "kimi");
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "kimi-copy",
+      ),
+    );
+    fireEvent.click(screen.getByText("duplicate"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "kimi-copy-2",
+      ),
+    );
+    expect(toastErrorMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("Provider key is required for mcode"),
+    );
+  });
+
+  it("refreshes MiniMax Code provider membership after removing it from live config", async () => {
+    localStorage.setItem("cc-switch-last-app", "mcode");
+    let liveConfigManaged = true;
+    let providerRequests = 0;
+    server.use(
+      http.post("http://tauri.local/get_providers", async ({ request }) => {
+        const { app } = (await request.json()) as { app: string };
+        if (app !== "mcode") return;
+        providerRequests += 1;
+        return HttpResponse.json({
+          custom: {
+            id: "custom",
+            name: "Custom MiniMax Code",
+            settingsConfig: {},
+            meta: { liveConfigManaged },
+          },
+        });
+      }),
+      http.post(
+        "http://tauri.local/remove_provider_from_live_config",
+        async ({ request }) => {
+          expect(await request.json()).toEqual({ id: "custom", app: "mcode" });
+          liveConfigManaged = false;
+          return HttpResponse.json(true);
+        },
+      ),
+    );
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toHaveTextContent(
+        '"liveConfigManaged":true',
+      ),
+    );
+    const requestsBeforeRemoval = providerRequests;
+    fireEvent.click(screen.getByText("remove"));
+    fireEvent.click(screen.getByText("confirm-delete"));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument(),
+    );
+    expect(liveConfigManaged).toBe(false);
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toHaveTextContent(
+        '"liveConfigManaged":false',
+      ),
+    );
+    expect(providerRequests).toBeGreaterThan(requestsBeforeRemoval);
+    expect(screen.getByTestId("provider-list")).toHaveTextContent(
+      "Custom MiniMax Code",
+    );
+  });
+
+  it("warns without blocking when removing Pi's global default provider", async () => {
+    localStorage.setItem("cc-switch-last-app", "pi");
+    setProviders("pi", {
+      custom: {
+        id: "custom",
+        name: "Custom Pi",
+        settingsConfig: {
+          baseUrl: "https://api.example.com/v1",
+          apiKey: "test-key",
+          api: "openai-completions",
+          models: [{ id: "model-a" }],
+        },
+        category: "custom",
+        sortIndex: 0,
+        createdAt: Date.now(),
+      },
+    });
+    server.use(
+      http.post("http://tauri.local/get_pi_current_state", () =>
+        HttpResponse.json({
+          enabledProviderIds: ["custom"],
+          defaultProviderId: "custom",
+        }),
+      ),
+    );
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "Custom Pi",
+      ),
+    );
+    fireEvent.click(screen.getByText("remove"));
+
+    expect(screen.getByTestId("confirm-message")).toHaveTextContent(
+      "confirm.piDefaultProviderWarning",
+    );
+    fireEvent.click(screen.getByText("confirm-delete"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument(),
     );
   });
 
@@ -645,7 +1105,7 @@ describe("App integration with MSW", () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    fireEvent.click(screen.getByText("switch-openclaw"));
+    fireEvent.click(sidebarApp("OpenClaw"));
 
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(
@@ -702,7 +1162,7 @@ describe("App integration with MSW", () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    fireEvent.click(screen.getByText("switch-openclaw"));
+    fireEvent.click(sidebarApp("OpenClaw"));
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(
         "deepseek",
@@ -722,10 +1182,9 @@ describe("App integration with MSW", () => {
     await waitFor(() => {
       expect(getRemoteOpenClawDefaultModel()).toEqual({
         primary: "deepseek/deepseek-chat",
-        fallbacks: ["deepseek/deepseek-reasoner"],
       });
     });
-  });
+  }, 20_000);
 
   it("uses the stored backend password when activating a password remote target", async () => {
     setRemoteProfiles([
@@ -809,13 +1268,15 @@ describe("App integration with MSW", () => {
   });
 
   it("keeps the user on remote server management after saving a profile", async () => {
-    localStorage.setItem("cc-switch-last-view", "remoteServers");
+    localStorage.setItem("cc-switch-last-view", "providers");
     setSettings({ firstRunNoticeConfirmed: true });
     setRemoteProfiles([]);
 
     const { default: App } = await import("@/App");
     renderApp(App);
 
+    // v4 里入口在侧栏的目标菜单：管理远程主机
+    fireEvent.click(screen.getByText("manage-servers"));
     await waitFor(() =>
       expect(
         screen.getByTestId("remote-server-list-panel"),
@@ -835,18 +1296,12 @@ describe("App integration with MSW", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
-    await waitFor(() =>
-      expect(
-        screen.getByTestId("remote-server-list-panel"),
-      ).toBeInTheDocument(),
-    );
+    // 保存后仍停在连接管理页，不会被顺手带到供应商页
+    expect(screen.getByTestId("remote-server-list-panel")).toBeInTheDocument();
     expect(screen.getAllByText("测试服务器").length).toBeGreaterThan(0);
     expect(localStorage.getItem("cc-switch-last-view")).toBe("remoteServers");
     expect(screen.queryByTestId("provider-target")).not.toBeInTheDocument();
-  });
+  }, 20_000);
 
   it("does not refresh the local tray after remote import success", async () => {
     const updateTrayMenuSpy = vi
@@ -870,7 +1325,7 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     fireEvent.click(await screen.findByText("Remote 1"));
-    fireEvent.click(screen.getByTitle("common.settings"));
+    fireEvent.click(navButton("nav.settings"));
     await waitFor(() =>
       expect(screen.getByTestId("settings-target")).toHaveTextContent("remote"),
     );
@@ -885,7 +1340,7 @@ describe("App integration with MSW", () => {
     );
     expect(updateTrayMenuSpy).not.toHaveBeenCalled();
     updateTrayMenuSpy.mockRestore();
-  });
+  }, 20_000);
 
   it("refreshes remote providers after remote universal provider sync without touching the local tray", async () => {
     const updateTrayMenuSpy = vi
@@ -947,10 +1402,12 @@ describe("App integration with MSW", () => {
     );
     expect(updateTrayMenuSpy).not.toHaveBeenCalled();
     updateTrayMenuSpy.mockRestore();
-  });
+  }, 20_000);
 
   it("opens the local About settings from the update badge while managing a remote target", async () => {
     localStorage.setItem("cc-switch-last-view", "providers");
+    setSettings({ firstRunNoticeConfirmed: true });
+    updateMocks.hasUpdate = true;
     setRemoteProfiles([
       {
         id: "remote-1",
@@ -959,7 +1416,7 @@ describe("App integration with MSW", () => {
         port: 22,
         username: "root",
         authMethod: { type: "sshAgent" },
-        helperPath: "~/.local/bin/cc-switch-remote-helper",
+        helperPath: "/root/.local/bin/cc-switch-remote-helper",
         createdAt: 1,
         updatedAt: 1,
       },
@@ -969,7 +1426,13 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     fireEvent.click(await screen.findByText("Remote 1"));
-    fireEvent.click(screen.getByText("update-badge"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-target")).toHaveTextContent("remote"),
+    );
+
+    // 侧栏「设置」带客户端更新徽标：点它进本机设置的「关于」，
+    // 而不是那台远端主机的设置页
+    fireEvent.click(navButton("nav.settings"));
 
     await waitFor(() =>
       expect(screen.getByTestId("settings-target")).toHaveTextContent("local"),
@@ -977,28 +1440,15 @@ describe("App integration with MSW", () => {
     expect(screen.getByTestId("settings-default-tab")).toHaveTextContent(
       "about",
     );
-  });
+  }, 20_000);
 
   it("uses per-host remote app visibility while managing a remote target", async () => {
     localStorage.setItem("cc-switch-last-app", "claude");
     localStorage.setItem("cc-switch-last-view", "providers");
-    setSettings({
-      firstRunNoticeConfirmed: true,
-      visibleApps: {
-        claude: true,
-        "claude-desktop": false,
-        codex: false,
-        gemini: false,
-        grokbuild: false,
-        opencode: false,
-        openclaw: false,
-        hermes: false,
-        pi: false,
-      },
-    });
+    setSettings({ firstRunNoticeConfirmed: true });
     setRemoteSettings({
       visibleApps: {
-        claude: false,
+        claude: true,
         "claude-desktop": false,
         codex: true,
         gemini: false,
@@ -1006,6 +1456,7 @@ describe("App integration with MSW", () => {
         opencode: false,
         openclaw: false,
         hermes: false,
+        mcode: false,
         pi: false,
       },
     });
@@ -1026,26 +1477,20 @@ describe("App integration with MSW", () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    await waitFor(() =>
-      expect(screen.getByTestId("app-switcher-visible-apps")).toHaveTextContent(
-        '"claude":true',
-      ),
-    );
+    // 本机目标：Gemini 可见
+    expect(querySidebarApp("Gemini CLI")).toBeInTheDocument();
 
     fireEvent.click(await screen.findByText("Remote 1"));
 
+    // 远端目标：用那台主机的可见应用列表；当前应用被隐藏时回落到可见的 Codex
     await waitFor(() =>
-      expect(screen.getByTestId("app-switcher-visible-apps")).toHaveTextContent(
-        '"codex":true',
-      ),
+      expect(querySidebarApp("Gemini CLI")).not.toBeInTheDocument(),
     );
-    expect(screen.getByTestId("app-switcher-visible-apps")).toHaveTextContent(
-      '"claude":false',
-    );
+    expect(sidebarApp("Codex")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByTestId("app-switcher")).toHaveTextContent("codex"),
+      expect(screen.getByTestId("provider-target")).toHaveTextContent("remote"),
     );
-  });
+  }, 20_000);
 
   it("updates remote app visibility immediately after remote settings save", async () => {
     localStorage.setItem("cc-switch-last-app", "codex");
@@ -1053,7 +1498,7 @@ describe("App integration with MSW", () => {
     setSettings({ firstRunNoticeConfirmed: true });
     setRemoteSettings({
       visibleApps: {
-        claude: false,
+        claude: true,
         "claude-desktop": false,
         codex: true,
         gemini: false,
@@ -1061,6 +1506,7 @@ describe("App integration with MSW", () => {
         opencode: false,
         openclaw: false,
         hermes: false,
+        mcode: false,
         pi: false,
       },
     });
@@ -1083,127 +1529,27 @@ describe("App integration with MSW", () => {
 
     fireEvent.click(await screen.findByText("Remote 1"));
     await waitFor(() =>
-      expect(screen.getByTestId("app-switcher-visible-apps")).toHaveTextContent(
-        '"codex":true',
-      ),
+      expect(screen.getByTestId("provider-target")).toHaveTextContent("remote"),
     );
 
-    fireEvent.click(screen.getByTitle("common.settings"));
-    await screen.findByTestId("settings-page");
+    fireEvent.click(navButton("nav.settings"));
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-target")).toHaveTextContent("remote"),
+    );
+
+    // 远端设置保存后立刻换掉可见应用：不用重连也不用刷新
     fireEvent.click(screen.getByText("simulate-remote-settings-saved"));
     fireEvent.click(screen.getByText("close-settings"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("app-switcher-visible-apps")).toHaveTextContent(
-        '"gemini":true',
-      ),
+      expect(querySidebarApp("Gemini CLI")).toBeInTheDocument(),
     );
-    expect(screen.getByTestId("app-switcher-visible-apps")).toHaveTextContent(
-      '"codex":false',
-    );
-    await waitFor(() =>
-      expect(screen.getByTestId("app-switcher")).toHaveTextContent("gemini"),
-    );
-  });
+    expect(querySidebarApp("Claude Code")).not.toBeInTheDocument();
+    expect(sidebarApp("Gemini CLI")).toBeInTheDocument();
+  }, 20_000);
 
   it("hides homepage routing controls while managing a remote target until remote settings enable them", async () => {
     localStorage.setItem("cc-switch-last-app", "claude");
-    localStorage.setItem("cc-switch-last-view", "providers");
-    setSettings({
-      enableLocalProxy: true,
-      enableFailoverToggle: true,
-      firstRunNoticeConfirmed: true,
-    });
-    setRemoteProfiles([
-      {
-        id: "remote-1",
-        name: "Remote 1",
-        host: "192.168.1.20",
-        port: 22,
-        username: "root",
-        authMethod: { type: "sshAgent" },
-        helperPath: "~/.local/bin/cc-switch-remote-helper",
-        createdAt: 1,
-        updatedAt: 1,
-      },
-    ]);
-
-    const { default: App } = await import("@/App");
-    renderApp(App);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("proxy-toggle")).toBeInTheDocument(),
-    );
-    expect(screen.getByTestId("failover-toggle")).toBeInTheDocument();
-    expect(screen.getByTitle("sessionManager.title")).toBeInTheDocument();
-
-    fireEvent.click(await screen.findByText("Remote 1"));
-
-    await waitFor(() =>
-      expect(screen.queryByTestId("proxy-toggle")).not.toBeInTheDocument(),
-    );
-    expect(
-      screen.queryByTestId("remote-routing-toggle"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("remote-app-routing-toggle"),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByTestId("failover-toggle")).not.toBeInTheDocument();
-    expect(screen.getByTitle("sessionManager.title")).toBeInTheDocument();
-  });
-
-  it("shows only remote app routing and failover homepage controls when enabled per remote host", async () => {
-    localStorage.setItem("cc-switch-last-app", "claude");
-    localStorage.setItem("cc-switch-last-view", "providers");
-    setSettings({
-      enableLocalProxy: true,
-      enableFailoverToggle: true,
-      firstRunNoticeConfirmed: true,
-    });
-    setRemoteSettings({
-      enableRemoteRoutingToggle: true,
-      enableRemoteFailoverToggle: true,
-    });
-    setRemoteProfiles([
-      {
-        id: "remote-1",
-        name: "Remote 1",
-        host: "192.168.1.20",
-        port: 22,
-        username: "root",
-        authMethod: { type: "sshAgent" },
-        helperPath: "~/.local/bin/cc-switch-remote-helper",
-        createdAt: 1,
-        updatedAt: 1,
-      },
-    ]);
-
-    const { default: App } = await import("@/App");
-    renderApp(App);
-
-    fireEvent.click(await screen.findByText("Remote 1"));
-
-    await waitFor(() =>
-      expect(screen.queryByTestId("proxy-toggle")).not.toBeInTheDocument(),
-    );
-    expect(
-      screen.queryByTestId("remote-routing-toggle"),
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId("remote-app-routing-toggle")).toBeInTheDocument();
-    expect(screen.getByTestId("failover-toggle")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByText("switch-grokbuild"));
-
-    await waitFor(() =>
-      expect(screen.getByTestId("remote-app-routing-toggle")).toHaveTextContent(
-        "grokbuild",
-      ),
-    );
-    expect(screen.getByTestId("failover-toggle")).toBeInTheDocument();
-  });
-
-  it("opens remote session management without using local session data", async () => {
-    localStorage.setItem("cc-switch-last-app", "codex");
     localStorage.setItem("cc-switch-last-view", "providers");
     setSettings({ firstRunNoticeConfirmed: true });
     setRemoteProfiles([
@@ -1219,48 +1565,146 @@ describe("App integration with MSW", () => {
         updatedAt: 1,
       },
     ]);
-    setRemoteSessionFixtures(
-      [
-        {
-          providerId: "codex",
-          sessionId: "remote-codex-session",
-          title: "Remote Codex Session",
-          summary: "Remote summary",
-          projectDir: "/remote/project",
-          createdAt: 1000,
-          lastActiveAt: 2000,
-          sourcePath: "/remote/codex/session.jsonl",
-          resumeCommand: "codex resume remote-codex-session",
-        },
-      ],
-      {
-        "codex:/remote/codex/session.jsonl": [
-          {
-            role: "user",
-            content: "Remote session message",
-            ts: 2000,
-          },
-        ],
-      },
-    );
 
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    await waitFor(() =>
-      expect(screen.getByTestId("provider-target")).toHaveTextContent("local"),
-    );
+    // 本机目标：本机路由/故障转移控件在，会话页入口也在
+    expect(navButton("nav.sessions")).toBeInTheDocument();
 
     fireEvent.click(await screen.findByText("Remote 1"));
-
     await waitFor(() =>
       expect(screen.getByTestId("provider-target")).toHaveTextContent("remote"),
     );
-    fireEvent.click(screen.getByTitle("sessionManager.title"));
 
-    expect(await screen.findByText("Remote Codex Session")).toBeInTheDocument();
-    expect(screen.queryByText("Codex Session One")).not.toBeInTheDocument();
-  });
+    // 远端目标：本机路由控件不出现；远端开关未开启时也不出现；
+    // 会话页入口仍可用（远端会话列表是支持的）
+    expect(screen.queryByTestId("proxy-toggle")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("remote-routing-toggle"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("remote-app-routing-toggle"),
+    ).not.toBeInTheDocument();
+    expect(navButton("nav.sessions")).toBeInTheDocument();
+  }, 20_000);
+
+  it("shows only remote app routing and failover homepage controls when enabled per remote host", async () => {
+    localStorage.setItem("cc-switch-last-app", "claude");
+    localStorage.setItem("cc-switch-last-view", "providers");
+    setSettings({ firstRunNoticeConfirmed: true });
+    setRemoteSettings({
+      enableRemoteRoutingToggle: true,
+      visibleApps: {
+        claude: true,
+        "claude-desktop": true,
+        codex: true,
+        gemini: true,
+        grokbuild: true,
+        opencode: true,
+        openclaw: true,
+        hermes: true,
+        pi: true,
+        mcode: false,
+      },
+    });
+    setRemoteProfiles([
+      {
+        id: "remote-1",
+        name: "Remote 1",
+        host: "192.168.1.20",
+        port: 22,
+        username: "root",
+        authMethod: { type: "sshAgent" },
+        helperPath: "~/.local/bin/cc-switch-remote-helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]);
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    fireEvent.click(await screen.findByText("Remote 1"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-target")).toHaveTextContent("remote"),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("remote-app-routing-toggle"),
+      ).toBeInTheDocument(),
+    );
+    // 本机路由控件不出现；远端应用路由开关跟着当前应用走
+    expect(screen.queryByTestId("proxy-toggle")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("remote-routing-toggle"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("remote-app-routing-toggle")).toHaveTextContent(
+      "claude",
+    );
+
+    fireEvent.click(sidebarApp("Grok Build"));
+    await waitFor(() =>
+      expect(screen.getByTestId("remote-app-routing-toggle")).toHaveTextContent(
+        "grokbuild",
+      ),
+    );
+  }, 20_000);
+
+  it("opens remote session management without using local session data", async () => {
+    localStorage.setItem("cc-switch-last-app", "codex");
+    localStorage.setItem("cc-switch-last-view", "providers");
+    setSettings({ firstRunNoticeConfirmed: true });
+    // 本机记录里放一条同名不同题目的会话：远端目标下不能拿它顶替
+    setSessionFixtures(
+      [
+        {
+          providerId: "codex",
+          sessionId: "local-codex-session",
+          title: "Local Only Session",
+          summary: "Local summary",
+          projectDir: "/local/project",
+          createdAt: 1,
+          lastActiveAt: 2,
+          sourcePath: "/local/codex/session.jsonl",
+          resumeCommand: "codex resume local-codex-session",
+        },
+      ],
+      {},
+    );
+    setRemoteProfiles([
+      {
+        id: "remote-1",
+        name: "Remote 1",
+        host: "192.168.1.20",
+        port: 22,
+        username: "root",
+        authMethod: { type: "sshAgent" },
+        helperPath: "/root/.local/bin/cc-switch-remote-helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]);
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    expect(screen.getByTestId("provider-target")).toHaveTextContent("local");
+
+    fireEvent.click(await screen.findByText("Remote 1"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-target")).toHaveTextContent("remote"),
+    );
+
+    // 远端目标下会话页可以打开（页头由页面自己画；远端列表/正文由
+    // SessionManagerPage.test.tsx 覆盖），但绝不能把本机会话当成远端数据
+    fireEvent.click(navButton("nav.sessions"));
+    await waitFor(() =>
+      expect(screen.queryByText("Local Only Session")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Local Only Session")).not.toBeInTheDocument();
+  }, 20_000);
 
   it("keeps Hermes memory remote-capable while hiding local-only WebUI controls", async () => {
     localStorage.setItem("cc-switch-last-app", "hermes");
@@ -1274,59 +1718,142 @@ describe("App integration with MSW", () => {
         port: 22,
         username: "root",
         authMethod: { type: "sshAgent" },
-        helperPath: "~/.local/bin/cc-switch-remote-helper",
+        helperPath: "/root/.local/bin/cc-switch-remote-helper",
         createdAt: 1,
         updatedAt: 1,
       },
     ]);
-    setRemoteHermesMemoryFixtures(
-      {
-        memory: "Remote Hermes agent memory",
-        user: "Remote Hermes user profile",
-      },
-      {
-        memory: 3000,
-        user: 1800,
-      },
-    );
 
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    await waitFor(() =>
-      expect(screen.getByTestId("provider-target")).toHaveTextContent("local"),
-    );
-    expect(screen.getByTitle("hermes.memory.title")).toBeInTheDocument();
-    expect(screen.getByTitle("hermes.webui.open")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-target")).toHaveTextContent("local");
+
+    // Hermes 页：供应商 / 记忆两个页签；本机目标下「打开配置」是本机专属入口
+    const hermesTabs = await screen.findByRole("tablist", {
+      name: "Hermes",
+      hidden: true,
+    });
+    expect(
+      within(hermesTabs)
+        .getAllByRole("tab", { hidden: true })
+        .map((tab) => tab.textContent),
+    ).toEqual(["appPage.providers", "appPage.memory"]);
 
     fireEvent.click(await screen.findByText("Remote 1"));
-
     await waitFor(() =>
       expect(screen.getByTestId("provider-target")).toHaveTextContent("remote"),
     );
-    expect(screen.getByTitle("hermes.memory.title")).toBeInTheDocument();
-    expect(screen.queryByTitle("hermes.webui.open")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTitle("hermes.memory.title"));
-
-    await waitFor(() =>
-      expect(screen.getByTestId("markdown-editor")).toHaveValue(
-        "Remote Hermes agent memory",
-      ),
-    );
+    // 远端目标：记忆页签仍在（读写在 HermesMemory*.test.tsx 覆盖），
+    // 本机专属的「打开配置」入口不再出现
+    const remoteTabs = await screen.findByRole("tablist", {
+      name: "Hermes",
+      hidden: true,
+    });
+    expect(
+      within(remoteTabs).getAllByRole("tab", { hidden: true }),
+    ).toHaveLength(2);
     expect(
       screen.queryByText("hermes.memory.openConfig"),
     ).not.toBeInTheDocument();
+  }, 20_000);
 
-    fireEvent.change(screen.getByTestId("markdown-editor"), {
-      target: { value: "Updated remote Hermes memory" },
+  it("renders the Skills page with its own header", async () => {
+    localStorage.setItem("cc-switch-last-view", "skills");
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    expect(await screen.findByTestId("unified-skills-panel")).toHaveTextContent(
+      "installed",
+    );
+  });
+
+  it("navigates OpenClaw and Hermes pages with underline tabs", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    fireEvent.click(sidebarApp("OpenClaw"));
+    // 首次启动提示是模态对话框，页面其余部分是 aria-hidden，所以带上 hidden
+    const openclawTabs = await screen.findByRole("tablist", {
+      name: "OpenClaw",
+      hidden: true,
     });
-    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    const pageTabs = within(openclawTabs).getAllByRole("tab", { hidden: true });
+    expect(pageTabs.map((tab) => tab.textContent)).toEqual([
+      "appPage.providers",
+      "appPage.workspace",
+      "appPage.openclawConfig",
+    ]);
+    expect(pageTabs[0]).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.queryByRole("group", { name: "OpenClaw", hidden: true }),
+    ).not.toBeInTheDocument();
 
+    fireEvent.click(pageTabs[2]);
+    const configTabs = await screen.findByRole("tablist", {
+      name: "appPage.openclawConfig",
+      hidden: true,
+    });
+    const subTabs = within(configTabs).getAllByRole("tab", { hidden: true });
+    expect(subTabs).toHaveLength(3);
+    expect(subTabs[0]).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { hidden: true })).toHaveAttribute(
+      "aria-labelledby",
+      "openclaw-config-env",
+    );
+
+    fireEvent.click(sidebarApp("Hermes"));
+    const hermesTabs = await screen.findByRole("tablist", {
+      name: "Hermes",
+      hidden: true,
+    });
+    const hermesPageTabs = within(hermesTabs).getAllByRole("tab", {
+      hidden: true,
+    });
+    expect(hermesPageTabs.map((tab) => tab.textContent)).toEqual([
+      "appPage.providers",
+      "appPage.memory",
+    ]);
+
+    // 记忆页：页头的 solid 主操作换成「保存」，两份记忆用二级页签
+    fireEvent.click(hermesPageTabs[1]);
+    const header = document.querySelector("header") as HTMLElement;
+    const save = await within(header).findByRole("button", {
+      name: "common.save",
+      hidden: true,
+    });
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(
+      within(header).queryByRole("button", {
+        name: /provider.addProvider/,
+        hidden: true,
+      }),
+    ).not.toBeInTheDocument();
+    const memoryTabs = await screen.findByRole("tablist", {
+      name: "hermes.memory.fileTabs",
+      hidden: true,
+    });
+    expect(
+      within(memoryTabs).getAllByRole("tab", { hidden: true }),
+    ).toHaveLength(2);
     await waitFor(() =>
-      expect(getRemoteHermesMemory("memory")).toBe(
-        "Updated remote Hermes memory",
-      ),
+      expect(
+        screen.getAllByRole("textbox", {
+          name: "hermes.memory.editorLabel",
+          hidden: true,
+        })[0],
+      ).toHaveValue("agent notes"),
+    );
+  });
+
+  it("opens the old skillsDiscovery view as the Discover segment", async () => {
+    localStorage.setItem("cc-switch-last-view", "skillsDiscovery");
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    expect(await screen.findByTestId("unified-skills-panel")).toHaveTextContent(
+      "discover",
     );
   });
 });

@@ -1,21 +1,26 @@
 import { useCallback } from "react";
 import {
-  useMutation,
   useQuery,
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { hermesApi } from "@/lib/api/hermes";
 import { providersApi } from "@/lib/api/providers";
 import {
   getManagementTargetKey,
   LOCAL_MANAGEMENT_TARGET,
 } from "@/lib/managementTarget";
+import { settingsApi } from "@/lib/api/settings";
 import type { HermesMemoryKind } from "@/types";
 import type { ManagementTarget } from "@/lib/api";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { useTargetMutation } from "./useTargetMutation";
+import {
+  useTargetConnectionEpoch,
+  withConnectionEpoch,
+} from "./useTargetConnectionEpoch";
 
 /**
  * Error code returned by the Rust `open_hermes_web_ui` command when probing
@@ -38,6 +43,8 @@ export const hermesKeys = {
     ["hermes", "memory", targetKey, kind] as const,
   memoryLimits: (targetKey = "local") =>
     ["hermes", "memoryLimits", targetKey] as const,
+  configDir: (targetKey = "local") =>
+    ["hermes", "configDir", targetKey] as const,
 };
 
 /**
@@ -94,8 +101,9 @@ export function useHermesMemory(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
   const targetKey = getManagementTargetKey(target);
+  const epoch = useTargetConnectionEpoch(target);
   return useQuery({
-    queryKey: hermesKeys.memory(kind, targetKey),
+    queryKey: withConnectionEpoch(hermesKeys.memory(kind, targetKey), epoch),
     queryFn: () => hermesApi.getMemory(kind, target),
     enabled,
   });
@@ -106,11 +114,32 @@ export function useHermesMemoryLimits(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
   const targetKey = getManagementTargetKey(target);
+  const epoch = useTargetConnectionEpoch(target);
   return useQuery({
-    queryKey: hermesKeys.memoryLimits(targetKey),
+    queryKey: withConnectionEpoch(hermesKeys.memoryLimits(targetKey), epoch),
     queryFn: () => hermesApi.getMemoryLimits(target),
     staleTime: 60_000,
     enabled,
+  });
+}
+
+/**
+ * Hermes 的配置目录（设置里可改，也认 HERMES_HOME），记忆页用来显示
+ * memories/MEMORY.md 的真实路径。
+ */
+export function useHermesConfigDir(
+  enabled: boolean,
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
+  const targetKey = getManagementTargetKey(target);
+  // 本机读的是 Hermes 自己的配置目录；helper 现在只有 `settings app-config-dir`
+  // （cc-switch-remote 的数据目录），两者不是一回事。远端先不显示这条路径，
+  // 而不是拿数据目录冒充 Hermes 目录（见实施记录 B3c 的未完成项）。
+  return useQuery({
+    queryKey: hermesKeys.configDir(targetKey),
+    queryFn: () => settingsApi.getConfigDir("hermes"),
+    staleTime: 60_000,
+    enabled: enabled && target.type === "local",
   });
 }
 
@@ -129,26 +158,30 @@ export function useSaveHermesMemory(
 ) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
-  const targetKey = getManagementTargetKey(target);
-  return useMutation({
-    mutationFn: ({
-      kind,
-      content,
-    }: {
-      kind: HermesMemoryKind;
-      content: string;
-    }) => hermesApi.setMemory(kind, content, target),
-    onSuccess: async (_data, variables) => {
-      await queryClient.invalidateQueries({
-        queryKey: hermesKeys.memory(variables.kind, targetKey),
-      });
+  return useTargetMutation<void, { kind: HermesMemoryKind; content: string }>(
+    target,
+    {
+      mutationFn: ({ kind, content }, scope) =>
+        hermesApi.setMemory(kind, content, scope.target),
+      onSuccess: async (_data, variables, scope) => {
+        await queryClient.invalidateQueries({
+          queryKey: withConnectionEpoch(
+            hermesKeys.memory(
+              variables.kind,
+              getManagementTargetKey(scope.target),
+            ),
+            scope.epoch,
+          ),
+          exact: true,
+        });
+      },
+      onError: (error) => {
+        toast.error(t("hermes.memory.saveFailed"), {
+          description: extractErrorMessage(error) || undefined,
+        });
+      },
     },
-    onError: (error) => {
-      toast.error(t("hermes.memory.saveFailed"), {
-        description: extractErrorMessage(error) || undefined,
-      });
-    },
-  });
+  );
 }
 
 /**
@@ -160,26 +193,27 @@ export function useToggleHermesMemoryEnabled(
 ) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
-  const targetKey = getManagementTargetKey(target);
-  return useMutation({
-    mutationFn: ({
-      kind,
-      enabled,
-    }: {
-      kind: HermesMemoryKind;
-      enabled: boolean;
-    }) => hermesApi.setMemoryEnabled(kind, enabled, target),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: hermesKeys.memoryLimits(targetKey),
-      });
+  return useTargetMutation<void, { kind: HermesMemoryKind; enabled: boolean }>(
+    target,
+    {
+      mutationFn: ({ kind, enabled }, scope) =>
+        hermesApi.setMemoryEnabled(kind, enabled, scope.target),
+      onSuccess: async (_data, _variables, scope) => {
+        await queryClient.invalidateQueries({
+          queryKey: withConnectionEpoch(
+            hermesKeys.memoryLimits(getManagementTargetKey(scope.target)),
+            scope.epoch,
+          ),
+          exact: true,
+        });
+      },
+      onError: (error) => {
+        toast.error(t("hermes.memory.toggleFailed"), {
+          description: extractErrorMessage(error) || undefined,
+        });
+      },
     },
-    onError: (error) => {
-      toast.error(t("hermes.memory.toggleFailed"), {
-        description: extractErrorMessage(error) || undefined,
-      });
-    },
-  });
+  );
 }
 
 /**

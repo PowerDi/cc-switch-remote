@@ -65,7 +65,7 @@ describe("DatabaseUpgrade recovery actions", () => {
     const releases = await screen.findByRole("button", { name: "打开发布页" });
     fireEvent.click(releases);
     expect(mocks.invoke).toHaveBeenCalledWith("open_external", {
-      url: "https://github.com/xiaoY233/cc-switch-remote/releases",
+      url: "https://github.com/PowerDi/cc-switch-remote/releases",
     });
   });
 });

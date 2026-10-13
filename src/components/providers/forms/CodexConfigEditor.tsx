@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React from "react";
 import { useTranslation } from "react-i18next";
 import { CodexAuthSection, CodexConfigSection } from "./CodexConfigSections";
-import { CodexCommonConfigModal } from "./CodexCommonConfigModal";
+import type { ProviderEditorInactiveField } from "@/lib/api/providers";
 
 interface CodexConfigEditorProps {
   authValue: string;
@@ -14,33 +14,18 @@ interface CodexConfigEditorProps {
 
   isProxyTakeover?: boolean;
 
-  commonConfigEnabled?: boolean;
-
   onAuthChange: (value: string) => void;
 
   onConfigChange: (value: string) => void;
 
   onAuthBlur?: () => void;
 
-  useCommonConfig: boolean;
-
-  onCommonConfigToggle: (checked: boolean) => void | Promise<void>;
-
-  commonConfigSnippet: string;
-
-  onCommonConfigSnippetChange: (value: string) => boolean | Promise<boolean>;
-
-  onCommonConfigErrorClear: () => void;
-
-  commonConfigError: string;
-
   authError: string;
 
   configError: string; // config.toml 错误提示
 
-  onExtract?: () => void;
-
-  isExtracting?: boolean;
+  /** 行里保存着、但不随切换生效的全局设置。 */
+  inactiveFields?: ProviderEditorInactiveField[];
 }
 
 const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
@@ -49,34 +34,20 @@ const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
   providerName,
   showRemoteCompaction,
   isProxyTakeover = false,
-  commonConfigEnabled = true,
   onAuthChange,
   onConfigChange,
   onAuthBlur,
-  useCommonConfig,
-  onCommonConfigToggle,
-  commonConfigSnippet,
-  onCommonConfigSnippetChange,
-  onCommonConfigErrorClear,
-  commonConfigError,
   authError,
   configError,
-  onExtract,
-  isExtracting,
+  inactiveFields,
 }) => {
   const { t } = useTranslation();
-  const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] = useState(false);
-
-  const handleCloseCommonConfigModal = () => {
-    onCommonConfigErrorClear();
-    setIsCommonConfigModalOpen(false);
-  };
 
   return (
     <div className="space-y-6">
       {isProxyTakeover && (
-        <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg">
-          <p className="text-xs text-amber-600 dark:text-amber-400">
+        <div className="p-3 bg-warning-soft border border-transparent rounded-lg">
+          <p className="text-xs text-warning-text">
             {t("codexConfig.proxyTakeoverStorageNotice")}
           </p>
         </div>
@@ -97,27 +68,10 @@ const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
         onChange={onConfigChange}
         providerName={providerName}
         showRemoteCompaction={showRemoteCompaction}
-        commonConfigEnabled={commonConfigEnabled}
-        useCommonConfig={useCommonConfig}
-        onCommonConfigToggle={onCommonConfigToggle}
-        onEditCommonConfig={() => setIsCommonConfigModalOpen(true)}
-        commonConfigError={commonConfigError}
         configError={configError}
         isProxyTakeover={isProxyTakeover}
+        inactiveFields={inactiveFields}
       />
-
-      {/* Common Config Modal */}
-      {commonConfigEnabled && (
-        <CodexCommonConfigModal
-          isOpen={isCommonConfigModalOpen}
-          onClose={handleCloseCommonConfigModal}
-          value={commonConfigSnippet}
-          onSave={onCommonConfigSnippetChange}
-          error={commonConfigError}
-          onExtract={onExtract}
-          isExtracting={isExtracting}
-        />
-      )}
     </div>
   );
 };

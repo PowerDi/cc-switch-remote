@@ -172,7 +172,7 @@ describe("RemoteServersPage", () => {
     );
 
     expect(screen.getByTestId("remote-server-list-panel")).toHaveClass(
-      "bg-card",
+      "bg-surface",
       "border-border-default",
       "shadow-sm",
     );
@@ -180,12 +180,12 @@ describe("RemoteServersPage", () => {
       "glass",
     );
     expect(screen.getByTestId("remote-server-details-panel")).toHaveClass(
-      "bg-card",
+      "bg-surface",
       "border-border-default",
       "shadow-sm",
     );
     expect(screen.getByTestId("remote-health-panel")).toHaveClass(
-      "bg-card",
+      "bg-surface",
       "border-border-default",
       "shadow-sm",
     );

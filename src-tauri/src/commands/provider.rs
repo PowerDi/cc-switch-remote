@@ -6,6 +6,7 @@ use crate::commands::copilot::CopilotAuthState;
 use crate::commands::xai_oauth::XaiOAuthState;
 use crate::error::AppError;
 use crate::provider::Provider;
+use crate::services::provider::{EditorSave, EditorView};
 use crate::services::{
     EndpointLatency, ProviderService, ProviderSortUpdate, SpeedtestService, SwitchResult,
 };
@@ -41,6 +42,7 @@ pub async fn add_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] addToLive: Option<bool>,
+    #[allow(non_snake_case)] editorSave: Option<EditorSave>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     let add_to_live = addToLive.unwrap_or(true);
@@ -48,7 +50,7 @@ pub async fn add_provider(
         let state = app_handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
-        ProviderService::add(state.inner(), app_type, provider, add_to_live)
+        ProviderService::add_from_editor(state.inner(), app_type, provider, add_to_live, editorSave)
             .map_err(|e| e.to_string())
     })
     .await
@@ -61,17 +63,58 @@ pub async fn update_provider(
     app: String,
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
+    #[allow(non_snake_case)] editorSave: Option<EditorSave>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
-        ProviderService::update(state.inner(), app_type, originalId.as_deref(), provider)
-            .map_err(|e| e.to_string())
+        ProviderService::update_from_editor(
+            state.inner(),
+            app_type,
+            originalId.as_deref(),
+            provider,
+            editorSave,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("供应商更新任务执行失败: {e}"))?
+}
+
+/// 供应商编辑器底部 JSON 的显示内容：切到这个供应商之后配置文件会是什么样。
+/// `settingsConfig` 是供应商的行（新增时传空对象）。
+#[tauri::command]
+pub async fn get_provider_editor_view(
+    app_handle: tauri::AppHandle,
+    app: String,
+    #[allow(non_snake_case)] settingsConfig: serde_json::Value,
+    category: Option<String>,
+    #[allow(non_snake_case)] providerId: Option<String>,
+) -> Result<EditorView, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle
+            .try_state::<AppState>()
+            .ok_or_else(|| "应用状态不可用".to_string())?;
+        let category = ProviderService::editor_category(
+            state.inner(),
+            &app_type,
+            providerId.as_deref(),
+            category,
+        )
+        .map_err(|e| e.to_string())?;
+        ProviderService::editor_view(
+            state.inner(),
+            app_type,
+            &settingsConfig,
+            category.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("读取编辑器内容失败: {e}"))?
 }
 
 #[tauri::command]
@@ -122,14 +165,30 @@ pub async fn switch_provider(
     id: String,
 ) -> Result<SwitchResult, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle
+    let is_desktop = matches!(app_type, AppType::ClaudeDesktop);
+    let desktop_was_mapping = is_desktop
+        && app_handle.try_state::<AppState>().is_some_and(|state| {
+            crate::claude_desktop_config::current_provider_uses_proxy(&state.db)
+        });
+    let handle = app_handle.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
         switch_provider_internal(state.inner(), app_type, &id).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("供应商切换任务执行失败: {e}"))?
+    .map_err(|e| format!("供应商切换任务执行失败: {e}"))??;
+    if is_desktop {
+        if let Some(state) = app_handle.try_state::<AppState>() {
+            crate::mode::controller::sync_desktop_mapping_service(
+                state.inner(),
+                desktop_was_mapping,
+            )
+            .await;
+        }
+    }
+    Ok(result)
 }
 
 pub(crate) fn import_default_config_internal(
@@ -268,124 +327,6 @@ pub fn ensure_grokbuild_official_provider(state: State<'_, AppState>) -> Result<
             AppType::GrokBuild,
         )
         .map_err(|e| e.to_string())
-}
-
-#[allow(dead_code)]
-pub(crate) fn suggested_claude_desktop_routes(
-    provider: &Provider,
-) -> Option<std::collections::HashMap<String, crate::provider::ClaudeDesktopModelRoute>> {
-    let env = provider
-        .settings_config
-        .get("env")
-        .and_then(|value| value.as_object())?;
-    let mut routes = std::collections::HashMap::new();
-    let supports_1m_default = !matches!(
-        provider
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.provider_type.as_deref()),
-        Some("github_copilot") | Some("codex_oauth") | Some("xai_oauth")
-    );
-
-    fn add_route(
-        routes: &mut std::collections::HashMap<String, crate::provider::ClaudeDesktopModelRoute>,
-        env: &serde_json::Map<String, serde_json::Value>,
-        route_key: &str,
-        env_key: &str,
-        supports_1m_default: bool,
-    ) {
-        let Some(raw_model) = env
-            .get(env_key)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            return;
-        };
-
-        // Claude 端 env 值可能带 [1M] 后缀；Claude Desktop schema 不接受后缀，
-        // 改用 supports1m 字段表达 1M 能力。在 import 边界做单向翻译。
-        let marker = crate::claude_desktop_config::ONE_M_CONTEXT_MARKER.as_bytes();
-        let raw_bytes = raw_model.as_bytes();
-        let has_1m_marker = raw_bytes.len() >= marker.len()
-            && raw_bytes[raw_bytes.len() - marker.len()..].eq_ignore_ascii_case(marker);
-        let stripped_model: &str = if has_1m_marker {
-            raw_model[..raw_model.len() - marker.len()].trim_end()
-        } else {
-            raw_model
-        };
-        if stripped_model.is_empty() {
-            return;
-        }
-        let effective_supports_1m = supports_1m_default || has_1m_marker;
-        let explicit_label_override = env
-            .get(&format!("{env_key}_NAME"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        let label_override = explicit_label_override.clone().or_else(|| {
-            (!crate::claude_desktop_config::is_claude_safe_model_id(stripped_model))
-                .then(|| stripped_model.to_string())
-        });
-
-        // 何时覆盖既有 label_override：原本为空 / 这次来的是 explicit _NAME /
-        // 既有值只是 stripped_model 派生的占位（被 explicit 或更具体的值挤掉）。
-        let should_overwrite = |existing: Option<&str>| {
-            existing.is_none()
-                || explicit_label_override.is_some()
-                || existing == Some(stripped_model)
-        };
-
-        let merge_into = |existing: &mut crate::provider::ClaudeDesktopModelRoute| {
-            let merged = existing.supports_1m.unwrap_or(false) || effective_supports_1m;
-            existing.supports_1m = Some(merged);
-            if should_overwrite(existing.label_override.as_deref()) {
-                existing.label_override = label_override.clone();
-            }
-        };
-
-        if let Some(existing) = routes
-            .values_mut()
-            .find(|existing| existing.model == stripped_model)
-        {
-            merge_into(existing);
-            return;
-        }
-
-        routes
-            .entry(route_key.to_string())
-            .and_modify(merge_into)
-            .or_insert_with(|| crate::provider::ClaudeDesktopModelRoute {
-                model: stripped_model.to_string(),
-                label_override,
-                supports_1m: Some(effective_supports_1m),
-            });
-    }
-
-    for spec in crate::claude_desktop_config::DEFAULT_PROXY_ROUTES {
-        add_route(
-            &mut routes,
-            env,
-            spec.route_id,
-            spec.env_key,
-            supports_1m_default,
-        );
-    }
-
-    // 三个 default env_key 全空时用 ANTHROPIC_MODEL 派生兜底路由。
-    if routes.is_empty() {
-        let primary_route = crate::claude_desktop_config::DEFAULT_PROXY_ROUTES[0].route_id;
-        add_route(
-            &mut routes,
-            env,
-            primary_route,
-            "ANTHROPIC_MODEL",
-            supports_1m_default,
-        );
-    }
-
-    (!routes.is_empty()).then_some(routes)
 }
 
 #[allow(non_snake_case)]
@@ -794,14 +735,19 @@ pub fn update_endpoint_last_used(
         .map_err(|e| e.to_string())
 }
 
+/// 排序就是故障转移队列的优先级，托盘按它列队列：改完重建托盘。
 #[tauri::command]
 pub fn update_providers_sort_order(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     app: String,
     updates: Vec<ProviderSortUpdate>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::update_sort_order(state.inner(), app_type, updates).map_err(|e| e.to_string())
+    let changed = ProviderService::update_sort_order(state.inner(), app_type, updates)
+        .map_err(|e| e.to_string())?;
+    crate::tray::refresh_tray_menu(&app_handle);
+    Ok(changed)
 }
 
 use crate::provider::UniversalProvider;

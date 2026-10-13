@@ -6,19 +6,16 @@ import { ClaudeDesktopProviderForm } from "@/components/providers/forms/ClaudeDe
 import { createTestQueryClient } from "../utils/testQueryClient";
 import type { ManagementTarget } from "@/lib/api";
 
-const {
-  codexOAuthSectionMock,
-  copilotAuthSectionMock,
-  modelFetchApiMock,
-} = vi.hoisted(() => ({
-  codexOAuthSectionMock: vi.fn(),
-  copilotAuthSectionMock: vi.fn(),
-  modelFetchApiMock: {
-    canUseStoredRemoteProviderApiKey: vi.fn(),
-    fetchModelsForProviderConfig: vi.fn(),
-    showFetchModelsError: vi.fn(),
-  },
-}));
+const { codexOAuthSectionMock, copilotAuthSectionMock, modelFetchApiMock } =
+  vi.hoisted(() => ({
+    codexOAuthSectionMock: vi.fn(),
+    copilotAuthSectionMock: vi.fn(),
+    modelFetchApiMock: {
+      canUseStoredRemoteProviderApiKey: vi.fn(),
+      fetchModelsForProviderConfig: vi.fn(),
+      showFetchModelsError: vi.fn(),
+    },
+  }));
 
 vi.mock("@/components/providers/forms/CodexOAuthSection", () => ({
   CodexOAuthSection: (props: unknown) => {
@@ -202,11 +199,12 @@ describe("ClaudeDesktopProviderForm", () => {
         },
       });
 
-      const modelMappingToggle = screen.getByRole("switch", {
-        name: "需要模型映射",
+      // v4 把这一档改成「接入方式」下拉（托管 OAuth 强制模型映射且不可改）
+      const modelModePicker = screen.getByRole("combobox", {
+        name: "接入方式",
       });
-      expect(modelMappingToggle).toBeChecked();
-      expect(modelMappingToggle).toBeDisabled();
+      expect(modelModePicker).toHaveTextContent("模型映射");
+      expect(modelModePicker).toBeDisabled();
     },
   );
 

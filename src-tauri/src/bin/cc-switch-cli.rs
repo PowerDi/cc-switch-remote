@@ -45,9 +45,21 @@ mod grok_config;
 #[path = "../hermes_config.rs"]
 #[cfg(not(feature = "desktop"))]
 pub mod hermes_config;
+#[path = "../jsonc_document.rs"]
+#[cfg(not(feature = "desktop"))]
+mod jsonc_document;
+#[path = "../live/mod.rs"]
+#[cfg(not(feature = "desktop"))]
+pub mod live;
+#[path = "../mcode_config.rs"]
+#[cfg(not(feature = "desktop"))]
+mod mcode_config;
 #[path = "../mcp/mod.rs"]
 #[cfg(not(feature = "desktop"))]
 mod mcp;
+#[path = "../mode/mod.rs"]
+#[cfg(not(feature = "desktop"))]
+pub mod mode;
 #[path = "../model_capabilities.rs"]
 #[cfg(not(feature = "desktop"))]
 mod model_capabilities;
@@ -78,6 +90,9 @@ mod remote_capabilities;
 #[path = "../remote_restore_preflight.rs"]
 #[cfg(not(feature = "desktop"))]
 mod remote_restore_preflight;
+#[path = "../runtime.rs"]
+#[cfg(not(feature = "desktop"))]
+mod runtime;
 #[path = "../services/mod.rs"]
 #[cfg(not(feature = "desktop"))]
 mod services;
@@ -342,6 +357,8 @@ pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_l
 pub use config::{get_claude_mcp_path, get_claude_settings_path, read_json_file};
 #[cfg(not(feature = "desktop"))]
 pub use database::Database;
+#[cfg(not(feature = "desktop"))]
+pub(crate) use error::error_for_log;
 #[cfg(not(feature = "desktop"))]
 pub use error::AppError;
 #[cfg(not(feature = "desktop"))]

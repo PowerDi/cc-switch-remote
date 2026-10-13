@@ -1,12 +1,22 @@
-# 在 Codex 中用 Kimi：CC Switch 本地路由攻略
+# 在 Codex 中使用 Kimi：新版直连与旧版路由
 
-> 适用版本：CC Switch 3.16.5 及附近版本。本文根据仓库内文档与代码整理，并用 Kimi 作为 OpenAI Chat Completions 兼容接口的示例。截图来自当前前端界面，使用去敏示例数据生成，避免泄露真实 API Key 或账户余额。
+## v3.20.3 起：优先使用原生 Responses 直连
 
-## 为什么需要本地路由
+Kimi 开放平台和 Kimi For Coding 的官方 Codex 预设已切换为 **Responses**，无需为了协议转换开启本地路由。旧卡片保存的是创建时的快照，不会自动更新。
+
+1. 升级到 CC Switch Remote v3.20.3 或更新版本，在 Codex 标签下按 API Key 来源选择最新的 **Kimi** 或 **Kimi For Coding** 预设。国际站（kimi.ai）的 Key 选 **Kimi Global** 或 **Kimi For Coding Global**（v3.20.4 起提供）。
+2. 填入对应 API Key，保存并启用。旧卡片建议重新添加预设；若手动迁移，确认端点正确后将「上游格式」改为 **Responses**。
+3. 重启 Codex，使配置和模型目录生效。原生 Responses 也可经标准代理转发，但不再需要 Responses→Chat 转换。
+
+详见 [v3.20.3 更新说明](../release-notes/v3.20.3-zh.md)与[添加供应商](../user-manual/zh/2-providers/2.1-add.md)。**下文保留的是旧版 Chat 格式教程与截图，仅供已有 Chat 卡片排障参考，不代表新版预设的配置。**
+
+> 适用版本：CC Switch Remote 3.16.5 及附近版本。本文根据仓库内文档与代码整理，并用 Kimi 作为 OpenAI Chat Completions 兼容接口的示例。截图来自当前前端界面，使用去敏示例数据生成，避免泄露真实 API Key 或账户余额。
+
+## 旧版 Chat 配置为什么需要本地路由
 
 新版 Codex CLI 面向的是 OpenAI Responses API，而 Kimi 开放平台和 Kimi For Coding 实际暴露的都是 OpenAI Chat Completions 形态，也就是 `/chat/completions`。这两种协议的请求体、流式事件和返回结构不同，直接把 Kimi 的接口地址填进 Codex 配置里，常见结果就是请求 `/responses` 返回 404，或者流式响应无法被 Codex 正确解析。
 
-Kimi For Coding 官方目前支持的第三方工具是 Claude Code、Roo Code 这类兼容 Anthropic 协议的编程 Agent，并没有覆盖 Codex。所以想在 Codex 里用 Kimi，需要一层协议转换——这正是 CC Switch 本地路由做的事。
+本文最初编写时，Kimi For Coding 官方支持的第三方工具尚未覆盖 Codex，旧版 Chat 配置需要一层协议转换——这正是 CC Switch Remote 本地路由做的事。新版 Responses 预设不再受此限制。
 
 CC Switch 的做法是让 Codex 始终连本机路由，仍以 Responses API 发送请求；路由在内部识别当前供应商是否是 Chat 格式，再把请求改写成 Chat Completions 发给上游，最后把 Chat 响应转换回 Responses 形态返回给 Codex。
 
@@ -23,11 +33,11 @@ CC Switch 的做法是让 Codex 始终连本机路由，仍以 Responses API 发
 
 你需要先准备好三样东西：
 
-- 已安装并能启动的 CC Switch。
+- 已安装并能启动的 CC Switch Remote。
 - 已安装 Codex CLI，并至少运行过一次，让 `~/.codex/config.toml` 目录结构存在。
 - 一个 Kimi API Key。
 
-Kimi 的 API Key 有两个来源，对应 CC Switch 里两个不同的内置预设：
+Kimi 的 API Key 有两个来源，对应 CC Switch Remote 里两个不同的内置预设：
 
 - **Kimi 开放平台**（platform.kimi.com）：按 token 用量计费的 API Key，对应预设 `Kimi`，OpenAI 兼容 base URL 是 `https://api.moonshot.cn/v1`，默认模型 `kimi-k2.7-code`。
 - **Kimi For Coding**（kimi.com/code）：Kimi 会员 Kimi Code 权益生成的专用 Key，对应预设 `Kimi For Coding`，base URL 是 `https://api.kimi.com/coding/v1`，模型统一为 `kimi-for-coding`。
@@ -36,7 +46,7 @@ Kimi 的 API Key 有两个来源，对应 CC Switch 里两个不同的内置预�
 
 ## 第一步：添加 Codex 供应商
 
-打开 CC Switch，切到顶部的 `Codex` 标签，点击右上角的加号添加供应商。
+打开 CC Switch Remote，切到顶部的 `Codex` 标签，点击右上角的加号添加供应商。
 
 按你手里 Key 的类型，在内置预设里选择 `Kimi`（开放平台按量计费）或 `Kimi For Coding`（会员订阅），然后只需要做两件事：
 
@@ -56,11 +66,11 @@ Kimi 的 API Key 有两个来源，对应 CC Switch 里两个不同的内置预�
 
 ![本地路由页面中启用 Codex 接管](../images/codex-kimi-routing/03-local-route-codex-takeover.png)
 
-接管后，CC Switch 会把 Codex 的 live 配置指向本机路由，并用占位符管理认证。真实 Kimi Key 仍保存在 CC Switch 的 Provider 配置里，由本地路由在转发时注入，不需要你把 Key 暴露给 Codex live 配置。
+接管后，CC Switch Remote 会把 Codex 的 live 配置指向本机路由，并用占位符管理认证。真实 Kimi Key 仍保存在 CC Switch Remote 的 Provider 配置里，由本地路由在转发时注入，不需要你把 Key 暴露给 Codex live 配置。
 
 ## 第三步：切换供应商并重启 Codex
 
-回到 Codex 供应商列表，点击 Kimi 供应商的 `启用`。如果看到 `需要路由` 标记，说明这个供应商必须在路由运行时使用；没有启动路由时，CC Switch 会弹出“需要路由服务才能正常使用”的提示。
+回到 Codex 供应商列表，点击 Kimi 供应商的 `启用`。如果看到 `需要路由` 标记，说明这个供应商必须在路由运行时使用；没有启动路由时，CC Switch Remote 会弹出“需要路由服务才能正常使用”的提示。
 
 切换后建议重启当前 Codex 终端会话。原因是：
 
@@ -71,7 +81,7 @@ Kimi 的 API Key 有两个来源，对应 CC Switch 里两个不同的内置预�
 
 ## 其它 Chat 供应商怎么处理
 
-Kimi、DeepSeek、MiniMax、SiliconFlow 等常见 Chat 格式供应商在 CC Switch 里已有预设，优先用预设即可。只有预设里没有的供应商，才需要选择自定义配置；这时按对方文档填 API Key、base URL 和模型，并把 `高级选项` 里的 `上游格式` 选为 `Chat Completions（需开启路由）`。
+SiliconFlow、ModelScope 等常见 Chat 格式供应商在 CC Switch 里已有预设，优先用预设即可。只有预设里没有的供应商，才需要选择自定义配置；这时按对方文档填 API Key、base URL 和模型，并把 `高级选项` 里的 `上游格式` 选为 `Chat Completions（需开启路由）`。
 
 如果上游直接支持 OpenAI Responses API，把 `上游格式` 选为 `Responses` 即可；这时 CC Switch 按 Responses 直连，不做 Chat 转换。
 
@@ -91,8 +101,9 @@ Kimi、DeepSeek、MiniMax、SiliconFlow 等常见 Chat 格式供应商在 CC Swi
 
 **`/model` 看不到 Kimi 模型**
 
-保存供应商后重启 Codex。CC Switch 会生成 `cc-switch-model-catalog.json` 并把路径写入 `model_catalog_json`，但正在运行的 Codex 进程不一定会热加载模型目录。
+保存供应商后重启 Codex。CC Switch Remote 会生成 `cc-switch-model-catalog.json` 并把路径写入 `model_catalog_json`，但正在运行的 Codex 进程不一定会热加载模型目录。
 目前 Codex app 不支持多模型选择，默认使用配置的第一个模型。
+如果命令行 `/model` 正常，但 Codex 桌面应用的模型选择器仍看不到自定义模型，这是 Codex 桌面应用上游自身的模型门控行为，详见 [Codex 桌面应用里看不到自定义模型？（常见问题）](./codex-desktop-custom-model-visibility-zh.md)。
 
 **开了路由但请求仍走错供应商**
 
@@ -100,13 +111,13 @@ Kimi、DeepSeek、MiniMax、SiliconFlow 等常见 Chat 格式供应商在 CC Swi
 
 **可以用官方 OpenAI Codex 账号走本地路由吗**
 
-不建议。CC Switch 会在本地路由接管模式下阻止切到官方供应商，因为用代理访问官方 API 可能带来账号风险。路由主要用于第三方、聚合或协议转换场景。
+不建议。CC Switch Remote 会在本地路由接管模式下阻止切到官方供应商，因为用代理访问官方 API 可能带来账号风险。路由主要用于第三方、聚合或协议转换场景。
 
 ## 参考链接
 
-- [CC Switch 用户手册：添加供应商](../user-manual/zh/2-providers/2.1-add.md)
-- [CC Switch 用户手册：代理服务](../user-manual/zh/4-proxy/4.1-service.md)
-- [CC Switch 用户手册：应用路由](../user-manual/zh/4-proxy/4.2-routing.md)
+- [CC Switch Remote 用户手册：添加供应商](../user-manual/zh/2-providers/2.1-add.md)
+- [CC Switch Remote 用户手册：代理服务](../user-manual/zh/4-proxy/4.1-service.md)
+- [CC Switch Remote 用户手册：应用路由](../user-manual/zh/4-proxy/4.2-routing.md)
 - [Kimi 开放平台：在编程工具中使用 Kimi K2.7 Code 模型](https://platform.kimi.com/docs/guide/agent-support)
 - [Kimi Code 文档：概览](https://www.kimi.com/code/docs/)
 - [Kimi Code 文档：在第三方 Coding Agent 中使用](https://www.kimi.com/code/docs/third-party-tools/other-coding-agents.html)

@@ -1,6 +1,9 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { toast } from "@/lib/toast";
 import { authApi, remoteApi, settingsApi } from "@/lib/api";
+import { CODEX_OAUTH_DUPLICATE_ACCOUNT_ERROR } from "@/lib/api/auth";
 import { copyText } from "@/lib/clipboard";
 import {
   getManagementTargetKey,
@@ -26,6 +29,7 @@ export function useManagedAuth(
   githubDomain?: string,
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const targetKey = getManagementTargetKey(target);
   const queryKey = useMemo(
@@ -300,7 +304,14 @@ export function useManagedAuth(
             void cancelBackendFlow(response.device_code);
             flowGenerationRef.current += 1;
             setPollingState("error");
-            setError(errorMessage);
+            setError(
+              authProvider === "codex_oauth" &&
+                errorMessage === CODEX_OAUTH_DUPLICATE_ACCOUNT_ERROR
+                ? t("codexOauth.duplicateAccount", {
+                    defaultValue: "该 ChatGPT 账号已添加，请直接使用现有账号。",
+                  })
+                : errorMessage,
+            );
           }
         }
       };
@@ -369,6 +380,12 @@ export function useManagedAuth(
       setPollingState("idle");
       setDeviceCode(null);
       setError(null);
+      // v4 的成功提示：移除账号后给一次确认（失败仍旧只弹错误）
+      toast.success(
+        t("managedAuth.accountRemoved", {
+          defaultValue: "账号已移除",
+        }),
+      );
       await refetchStatus();
       await queryClient.invalidateQueries({ queryKey });
     },

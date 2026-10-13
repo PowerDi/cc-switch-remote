@@ -120,17 +120,30 @@ describe("remote managed-auth logout busy wiring", () => {
       </Wrapper>,
     );
 
-    const logoutButton = await screen.findByRole("button", {
-      name: "注销所有账号",
-    });
-    await waitFor(() => expect(onInteractionBlockedChange).toHaveBeenLastCalledWith(false));
-    await user.click(logoutButton);
+    // v4 把「注销所有账号」收进了账号组的 ⋯ 菜单（「删除全部账号…」→ 确认框），
+    // 该动作最终调用 provider 级的 authLogout。
+    const groupMenuTrigger = () =>
+      screen.getAllByRole("button", { name: /的更多操作/ })[0];
+    await waitFor(() =>
+      expect(onInteractionBlockedChange).toHaveBeenLastCalledWith(false),
+    );
+    await user.click(groupMenuTrigger());
+    await user.click(
+      await screen.findByRole("menuitem", { name: /删除全部账号/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /删除 2 个账号/ }),
+    );
 
     await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(logoutButton).toBeDisabled());
     await waitFor(() =>
       expect(onInteractionBlockedChange).toHaveBeenLastCalledWith(true),
     );
+    // 注销进行中：同一组 ⋯ 菜单里的破坏性动作被锁住（logoutPending）
+    await user.click(groupMenuTrigger());
+    expect(
+      await screen.findByRole("menuitem", { name: /删除全部账号/ }),
+    ).toHaveAttribute("aria-disabled", "true");
 
     resolveLogout();
     await waitFor(() =>

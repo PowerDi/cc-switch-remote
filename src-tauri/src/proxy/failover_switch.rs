@@ -23,6 +23,7 @@ use tokio::sync::RwLock;
 pub struct FailoverSwitchManager {
     /// 正在处理中的切换（key = "app_type:provider_id"）
     pending_switches: Arc<RwLock<HashSet<String>>>,
+    #[cfg(not(feature = "desktop"))]
     db: Arc<Database>,
     #[cfg(not(feature = "desktop"))]
     codex_oauth_manager: Arc<CodexOAuthManager>,
@@ -45,10 +46,11 @@ impl FailoverSwitchManager {
         switch_locks: SwitchLockManager,
     ) -> Self {
         #[cfg(feature = "desktop")]
-        let _ = (codex_oauth_manager, switch_locks);
+        let _ = (&db, &codex_oauth_manager, &switch_locks);
 
         Self {
             pending_switches: Arc::new(RwLock::new(HashSet::new())),
+            #[cfg(not(feature = "desktop"))]
             db,
             #[cfg(not(feature = "desktop"))]
             codex_oauth_manager,
@@ -105,18 +107,12 @@ impl FailoverSwitchManager {
         provider_id: &str,
         provider_name: &str,
     ) -> Result<bool, AppError> {
-        // 检查该应用是否已被代理接管（enabled=true）
-        // 只有被接管的应用才允许执行故障转移切换
-        let app_enabled = match self.db.get_proxy_config_for_app(app_type).await {
-            Ok(config) => config.enabled,
-            Err(e) => {
-                log::warn!("[FO-002] 无法读取 {app_type} 配置: {e}，跳过切换");
-                return Ok(false);
-            }
+        // 只有处于代理模式的应用才允许执行故障转移切换
+        let Ok(app_enum) = app_type.parse::<crate::app_config::AppType>() else {
+            return Ok(false);
         };
-
-        if !app_enabled {
-            log::debug!("[Failover] {app_type} 未启用代理，跳过切换");
+        if !crate::mode::current::is_proxy(&app_enum) {
+            log::debug!("[Failover] {app_type} 不在路由模式，跳过切换");
             return Ok(false);
         }
 
@@ -128,12 +124,13 @@ impl FailoverSwitchManager {
         {
             if let Some(app) = app_handle {
                 if let Some(app_state) = app.try_state::<crate::store::AppState>() {
-                    switched = app_state
-                        .proxy_service
-                        .hot_switch_provider(app_type, provider_id)
-                        .await
-                        .map_err(AppError::Message)?
-                        .logical_target_changed;
+                    switched = crate::mode::controller::record_failover_route(
+                        app_state.inner(),
+                        &app_enum,
+                        provider_id,
+                    )
+                    .await
+                    .map_err(AppError::Message)?;
 
                     if !switched {
                         return Ok(false);
@@ -169,11 +166,18 @@ impl FailoverSwitchManager {
                     self.codex_oauth_manager.clone(),
                     self.switch_locks.clone(),
                 );
-            switched = proxy_service
-                .hot_switch_provider(app_type, provider_id)
-                .await
-                .map_err(AppError::Message)?
-                .logical_target_changed;
+            let state = crate::store::AppState {
+                db: self.db.clone(),
+                proxy_service,
+                usage_cache: Arc::new(crate::services::UsageCache::new()),
+                codex_oauth_manager: self.codex_oauth_manager.clone(),
+            };
+            // Shared controller preserves the direct pointer and ignores stale
+            // failover completions after entering aggregation mode.
+            switched =
+                crate::mode::controller::record_failover_route(&state, &app_enum, provider_id)
+                    .await
+                    .map_err(AppError::Message)?;
 
             if !switched {
                 return Ok(false);

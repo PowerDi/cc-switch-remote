@@ -6,9 +6,9 @@
 # each other's malicious PRs (a single non-owner approval is no longer enough).
 
 # Global fallback: every PR needs owner approval before merging to main.
-*                 @xiaoY233
+*                 @PowerDi
 
 # Most sensitive paths — CI/signing/release and the Rust backend. Listed
 # explicitly so they stay locked even if the global rule above is relaxed later.
-/.github/         @xiaoY233
-/src-tauri/       @xiaoY233
+/.github/         @PowerDi
+/src-tauri/       @PowerDi

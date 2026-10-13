@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithQueryClient as render } from "../utils/testQueryClient";
 import type { ComponentProps } from "react";
 import type { PropsWithChildren } from "react";
 import { useForm } from "react-hook-form";

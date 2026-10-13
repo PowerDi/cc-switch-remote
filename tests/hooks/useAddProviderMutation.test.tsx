@@ -8,7 +8,6 @@ import type { Provider } from "@/types";
 const apiMocks = vi.hoisted(() => ({
   add: vi.fn(),
   ensureClaudeDesktopOfficialProvider: vi.fn(),
-  ensureCodexOfficialProvider: vi.fn(),
   getAll: vi.fn(),
   updateTrayMenu: vi.fn(),
 }));
@@ -17,13 +16,17 @@ const uuidMocks = vi.hoisted(() => ({
   generateUUID: vi.fn(),
 }));
 
+const toastMocks = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  warning: vi.fn(),
+}));
+
 vi.mock("@/lib/api", () => ({
   providersApi: {
     add: (...args: unknown[]) => apiMocks.add(...args),
     ensureClaudeDesktopOfficialProvider: (...args: unknown[]) =>
       apiMocks.ensureClaudeDesktopOfficialProvider(...args),
-    ensureCodexOfficialProvider: (...args: unknown[]) =>
-      apiMocks.ensureCodexOfficialProvider(...args),
     getAll: (...args: unknown[]) => apiMocks.getAll(...args),
     updateTrayMenu: (...args: unknown[]) => apiMocks.updateTrayMenu(...args),
   },
@@ -36,10 +39,7 @@ vi.mock("@/utils/uuid", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: {
-    success: vi.fn(),
-    error: vi.fn(),
-  },
+  toast: toastMocks,
 }));
 
 function createWrapper() {
@@ -62,10 +62,12 @@ beforeEach(() => {
   apiMocks.ensureClaudeDesktopOfficialProvider
     .mockReset()
     .mockResolvedValue(true);
-  apiMocks.ensureCodexOfficialProvider.mockReset().mockResolvedValue(true);
   apiMocks.getAll.mockReset().mockResolvedValue({});
   apiMocks.updateTrayMenu.mockReset().mockResolvedValue(true);
   uuidMocks.generateUUID.mockReset().mockReturnValue("generated-uuid");
+  toastMocks.success.mockReset();
+  toastMocks.error.mockReset();
+  toastMocks.warning.mockReset();
 });
 
 describe("useAddProviderMutation", () => {
@@ -95,6 +97,7 @@ describe("useAddProviderMutation", () => {
       "claude-desktop",
       undefined,
       { type: "local" },
+      undefined,
     );
     expect(duplicatedProvider.id).toBe("generated-uuid");
     expect(duplicatedProvider.id).not.toBe("claude-desktop-official");
@@ -134,14 +137,175 @@ describe("useAddProviderMutation", () => {
     expect(apiMocks.ensureClaudeDesktopOfficialProvider).toHaveBeenCalledTimes(
       1,
     );
-    expect(apiMocks.ensureClaudeDesktopOfficialProvider).toHaveBeenCalledWith({
-      type: "local",
-    });
     expect(apiMocks.getAll).toHaveBeenCalledWith("claude-desktop", {
       type: "local",
     });
     expect(apiMocks.add).not.toHaveBeenCalled();
     expect(persistedProvider).toEqual(seedProvider);
+  });
+
+  it("adds a managed Codex account as a separate official card", async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useAddProviderMutation("codex"), {
+      wrapper,
+    });
+
+    const persistedProvider = await act(async () =>
+      result.current.mutateAsync({
+        name: "OpenAI Official",
+        settingsConfig: { auth: {}, config: "" },
+        category: "official",
+        meta: {
+          providerType: "codex_oauth",
+          authBinding: {
+            source: "managed_account",
+            authProvider: "codex_oauth",
+            accountId: "acct-managed",
+          },
+        },
+      }),
+    );
+
+    expect(apiMocks.getAll).not.toHaveBeenCalled();
+    expect(apiMocks.add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "generated-uuid",
+        category: "official",
+        meta: {
+          providerType: "codex_oauth",
+          authBinding: {
+            source: "managed_account",
+            authProvider: "codex_oauth",
+            accountId: "acct-managed",
+          },
+        },
+      }),
+      "codex",
+      undefined,
+      { type: "local" },
+      undefined,
+    );
+    expect(persistedProvider).toEqual(
+      expect.objectContaining({
+        id: "generated-uuid",
+        meta: expect.objectContaining({
+          authBinding: expect.objectContaining({
+            accountId: "acct-managed",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("adds every unbound Codex Official as an independent provider", async () => {
+    uuidMocks.generateUUID
+      .mockReset()
+      .mockReturnValueOnce("unbound-official-1")
+      .mockReturnValueOnce("unbound-official-2");
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useAddProviderMutation("codex"), {
+      wrapper,
+    });
+
+    const firstProvider = await act(async () =>
+      result.current.mutateAsync({
+        name: "OpenAI Official 1",
+        settingsConfig: { auth: {}, config: "" },
+        category: "official",
+        meta: { providerType: "codex_oauth" },
+      }),
+    );
+    const secondProvider = await act(async () =>
+      result.current.mutateAsync({
+        name: "OpenAI Official 2",
+        settingsConfig: { auth: {}, config: "" },
+        category: "official",
+        meta: { providerType: "codex_oauth" },
+      }),
+    );
+
+    expect(apiMocks.getAll).not.toHaveBeenCalled();
+    expect(apiMocks.add).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        id: "unbound-official-1",
+        meta: { providerType: "codex_oauth" },
+      }),
+      "codex",
+      undefined,
+      { type: "local" },
+      undefined,
+    );
+    expect(apiMocks.add).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        id: "unbound-official-2",
+        meta: { providerType: "codex_oauth" },
+      }),
+      "codex",
+      undefined,
+      { type: "local" },
+      undefined,
+    );
+    expect(firstProvider.id).toBe("unbound-official-1");
+    expect(secondProvider.id).toBe("unbound-official-2");
+  });
+
+  it("adds a Pi provider without a separate default-model command", async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useAddProviderMutation("pi"), {
+      wrapper,
+    });
+
+    const provider = await act(async () =>
+      result.current.mutateAsync({
+        name: "Pi Provider",
+        providerKey: "pi-provider",
+        settingsConfig: {
+          api: "openai-responses",
+          baseUrl: "https://example.com/v1",
+          apiKey: "secret",
+          models: [{ id: "model-a" }],
+        },
+      }),
+    );
+
+    expect(apiMocks.add).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "pi-provider" }),
+      "pi",
+      undefined,
+      { type: "local" },
+      undefined,
+    );
+    expect(provider.id).toBe("pi-provider");
+  });
+
+  it("reports a Pi provider add failure", async () => {
+    apiMocks.add.mockRejectedValueOnce(new Error("provider add failed"));
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useAddProviderMutation("pi"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({
+          name: "Pi Provider",
+          providerKey: "pi-provider",
+          settingsConfig: { models: [{ id: "model-a" }] },
+        }),
+      ).rejects.toThrow("provider add failed");
+    });
+
+    expect(apiMocks.add).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "pi-provider" }),
+      "pi",
+      undefined,
+      { type: "local" },
+      undefined,
+    );
+    expect(toastMocks.error).toHaveBeenCalled();
+    expect(toastMocks.warning).not.toHaveBeenCalled();
   });
 
   it("restores and returns the fixed Claude Desktop official seed for remote targets", async () => {
@@ -191,87 +355,6 @@ describe("useAddProviderMutation", () => {
       "claude-desktop",
       remoteTarget,
     );
-    expect(apiMocks.add).not.toHaveBeenCalled();
-    expect(persistedProvider).toEqual(seedProvider);
-  });
-
-  it("recreates and returns the fixed Codex official seed", async () => {
-    const seedProvider: Provider = {
-      id: "codex-official",
-      name: "OpenAI Official",
-      settingsConfig: { auth: {}, config: "" },
-      category: "official",
-    };
-    apiMocks.getAll.mockResolvedValueOnce({
-      "codex-official": seedProvider,
-    });
-    const { wrapper } = createWrapper();
-    const { result } = renderHook(() => useAddProviderMutation("codex"), {
-      wrapper,
-    });
-
-    const persistedProvider = await act(async () =>
-      result.current.mutateAsync({
-        name: "OpenAI Official",
-        settingsConfig: { auth: {}, config: "" },
-        category: "official",
-        ensureCodexOfficialSeed: true,
-      }),
-    );
-
-    expect(apiMocks.ensureCodexOfficialProvider).toHaveBeenCalledTimes(1);
-    expect(apiMocks.ensureCodexOfficialProvider).toHaveBeenCalledWith({
-      type: "local",
-    });
-    expect(apiMocks.getAll).toHaveBeenCalledWith("codex", { type: "local" });
-    expect(apiMocks.add).not.toHaveBeenCalled();
-    expect(persistedProvider).toEqual(seedProvider);
-  });
-
-  it("restores and returns the fixed Codex official seed for remote targets", async () => {
-    const remoteTarget = {
-      type: "remote" as const,
-      profile: {
-        id: "remote-host",
-        name: "Remote Host",
-        host: "192.168.1.20",
-        port: 22,
-        username: "root",
-        authMethod: { type: "password" as const },
-        helperPath: "~/.local/bin/cc-switch-remote-helper",
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      secret: { password: "secret" },
-    };
-    const seedProvider: Provider = {
-      id: "codex-official",
-      name: "OpenAI Official",
-      settingsConfig: { auth: {}, config: "" },
-      category: "official",
-    };
-    apiMocks.getAll.mockResolvedValueOnce({
-      "codex-official": seedProvider,
-    });
-    const { wrapper } = createWrapper();
-    const { result } = renderHook(
-      () => useAddProviderMutation("codex", remoteTarget),
-      { wrapper },
-    );
-
-    const persistedProvider = await act(async () =>
-      result.current.mutateAsync({
-        name: "OpenAI Official",
-        settingsConfig: { auth: {}, config: "" },
-        category: "official",
-        ensureCodexOfficialSeed: true,
-      }),
-    );
-
-    expect(apiMocks.ensureCodexOfficialProvider).toHaveBeenCalledWith(
-      remoteTarget,
-    );
-    expect(apiMocks.getAll).toHaveBeenCalledWith("codex", remoteTarget);
     expect(apiMocks.add).not.toHaveBeenCalled();
     expect(persistedProvider).toEqual(seedProvider);
   });

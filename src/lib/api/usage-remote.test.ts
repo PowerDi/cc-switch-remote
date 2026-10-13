@@ -102,6 +102,52 @@ describe("remote usage API", () => {
     remoteSyncSessionUsageMock.mockReset();
   });
 
+  it.each([
+    [
+      "sessionSummary",
+      (api: typeof import("./usage").usageApi) =>
+        api.getSessionUsageSummary("codex", "session", remoteTarget),
+    ],
+    [
+      "lastSessionSync",
+      (api: typeof import("./usage").usageApi) =>
+        api.getSessionUsageLastSync(remoteTarget),
+    ],
+    [
+      "providerLimits",
+      (api: typeof import("./usage").usageApi) =>
+        api.checkProviderLimits("provider", "codex", remoteTarget),
+    ],
+  ] as const)(
+    "rejects unsupported %s reads without local fallback",
+    async (operation, run) => {
+      const { usageApi } = await import("./usage");
+      await expect(run(usageApi)).rejects.toMatchObject({
+        code: "remote_usage_read_unsupported",
+        operation,
+      });
+      expect(invokeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves the local per-session, scanner timestamp, and limit commands", async () => {
+    const { usageApi } = await import("./usage");
+    await usageApi.getSessionUsageSummary("codex", "local-session");
+    await usageApi.getSessionUsageLastSync();
+    await usageApi.checkProviderLimits("local-provider", "codex");
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "get_session_usage_summary",
+        { appType: "codex", sessionId: "local-session" },
+      ],
+      ["get_session_usage_last_sync"],
+      [
+        "check_provider_limits",
+        { providerId: "local-provider", appType: "codex" },
+      ],
+    ]);
+  });
+
   it("routes dashboard read queries to the selected remote target", async () => {
     const { usageApi } = await import("./usage");
     const filters: LogFilters = {

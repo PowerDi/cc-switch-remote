@@ -9,7 +9,7 @@ use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
 
-const HELPER_RELEASE_REPO: &str = "xiaoY233/cc-switch-remote";
+const HELPER_RELEASE_REPO: &str = "PowerDi/cc-switch-remote";
 const HELPER_RELEASE_TAG: &str = "remote-helper-latest";
 const HELPER_RELEASE_REPO_ENV: &str = "CC_SWITCH_REMOTE_HELPER_RELEASE_REPO";
 const HELPER_RELEASE_TAG_ENV: &str = "CC_SWITCH_REMOTE_HELPER_RELEASE_TAG";
@@ -558,7 +558,52 @@ fn parse_helper_json<T: DeserializeOwned>(stdout: &str) -> Result<T, AppError> {
             code: "remote_error".to_string(),
             message: "Remote helper command failed".to_string(),
         });
+        // 老 helper（3.20.x）会广告一个能力组、但没有 v4 新增的子命令（例如 tools
+        // probe-installations / app-mode）。能力门控挡不住这种情况，这里把 helper 的
+        // "unknown command" 换成能照做的说法，别把「Supported commands: …」原样丢给用户。
+        if is_stale_helper_command_error(&code, &message) {
+            return Err(AppError::Message(format!(
+                "远程 Helper 版本过旧，不支持该操作。请在远端更新 Helper 后重试；若 Helper 已是最新，请连同下面原文一并反馈 (helper does not support this command; update the remote helper, or report the raw message below if it is already current): {message}"
+            )));
+        }
         Err(AppError::Message(format!("{code}: {message}")))
+    }
+}
+
+/// helper 回的是「不认识这条命令」而不是业务失败。
+pub(crate) fn is_stale_helper_command_error(code: &str, message: &str) -> bool {
+    code == "unsupported_command"
+        || message.contains("Unsupported retired command")
+        || message.contains("Supported commands:")
+}
+
+#[cfg(test)]
+mod stale_helper_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_helper_command_is_reported_as_a_stale_helper() {
+        let stdout = r#"{"ok":false,"data":null,"error":{"code":"unsupported_command","message":"Supported commands: status, providers"}}"#;
+        let error = parse_helper_json::<serde_json::Value>(stdout).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("远程 Helper 版本过旧"), "{text}");
+        assert!(text.contains("update the remote helper"), "{text}");
+    }
+
+    #[test]
+    fn retired_command_is_reported_as_a_stale_helper() {
+        let stdout = r#"{"ok":false,"data":null,"error":{"code":"tools_installations_failed","message":"该接口已被 v4.0.4 移除，未修改任何配置 (Unsupported retired command: tools installations; no configuration was changed)"}}"#;
+        let error = parse_helper_json::<serde_json::Value>(stdout).unwrap_err();
+        assert!(error.to_string().contains("远程 Helper 版本过旧"));
+    }
+
+    #[test]
+    fn business_failures_keep_their_own_message() {
+        let stdout = r#"{"ok":false,"data":null,"error":{"code":"providers_delete_failed","message":"无法删除当前正在使用的供应商"}}"#;
+        let error = parse_helper_json::<serde_json::Value>(stdout).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("providers_delete_failed"), "{text}");
+        assert!(!text.contains("版本过旧"), "{text}");
     }
 }
 
