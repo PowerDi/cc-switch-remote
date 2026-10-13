@@ -2,7 +2,7 @@
 
 用户升级后第一次打开 CC Switch，会弹一个窗口，列出从上次看过的版本到当前版本之间每一版的几条摘要。数据就是这个目录下的文件，构建时打进安装包（`src/lib/whatsNew.ts`），弹窗不联网。
 
-详细内容仍在 `docs/release-notes/`。弹窗里每个版本的「详情」链到**本 fork 的发布页** `https://github.com/xiaoY233/cc-switch-remote/releases`（上游官网与上游仓库属于别的发布链，不能把用户送过去），所以各版本的说明要写进本 fork 的 release notes。
+详细内容仍在 `docs/release-notes/`。弹窗里每个版本的「详情」链到**本 fork 的发布页** `https://github.com/PowerDi/cc-switch-remote/releases`（上游官网与上游仓库属于别的发布链，不能把用户送过去），所以各版本的说明要写进本 fork 的 release notes。
 
 ## 每个版本一个文件
 

@@ -18,6 +18,6 @@
 
 ## Links
 
-- [GitHub Issues](https://github.com/xiaoY233/cc-switch-remote/issues)
-- [GitHub Repository](https://github.com/xiaoY233/cc-switch-remote)
+- [GitHub Issues](https://github.com/PowerDi/cc-switch-remote/issues)
+- [GitHub Repository](https://github.com/PowerDi/cc-switch-remote)
 - [Remote Feature Parity](../remote-feature-parity.md)

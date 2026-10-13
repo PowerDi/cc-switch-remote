@@ -2665,7 +2665,7 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
         "show_main" => show_main_window(app),
         "open_website" => {
             if let Err(e) = app.opener().open_url(
-                "https://github.com/xiaoY233/cc-switch-remote",
+                "https://github.com/PowerDi/cc-switch-remote",
                 None::<String>,
             ) {
                 log::error!("打开官方网站失败: {e}");

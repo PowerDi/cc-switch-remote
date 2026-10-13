@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const RELEASES_URL = "https://github.com/xiaoY233/cc-switch-remote/releases";
+const RELEASES_URL = "https://github.com/PowerDi/cc-switch-remote/releases";
 
 interface DatabaseUpgradeProps {
   payload: {

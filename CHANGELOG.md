@@ -8,6 +8,14 @@ All notable changes to CC Switch Remote will be documented in this file.
 > merge. The entries below for upstream v4.0.0–v4.0.4 describe that upstream baseline, not
 > fork-only work; the fork-owned notes live in
 > `docs/release-notes/v4.0.5-remote-zh.md`.
+>
+> **Release chain (v4.0.5):** the fork now owns its release chain end to end. The updater
+> endpoint, the About/recovery release links, the tray "website" entry, the Rust
+> `repository`, the issue templates and the remote-helper download source all point at
+> `PowerDi/cc-switch-remote` instead of the inherited `xiaoY233/cc-switch-remote`. Because an
+> installed build keeps the endpoint baked into it, anyone still on a build released from the
+> inherited chain has to install a fork release once by hand; in-app updates work normally
+> from that build onward.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

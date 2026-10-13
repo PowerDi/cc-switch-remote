@@ -34,12 +34,9 @@ test("upstream merges preserve Remote product, binary and deep-link identities",
 
 test("updater stays on the fork repository and retains its trusted public key", () => {
   const repository = cargo.match(/^repository = "([^"]+)"$/m)?.[1];
-  // xiaoY233 is the inherited release chain, not an ongoing upstream. A move
-  // to PowerDi is a separate release task; do not silently switch to official.
-  assert.match(
-    repository ?? "",
-    /^https:\/\/github\.com\/(?:PowerDi|xiaoY233)\/cc-switch-remote$/,
-  );
+  // The fork owns its release chain now: the inherited xiaoY233 repository is no
+  // longer maintained here, and upstream's repository must never be adopted.
+  assert.equal(repository, "https://github.com/PowerDi/cc-switch-remote");
   assert.deepEqual(tauri.plugins.updater.endpoints, [
     `${repository}/releases/latest/download/latest.json`,
   ]);
@@ -146,6 +143,37 @@ test("about and recovery UI retain the same fork release chain and Remote brandi
       /https:\/\/(?:github\.com\/farion1231\/cc-switch|ccswitch\.io)/,
     );
   }
+});
+
+test("every runtime release link, updater endpoint and repository URL is this fork", () => {
+  // 运行时出现的仓库/发布/更新地址必须全部指向本 fork：继承仓库不再维护新工件，
+  // 上游仓库更是别的发布链。文档里的历史发布说明与 README 的来源署名不在扫描范围内。
+  const repository = cargo.match(/^repository = "([^"]+)"$/m)?.[1];
+  assert.equal(repository, "https://github.com/PowerDi/cc-switch-remote");
+  assert.equal(
+    tauri.plugins.updater.endpoints[0],
+    `${repository}/releases/latest/download/latest.json`,
+  );
+  const runtimeSources = [
+    read("src/lib/forkReleases.ts"),
+    read("src/components/settings/AboutSection.tsx"),
+    read("src/components/DatabaseUpgrade.tsx"),
+    read("src-tauri/src/commands/misc.rs"),
+    read("src-tauri/src/tray.rs"),
+    read("src-tauri/src/remote/ssh.rs"),
+    read("src-tauri/src/commands/remote.rs"),
+    read("scripts/install-remote-helper.sh"),
+    read(".github/FUNDING.yml"),
+  ];
+  for (const source of runtimeSources) {
+    assert.doesNotMatch(source, /xiaoY233/);
+  }
+  assert.equal(
+    read("src/lib/forkReleases.ts").match(
+      /FORK_RELEASES_URL\s*=\s*"([^"]+)"/,
+    )?.[1],
+    `${repository}/releases`,
+  );
 });
 
 test("upstream merge does not resurrect the removed full WSL nightly", () => {

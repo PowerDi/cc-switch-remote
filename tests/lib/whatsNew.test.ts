@@ -90,7 +90,7 @@ describe("language and links", () => {
   it("links to this fork's release page, never to the upstream site", () => {
     // 上游基线的条目内容照样展示，但详情入口属于本 fork 的发布链
     expect(releasesUrl()).toBe(
-      "https://github.com/xiaoY233/cc-switch-remote/releases",
+      "https://github.com/PowerDi/cc-switch-remote/releases",
     );
     expect(releasesUrl()).not.toContain("ccswitch.io");
     expect(releasesUrl()).not.toContain("farion1231");

@@ -27,11 +27,9 @@ interface AboutSectionProps {
   isPortable: boolean;
 }
 
-// Fork 边界：关于页的「官网 / 仓库 / 发行说明」必须指向本 fork 的发布链。
-// xiaoY233 是继承来的发布链，迁到 PowerDi 是独立任务，这里不擅自改动。
-const APP_RELEASES_URL =
-  "https://github.com/xiaoY233/cc-switch-remote/releases";
-const APP_REPOSITORY_URL = "https://github.com/xiaoY233/cc-switch-remote";
+// Fork 边界：关于页的「官网 / 仓库 / 发行说明」指向本 fork 的发布链。
+const APP_RELEASES_URL = "https://github.com/PowerDi/cc-switch-remote/releases";
+const APP_REPOSITORY_URL = "https://github.com/PowerDi/cc-switch-remote";
 const APP_WEBSITE_URL = APP_REPOSITORY_URL;
 
 // 应用自身版本（getVersion，本地毫秒级、无网络）也缓存一份，纯为重挂时免去 loading 闪烁。

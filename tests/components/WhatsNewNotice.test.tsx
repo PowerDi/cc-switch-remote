@@ -201,12 +201,12 @@ describe("WhatsNewNotice", () => {
       screen.getAllByRole("button", { name: "whatsNew.versionDetails" })[0],
     );
     expect(mocks.openExternal).toHaveBeenCalledWith(
-      "https://github.com/xiaoY233/cc-switch-remote/releases",
+      "https://github.com/PowerDi/cc-switch-remote/releases",
     );
 
     fireEvent.click(screen.getByRole("button", { name: "whatsNew.viewFull" }));
     expect(mocks.openExternal).toHaveBeenLastCalledWith(
-      "https://github.com/xiaoY233/cc-switch-remote/releases",
+      "https://github.com/PowerDi/cc-switch-remote/releases",
     );
     await waitFor(() => expect(title()).not.toBeInTheDocument());
     expect(mocks.save).toHaveBeenCalledWith(

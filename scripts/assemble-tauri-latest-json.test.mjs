@@ -27,7 +27,7 @@ test('assembles signed updater metadata for all supported platforms', () => {
 
   const latest = assembleLatestJson({
     assetsDir: dir,
-    repo: 'xiaoY233/cc-switch-remote',
+    repo: 'PowerDi/cc-switch-remote',
     tag: 'v3.16.2',
     pubDate: '2026-06-04T00:00:00Z',
   });
@@ -48,7 +48,7 @@ test('fails when an updater artifact is missing its signature', () => {
   assert.throws(
     () => assembleLatestJson({
       assetsDir: dir,
-      repo: 'xiaoY233/cc-switch-remote',
+      repo: 'PowerDi/cc-switch-remote',
       tag: 'v3.16.2',
       requiredPlatforms: ['windows-x86_64'],
     }),
@@ -78,7 +78,7 @@ test('uses an asset names file so metadata repair does not download large artifa
   const latest = assembleLatestJson({
     assetsDir: dir,
     assetNamesFile,
-    repo: 'xiaoY233/cc-switch-remote',
+    repo: 'PowerDi/cc-switch-remote',
     tag: 'v3.16.2',
   });
 
