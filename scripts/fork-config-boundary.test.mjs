@@ -33,6 +33,8 @@ test("upstream merges preserve Remote product, binary and deep-link identities",
 });
 
 test("updater stays on the fork repository and retains its trusted public key", () => {
+  // 2026-10-13：本 fork 轮换了自己的 updater 签名密钥（旧 key id 9BAF0EEE4E844E4C
+  // 的私钥已不可用），公钥与最新 key id 必须一起更新，别只改一边。
   const repository = cargo.match(/^repository = "([^"]+)"$/m)?.[1];
   // The fork owns its release chain now: the inherited xiaoY233 repository is no
   // longer maintained here, and upstream's repository must never be adopted.
@@ -51,7 +53,7 @@ test("updater stays on the fork repository and retains its trusted public key", 
     .reverse()
     .toString("hex")
     .toUpperCase();
-  assert.equal(keyId, "9BAF0EEE4E844E4C");
+  assert.equal(keyId, "E490AF071AC1237F");
 });
 
 test("development and release data directory names remain distinct from upstream", () => {

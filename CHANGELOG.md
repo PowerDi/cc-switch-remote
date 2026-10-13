@@ -16,6 +16,12 @@ All notable changes to CC Switch Remote will be documented in this file.
 > installed build keeps the endpoint baked into it, anyone still on a build released from the
 > inherited chain has to install a fork release once by hand; in-app updates work normally
 > from that build onward.
+>
+> **Updater signing key (v4.0.5):** the key configured for the previous release chain is no
+> longer available, so this fork rotated its own updater keypair: `tauri.conf.json` now carries
+> public key id `E490AF071AC1237F` (previous: `9BAF0EEE4E844E4C`), and `TAURI_SIGNING_PRIVATE_KEY`
+> must hold the matching private key. Because existing builds embed the old key *and* the old
+> endpoint, installing v4.0.5 by hand once is required; in-app updates work from v4.0.5 onward.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
