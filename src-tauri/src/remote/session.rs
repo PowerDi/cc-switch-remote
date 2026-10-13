@@ -79,7 +79,7 @@ impl std::fmt::Display for RemoteSessionError {
                 if crate::remote::ssh::is_stale_helper_command_error(&error.code, &error.message) {
                     write!(
                         f,
-                        "远程 Helper 版本过旧，不支持该操作。请在远端更新 Helper 后重试 (helper does not support this command; update the remote helper): {}",
+                        "远程 Helper 版本过旧，不支持该操作。请在远端更新 Helper 后重试；若 Helper 已是最新，请连同下面原文一并反馈 (helper does not support this command; update the remote helper, or report the raw message below if it is already current): {}",
                         error.message
                     )
                 } else {

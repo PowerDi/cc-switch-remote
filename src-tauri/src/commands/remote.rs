@@ -1235,12 +1235,36 @@ pub async fn remote_list_tool_installations(
     let tools_json =
         serde_json::to_string(&tools.unwrap_or_default()).map_err(|e| e.to_string())?;
     tokio::task::spawn_blocking(move || {
-        run_helper_json(
+        let primary = run_helper_json(
             &profile,
-            &["tools".to_string(), "installations".to_string(), tools_json],
+            &[
+                "tools".to_string(),
+                "installations".to_string(),
+                tools_json.clone(),
+            ],
             secret.as_ref(),
-        )
-        .map_err(|e| e.to_string())
+        );
+        match primary {
+            Ok(value) => Ok(value),
+            // 3.20.x 的 helper 只有 `tools probe-installations`；v4 才把这条命令改名成
+            // `tools installations`，共享实现里两者互为别名（list = probe）。旧 helper
+            // 上退回旧命令，用户照样拿到路径/来源/多处安装，而不是"帮不上忙"。
+            Err(error)
+                if crate::remote::ssh::is_stale_helper_command_error("", &error.to_string()) =>
+            {
+                run_helper_json(
+                    &profile,
+                    &[
+                        "tools".to_string(),
+                        "probe-installations".to_string(),
+                        tools_json,
+                    ],
+                    secret.as_ref(),
+                )
+                .map_err(|fallback| fallback.to_string())
+            }
+            Err(error) => Err(error.to_string()),
+        }
     })
     .await
     .map_err(|e| format!("Remote tool installations task failed: {e}"))?

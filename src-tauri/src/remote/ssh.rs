@@ -563,7 +563,7 @@ fn parse_helper_json<T: DeserializeOwned>(stdout: &str) -> Result<T, AppError> {
         // "unknown command" 换成能照做的说法，别把「Supported commands: …」原样丢给用户。
         if is_stale_helper_command_error(&code, &message) {
             return Err(AppError::Message(format!(
-                "远程 Helper 版本过旧，不支持该操作。请在远端更新 Helper 后重试 (helper does not support this command; update the remote helper): {message}"
+                "远程 Helper 版本过旧，不支持该操作。请在远端更新 Helper 后重试；若 Helper 已是最新，请连同下面原文一并反馈 (helper does not support this command; update the remote helper, or report the raw message below if it is already current): {message}"
             )));
         }
         Err(AppError::Message(format!("{code}: {message}")))
