@@ -2,6 +2,13 @@
 
 All notable changes to CC Switch Remote will be documented in this file.
 
+> **Fork note (v4.0.7):** baseline is still upstream **v4.0.4**. 4.0.7 is a UI-consistency
+> release: every user-visible self-reference now says **CC Switch Remote** instead of a bare
+> "CC Switch" (tray menu and tooltips, sidebar brand and version row, the Claude Desktop MCP
+> profile name, proxy error messages, in-app copy and all four locales), so the fork can be told
+> apart from the official CC Switch when both are installed. No behaviour changes.
+> See `docs/release-notes/v4.0.7-remote-zh.md`.
+
 > **Fork note (v4.0.6):** the fork baseline is still upstream **v4.0.4**; 4.0.6 only carries
 > fork fixes on top of 4.0.5. It fixes the remote-session `unreachable!()` panic that made a
 > helper install look hung (`identity without executor or pending start`), stops Windows from
