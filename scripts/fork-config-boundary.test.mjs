@@ -101,6 +101,25 @@ test("helper downloads come from this fork's release chain, not the inherited re
   }
 });
 
+test("remote ssh processes never open a Windows console window", () => {
+  // GUI 进程 spawn 控制台程序会新建控制台窗口：远端模块里只允许两个构造器直接
+  // new ssh，并且两者都必须设置 CREATE_NO_WINDOW（否则每发一条命令都闪一个黑窗）。
+  const ssh = read("src-tauri/src/remote/ssh.rs");
+  const session = read("src-tauri/src/remote/session.rs");
+  assert.equal((ssh.match(/Command::new\("ssh"\)/g) || []).length, 2);
+  assert.equal((session.match(/Command::new\("ssh"\)/g) || []).length, 0);
+  assert.equal(
+    (ssh.match(/creation_flags\(CREATE_NO_WINDOW\)/g) || []).length,
+    2,
+  );
+  assert.match(session, /ssh_tokio_command\(\)/);
+  assert.match(ssh, /pub\(crate\) fn ssh_command\(\) -> Command/);
+  assert.match(
+    ssh,
+    /pub\(crate\) fn ssh_tokio_command\(\) -> tokio::process::Command/,
+  );
+});
+
 test("helper build identity follows real worktree refs without watching missing paths", () => {
   const build = read("src-tauri/build.rs");
   assert.match(build, /"rev-parse", "--git-path"/);
