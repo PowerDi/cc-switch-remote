@@ -8,9 +8,9 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const releaseVersion = "4.0.5";
+const releaseVersion = "4.0.6";
 
-test("release metadata uses the planned v4.0.5 version consistently", () => {
+test("release metadata uses the planned v4.0.6 version consistently", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
   );

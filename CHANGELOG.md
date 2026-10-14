@@ -2,6 +2,13 @@
 
 All notable changes to CC Switch Remote will be documented in this file.
 
+> **Fork note (v4.0.6):** the fork baseline is still upstream **v4.0.4**; 4.0.6 only carries
+> fork fixes on top of 4.0.5. It fixes the remote-session `unreachable!()` panic that made a
+> helper install look hung (`identity without executor or pending start`), stops Windows from
+> flashing a console window for every SSH command, and bounds helper installs with connection,
+> overall and low-speed timeouts instead of waiting forever. Details:
+> `docs/release-notes/v4.0.6-remote-zh.md`.
+
 > **Fork note (v4.0.5, unreleased):** CC Switch Remote 4.0.5 adopts upstream
 > **v4.0.4** (`a29a4f38`, published tag only) as its baseline: the same version number line
 > with the fork's remote management adapted on top, plus the fixes found while landing the
