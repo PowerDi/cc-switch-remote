@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 // Tool installs and upgrades can legitimately take several minutes on remote
@@ -353,12 +353,23 @@ impl RemoteSessionManager {
                 };
 
                 if should_drop_executor_after_error(error) {
-                    let mut sessions = self.sessions.lock().await;
-                    if let Some(session) = sessions.get_mut(&profile.id) {
-                        if session.generation == lease.generation {
-                            session.status = failed_status;
-                            session.executor = None;
+                    // 传输层已经不可用：丢掉 executor 并清掉 pending，但不移除 identity。
+                    // 下一次调用会走「同一 identity、没有 executor / pending」的重启分支重建会话；
+                    // 以前这里只把 executor 置空，紧接着的下一次调用会撞上 unreachable!() 并 panic
+                    // （v4.0.5 在真实用户主机上就是这样：命令永不返回，界面一直转圈）。
+                    let dropped = {
+                        let mut sessions = self.sessions.lock().await;
+                        match sessions.get_mut(&profile.id) {
+                            Some(session) if session.generation == lease.generation => {
+                                session.status = failed_status;
+                                session.pending = None;
+                                session.executor.take()
+                            }
+                            _ => None,
                         }
+                    };
+                    if let Some(executor) = dropped {
+                        executor.close().await;
                     }
                 } else {
                     self.set_status_if_generation(&profile.id, lease.generation, failed_status)
@@ -393,7 +404,7 @@ impl RemoteSessionManager {
 
             let action = {
                 let mut sessions = self.sessions.lock().await;
-                if let Some(session) = sessions.get(&identity.profile_id) {
+                if let Some(session) = sessions.get_mut(&identity.profile_id) {
                     if session.identity.as_ref() == Some(&identity) {
                         if let Some(executor) = &session.executor {
                             StartAction::Reuse(RemoteSessionLease {
@@ -406,7 +417,23 @@ impl RemoteSessionManager {
                                 waiter: Box::pin(pending.clone().notified_owned()),
                             }
                         } else {
-                            unreachable!("identity without executor or pending start")
+                            // 上一次会话因传输层错误被丢弃（executor 与 pending 都空）但 identity 未变：
+                            // 重新启动一个会话，绝不 panic。
+                            let last_error = session.status.last_error.clone();
+                            let pending = Arc::new(tokio::sync::Notify::new());
+                            session.pending = Some(pending.clone());
+                            session.status = RemoteSessionStatus {
+                                profile_id: identity.profile_id.clone(),
+                                state: RemoteSessionState::Connecting,
+                                last_error,
+                                active_request_id: None,
+                            };
+                            StartAction::Start {
+                                generation: session.generation,
+                                stale_executor: None,
+                                stale_pending: None,
+                                pending,
+                            }
                         }
                     } else {
                         let previous = sessions.remove(&identity.profile_id);
@@ -605,7 +632,7 @@ impl RemoteSessionProcess {
         profile: &RemoteHostProfile,
         secret: Option<&RemoteConnectionSecret>,
     ) -> Result<Self, AppError> {
-        let mut command = Command::new("ssh");
+        let mut command = crate::remote::ssh::ssh_tokio_command();
         command.args(build_ssh_serve_args(profile));
         let askpass = configure_password_auth_for_tokio(profile, secret, &mut command)?;
         command.stdin(Stdio::piped());
@@ -917,6 +944,108 @@ mod tests {
         let error = RemoteSessionError::Transport("远程主机密钥已变更".to_string());
 
         assert_eq!(error.to_string(), "远程主机密钥已变更");
+    }
+
+    /// 按顺序返回预设 executor 的启动器：第一次坏、第二次好，用来验证重启。
+    struct ScriptedStarter {
+        starts: AtomicUsize,
+        executors: Vec<Arc<FakeExecutor>>,
+    }
+
+    impl ScriptedStarter {
+        fn new(executors: Vec<Arc<FakeExecutor>>) -> Arc<Self> {
+            Arc::new(Self {
+                starts: AtomicUsize::new(0),
+                executors,
+            })
+        }
+    }
+
+    impl RemoteSessionStarter for ScriptedStarter {
+        fn start<'a>(
+            &'a self,
+            _profile: &'a RemoteHostProfile,
+            _secret: Option<&'a RemoteConnectionSecret>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Arc<dyn RemoteSessionExecutor>, AppError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let index = self.starts.fetch_add(1, Ordering::SeqCst);
+                let executor = self
+                    .executors
+                    .get(index.min(self.executors.len() - 1))
+                    .expect("scripted executor")
+                    .clone();
+                let executor: Arc<dyn RemoteSessionExecutor> = executor;
+                Ok(executor)
+            })
+        }
+    }
+
+    fn failed_session_state() -> ManagedRemoteSession {
+        ManagedRemoteSession {
+            identity: Some(RemoteSessionIdentity::new(&profile(), None)),
+            generation: 3,
+            status: RemoteSessionStatus {
+                profile_id: "prod".to_string(),
+                state: RemoteSessionState::Failed,
+                last_error: Some("远程传输已中断".to_string()),
+                active_request_id: None,
+            },
+            executor: None,
+            pending: None,
+        }
+    }
+
+    /// v4.0.5 在真实主机上 panic 的现场：identity 还在，但 executor 与 pending 都是空。
+    /// 这里必须重启会话，而不是 `unreachable!()`。
+    #[tokio::test]
+    async fn session_without_executor_or_pending_restarts_instead_of_panicking() {
+        let executor = Arc::new(FakeExecutor::new(serde_json::json!({"host": "restarted"})));
+        let starter = ScriptedStarter::new(vec![executor.clone()]);
+        let manager = RemoteSessionManager::with_starter(starter.clone());
+        manager
+            .sessions
+            .lock()
+            .await
+            .insert("prod".to_string(), failed_session_state());
+
+        let value: Value = manager
+            .execute_json(profile(), None, vec!["status".to_string()])
+            .await
+            .expect("poisoned session must restart, not panic");
+
+        assert_eq!(value, serde_json::json!({"host": "restarted"}));
+        assert_eq!(starter.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(executor.execute_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// 传输层错误仍然丢掉坏会话（并关掉它的 ssh 进程），但下一次命令必须能重新连上。
+    #[tokio::test]
+    async fn transport_failure_drops_executor_and_next_command_restarts_the_session() {
+        let broken = Arc::new(FakeExecutor::failing(RemoteSessionError::Transport(
+            "远程主机连接中断".to_string(),
+        )));
+        let healthy = Arc::new(FakeExecutor::new(serde_json::json!({"host": "b"})));
+        let starter = ScriptedStarter::new(vec![broken.clone(), healthy.clone()]);
+        let manager = RemoteSessionManager::with_starter(starter.clone());
+
+        let first = manager
+            .execute_json::<Value>(profile(), None, vec!["status".to_string()])
+            .await;
+        assert!(first.is_err());
+        assert!(
+            broken.closed.load(Ordering::SeqCst),
+            "丢掉的会话必须关掉 ssh 进程"
+        );
+
+        let second: Value = manager
+            .execute_json(profile(), None, vec!["status".to_string()])
+            .await
+            .expect("next command must reconnect");
+        assert_eq!(second, serde_json::json!({"host": "b"}));
+        assert_eq!(starter.starts.load(Ordering::SeqCst), 2);
+        assert_eq!(healthy.execute_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

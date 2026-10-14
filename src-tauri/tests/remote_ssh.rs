@@ -270,10 +270,13 @@ fn helper_install_args_install_cli_and_link_configured_helper_path() {
         "api.github.com/repos/PowerDi/cc-switch-remote/releases/tags/remote-helper-latest"
     ));
     assert!(remote_command.contains("fetch_url_to_stdout()"));
-    assert!(remote_command.contains("curl -fsSL \"$1\" -o \"$2\""));
-    assert!(remote_command.contains("wget -qO- \"$1\""));
+    // 下载现在带连接/整体/低速超时（旧实现没有任何超时，远端网络不通时界面会一直转圈）
+    assert!(remote_command.contains(
+        "curl -fsSL --connect-timeout 15 --max-time 900 --speed-limit 4096 --speed-time 30 \"$1\" -o \"$2\""
+    ));
+    assert!(remote_command.contains("wget -q -T 20 -t 2 -O - \"$1\""));
     assert!(remote_command.contains("fetch_url_to_file()"));
-    assert!(remote_command.contains("wget -qO \"$2\" \"$1\""));
+    assert!(remote_command.contains("wget -q -T 20 -t 2 -O \"$2\" \"$1\""));
     assert!(remote_command.contains("load_existing_helper_outbound_proxy()"));
     assert!(remote_command.contains("--json routing-config global-outbound"));
     assert!(remote_command.contains("export http_proxy=\"$outbound_proxy\""));

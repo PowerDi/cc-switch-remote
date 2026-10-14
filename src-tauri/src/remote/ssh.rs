@@ -85,6 +85,35 @@ fn build_ssh_base_args(profile: &RemoteHostProfile) -> Vec<String> {
     args
 }
 
+/// 统一的 ssh 进程构造。
+///
+/// Windows 上 GUI 进程 spawn 控制台程序会新建控制台窗口，所以必须带
+/// `CREATE_NO_WINDOW`，否则每发一条远程命令都会闪一个 cmd 黑窗。
+pub(crate) fn ssh_command() -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new("ssh");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// 同上，但给长连接会话用（session.rs 走 tokio 的异步进程）。
+pub(crate) fn ssh_tokio_command() -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut command = tokio::process::Command::new("ssh");
+    #[cfg(windows)]
+    {
+        // tokio 自己提供 creation_flags，不需要 std 的 CommandExt。
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 pub fn build_ssh_args(profile: &RemoteHostProfile, helper_args: &[String]) -> Vec<String> {
     let mut args = build_ssh_base_args(profile);
 
@@ -131,13 +160,21 @@ pub fn build_helper_install_args_with_source(
             "helper_dir=$(dirname \"$helper_path\"); ",
             "mkdir -p \"$helper_dir\" ~/.local/bin; ",
             "fetch_url_to_stdout() {{ ",
-            "if command -v curl >/dev/null 2>&1 && curl -fsSL \"$1\" 2>/dev/null; then return 0; fi; ",
-            "if command -v wget >/dev/null 2>&1 && wget -qO- \"$1\" 2>/dev/null; then return 0; fi; ",
+            "if command -v curl >/dev/null 2>&1; then ",
+            "if curl -fsSL --connect-timeout 15 --max-time 900 --speed-limit 4096 --speed-time 30 \"$1\" 2>/dev/null; then return 0; fi; ",
+            "fi; ",
+            "if command -v wget >/dev/null 2>&1; then ",
+            "if wget -q -T 20 -t 2 -O - \"$1\" 2>/dev/null; then return 0; fi; ",
+            "fi; ",
             "return 1; ",
             "}}; ",
             "fetch_url_to_file() {{ ",
-            "if command -v curl >/dev/null 2>&1 && curl -fsSL \"$1\" -o \"$2\" 2>/dev/null; then return 0; fi; ",
-            "if command -v wget >/dev/null 2>&1 && wget -qO \"$2\" \"$1\" 2>/dev/null; then return 0; fi; ",
+            "if command -v curl >/dev/null 2>&1; then ",
+            "if curl -fsSL --connect-timeout 15 --max-time 900 --speed-limit 4096 --speed-time 30 \"$1\" -o \"$2\" 2>/dev/null; then return 0; fi; ",
+            "fi; ",
+            "if command -v wget >/dev/null 2>&1; then ",
+            "if wget -q -T 20 -t 2 -O \"$2\" \"$1\" 2>/dev/null; then return 0; fi; ",
+            "fi; ",
             "return 1; ",
             "}}; ",
             "load_existing_helper_outbound_proxy() {{ ",
@@ -321,7 +358,7 @@ fn run_ssh_command(
     args: Vec<String>,
     secret: Option<&RemoteConnectionSecret>,
 ) -> Result<String, AppError> {
-    let mut command = Command::new("ssh");
+    let mut command = ssh_command();
     command.args(args);
 
     let _askpass = configure_password_auth(profile, secret, &mut command)?;
@@ -348,7 +385,7 @@ fn run_ssh_command_with_stdin(
     secret: Option<&RemoteConnectionSecret>,
     stdin_bytes: &[u8],
 ) -> Result<String, AppError> {
-    let mut command = Command::new("ssh");
+    let mut command = ssh_command();
     command.args(args);
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());

@@ -35,6 +35,14 @@ use tauri::{AppHandle, Emitter};
 
 const GITHUB_API_USER_AGENT: &str = "cc-switch-remote";
 
+/// 远端侧下载（依赖目标主机到 GitHub 的链路）的等待上限；脚本内部已经给
+/// curl/wget 加了连接与低速超时，这里是最后一道防线，保证界面不会无限转圈。
+const REMOTE_HELPER_REMOTE_INSTALL_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(300);
+/// 远端下载失败后的本地下载 + SSH 上传兜底上限（23MB 量级，慢链路也要留余量）。
+const REMOTE_HELPER_LOCAL_FALLBACK_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(900);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RemoteHelperLatest {
     version: String,
@@ -194,17 +202,41 @@ pub async fn remote_install_helper(
     let profile_id = profile.id.clone();
     let install_profile = profile.clone();
     let install_secret = secret.clone();
-    let install_result = tokio::task::spawn_blocking(move || {
-        install_helper_json(&install_profile, install_secret.as_ref()).map_err(|e| e.to_string())
-    })
+    let install_result = match tokio::time::timeout(
+        REMOTE_HELPER_REMOTE_INSTALL_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            install_helper_json(&install_profile, install_secret.as_ref())
+                .map_err(|e| e.to_string())
+        }),
+    )
     .await
-    .map_err(|e| format!("Remote helper install task failed: {e}"))?;
+    {
+        Ok(joined) => joined.map_err(|e| format!("Remote helper install task failed: {e}"))?,
+        // 旧实现里远端下载没有任何超时，主机慢/不通时会一直转圈且不给原因。
+        Err(_) => Err(format!(
+            "远程下载 Helper 超时（{} 秒）：请检查目标主机能否访问 GitHub（或在主机上配置出站代理）后重试。",
+            REMOTE_HELPER_REMOTE_INSTALL_TIMEOUT.as_secs()
+        )),
+    };
 
     let status: serde_json::Value = match install_result {
         Ok(status) => status,
         Err(remote_error) if should_try_local_helper_install_fallback(&remote_error) => {
-            install_helper_from_local_download(profile.clone(), secret.clone(), remote_error)
-                .await?
+            let fallback_message = remote_error.clone();
+            match tokio::time::timeout(
+                REMOTE_HELPER_LOCAL_FALLBACK_TIMEOUT,
+                install_helper_from_local_download(profile.clone(), secret.clone(), remote_error),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(format!(
+                        "{fallback_message}\n本机下载 Helper 后上传超时（{} 秒）。",
+                        REMOTE_HELPER_LOCAL_FALLBACK_TIMEOUT.as_secs()
+                    ))
+                }
+            }
         }
         Err(remote_error) => return Err(remote_error),
     };
