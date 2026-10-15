@@ -4855,6 +4855,9 @@
         "showRemoteFailoverToggle": "Show Remote Failover Toggle on Main Page",
         "showRemoteFailoverToggleDescription": "When enabled, the main page shows the active app's remote failover toggle. The active app must have remote routing enabled.",
         "homepageTitle": "Homepage toggles",
+        "appModeChecking": "Checking the remote Helper's mode-switching capability over SSH…",
+        "appModeCheckFailed": "Could not verify remote mode-switching support: {{error}}. This does not mean the Helper is unsupported. Refresh to retry.",
+        "appModeCheckUnavailable": "the remote Helper is currently unavailable",
         "appModeUnsupported": "This remote Helper cannot switch per-app direct / route / stack mode yet. Update to a Helper build that includes the app-mode capability."
       }
     },
@@ -4877,7 +4880,7 @@
       "updateHelper": "Update Helper",
       "helperUpdateAvailable": "New helper available",
       "helperUpdateDescription": "A newer remote helper is available. Update it before using remote management features.",
-      "helperUpdateCheckFailed": "Helper update check failed: {{error}}",
+      "helperUpdateCheckFailed": "The desktop could not check the latest Helper release. The installed remote version and capabilities are unaffected: {{error}}",
       "platform": "Platform",
       "capabilities": "Remote Feature Support",
       "missingCapabilities": "Missing feature support",

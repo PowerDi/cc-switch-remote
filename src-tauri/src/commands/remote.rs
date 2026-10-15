@@ -180,6 +180,7 @@ pub async fn remote_close_session(profile_id: String) -> Result<bool, String> {
 pub async fn remote_check_health(
     profile: RemoteHostProfile,
     secret: Option<RemoteConnectionSecret>,
+    include_latest: Option<bool>,
 ) -> Result<RemoteHealth, String> {
     validate_profile(&profile).map_err(|e| e.to_string())?;
     let status: serde_json::Value = tokio::task::spawn_blocking(move || {
@@ -189,7 +190,13 @@ pub async fn remote_check_health(
     .await
     .map_err(|e| format!("Remote health task failed: {e}"))??;
 
-    let latest = fetch_remote_helper_latest(&status).await;
+    // Capability gates only need the installed binary's SSH status. Do not make
+    // them wait for (or depend on) the desktop's connection to GitHub.
+    let latest = if include_latest.unwrap_or(true) {
+        fetch_remote_helper_latest(&status).await
+    } else {
+        Ok(None)
+    };
     Ok(remote_health_from_status_with_latest_result(status, latest))
 }
 
@@ -1457,14 +1464,34 @@ async fn fetch_github_helper_release(
     crate::proxy::http_client::get()
         .get(&url)
         .header(reqwest::header::USER_AGENT, GITHUB_API_USER_AGENT)
+        // This is only small release metadata, not the binary download.
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| format!("Failed to query helper release: {e}"))?
+        .map_err(format_helper_release_query_error)?
         .error_for_status()
-        .map_err(|e| format!("Failed to query helper release: {e}"))?
+        .map_err(format_helper_release_query_error)?
         .json::<GitHubRelease>()
         .await
-        .map_err(|e| format!("Failed to parse helper release: {e}"))
+        .map_err(|e| format!("Failed to parse helper release: {}", e.without_url()))
+}
+
+fn format_helper_release_query_error(error: reqwest::Error) -> String {
+    let reason = if error.is_timeout() {
+        "GitHub request timed out"
+    } else if error.is_connect() {
+        "could not connect to GitHub (DNS, TLS, network or proxy connection)"
+    } else {
+        match error.status().map(|status| status.as_u16()) {
+            Some(403 | 429) => "GitHub denied or rate-limited the request",
+            Some(404) => "the helper release tag was not found on GitHub",
+            _ => "GitHub release metadata request failed",
+        }
+    };
+    format!(
+        "Failed to query helper release: {reason}. Check the desktop app's outbound proxy/network; this does not change the installed helper or its capabilities. ({})",
+        error.without_url()
+    )
 }
 
 fn select_remote_helper_download_asset<'a>(
@@ -1637,6 +1664,8 @@ fn parse_remote_platform(value: &str) -> RemotePlatform {
 fn parse_remote_capability(value: &str) -> Option<RemoteCapability> {
     match value {
         "providers" => Some(RemoteCapability::Providers),
+        "provider-editor" => Some(RemoteCapability::ProviderEditor),
+        "app-mode" => Some(RemoteCapability::AppMode),
         "universal-providers" => Some(RemoteCapability::UniversalProviders),
         "routing-config" => Some(RemoteCapability::RoutingConfig),
         "routing-runtime" => Some(RemoteCapability::RoutingRuntime),

@@ -13,6 +13,7 @@ import {
 } from "@/lib/managementTarget";
 import { remoteApi } from "@/lib/api/remote";
 import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
+import { useLatestTarget } from "@/hooks/useTargetQueryIdentityReset";
 
 /**
  * 供应商连通性检查。
@@ -28,16 +29,19 @@ export function useStreamCheck(
   const { t } = useTranslation();
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
   const targetKey = getManagementTargetKey(target);
+  const latestTarget = useLatestTarget(target);
   const { capture, isCurrent, revision } = useTargetAsyncGeneration(target);
   const appScopeRef = useRef({ appId });
   if (appScopeRef.current.appId !== appId) appScopeRef.current = { appId };
   const appScope = appScopeRef.current;
   const health = useQuery({
     queryKey: ["remote-health", targetKey, revision],
-    queryFn: () =>
-      target.type === "remote"
-        ? remoteApi.checkHealth(target.profile, target.secret)
-        : null,
+    queryFn: () => {
+      const current = latestTarget.current;
+      return current.type === "remote"
+        ? remoteApi.checkHealth(current.profile, current.secret, false)
+        : null;
+    },
     enabled: target.type === "remote",
     retry: false,
     staleTime: 30_000,

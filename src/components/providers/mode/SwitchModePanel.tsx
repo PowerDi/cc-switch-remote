@@ -7,7 +7,7 @@ import type { AppMode, StartupAttachFailure } from "@/types/proxy";
 import type { ManagementTarget } from "@/lib/api/remote";
 import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import { getManagementTargetKey } from "@/lib/managementTarget";
-import { useTargetCapability } from "@/hooks/useTargetCapability";
+import { useTargetCapabilityState } from "@/hooks/useTargetCapability";
 import type { ProxyAppId } from "@/config/appConfig";
 import { isStackAppId } from "@/config/appConfig";
 import { settingsApi } from "@/lib/api";
@@ -104,8 +104,8 @@ export function SwitchModePanel({
   const appName = APP_DISPLAY_NAME[app];
   const modes = modesFor(app);
   const targetKey = getManagementTargetKey(target);
-  // 旧 helper 没有 mode 命令：如实说明，不给点了必然失败的模式行
-  const appModeSupported = useTargetCapability(target, "app-mode");
+  const appModeCapability = useTargetCapabilityState(target, "app-mode");
+  const appModeSupported = appModeCapability.supported;
 
   // 能力未知/不支持时先不查：旧 helper 不该收到任何模式命令
   const { data: modeView } = useAppMode(app, appModeSupported, target);
@@ -523,15 +523,34 @@ export function SwitchModePanel({
     );
   }
 
-  // 旧 helper 没有 app-mode 命令：模式行换成一句说明，供应商列表照常可用
+  // Keep the list usable; only a successful status response can prove that
+  // an installed helper lacks app-mode. Loading/transport errors are separate.
   if (!appModeSupported) {
     return (
       <>
         <div className="px-4 pb-3 text-sm text-fg-2" role="status">
-          {t("remote.settings.routing.appModeUnsupported", {
-            defaultValue:
-              "当前远程 Helper 不支持按应用切换直连 / 路由 / 聚合模式。请更新到包含 app-mode capability 的新版 Helper。",
-          })}
+          {appModeCapability.state === "loading"
+            ? t("remote.settings.routing.appModeChecking")
+            : appModeCapability.state === "error"
+              ? t("remote.settings.routing.appModeCheckFailed", {
+                  error:
+                    appModeCapability.error ??
+                    t("remote.settings.routing.appModeCheckUnavailable"),
+                })
+              : t("remote.settings.routing.appModeUnsupported", {
+                  defaultValue:
+                    "当前远程 Helper 不支持按应用切换直连 / 路由 / 聚合模式。请更新到包含 app-mode capability 的新版 Helper。",
+                })}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="ml-2"
+            disabled={appModeCapability.isFetching}
+            onClick={() => void appModeCapability.refetch()}
+          >
+            {t("common.refresh")}
+          </Button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto scroll-stable overflow-x-hidden px-6 pb-12">
           <ProviderList

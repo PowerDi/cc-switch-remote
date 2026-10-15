@@ -400,8 +400,15 @@ export const remoteApi = {
   checkHealth(
     profile: RemoteHostProfile,
     secret?: RemoteConnectionSecret,
+    includeLatest = true,
   ): Promise<RemoteHealth> {
-    return invoke<RemoteHealth>("remote_check_health", { profile, secret });
+    return invoke<RemoteHealth>("remote_check_health", {
+      profile,
+      secret,
+      // Capability gates must not depend on GitHub availability. Omission keeps
+      // the existing full health/update-check behavior for management pages.
+      ...(includeLatest ? {} : { includeLatest: false }),
+    });
   },
 
   installHelper(

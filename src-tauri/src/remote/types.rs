@@ -79,6 +79,8 @@ pub enum RemotePlatform {
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteCapability {
     Providers,
+    ProviderEditor,
+    AppMode,
     UniversalProviders,
     RoutingConfig,
     RoutingRuntime,

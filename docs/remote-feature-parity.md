@@ -82,9 +82,17 @@ This document tracks how remote management maps to the local CC Switch feature s
 
 Audited while landing the upstream v4.0.4 baseline (fork 4.0.5). The mechanical pass behind this table:
 
-- every capability string the UI gates on (`useTargetCapability`, `capabilities.includes`) is advertised by the helper's `remote_capabilities` list, so no working remote feature is hidden as unsupported;
+- the capability strings used by UI gates were compared with the helper's `remote_capabilities` list. That check did not cover the desktop's `RemoteCapability` conversion; see the correction below. Helper advertisement alone does not prove that a capability reaches the UI;
 - the only frontend files that mix `target.type === "remote"` with local `invoke(` calls are the `src/lib/api/*` adapter modules, each branching remote → helper and local → Tauri command (covered by the target-routing tests);
 - local-only surfaces are guarded at the entry point: the tray/terminal/deeplink actions, the workspace view, the project switcher, the Hermes web panel, the Apps desktop row, and the WSL shell override. The app mode/stack panel is shared with the remote target, and only its desktop-specific extras (startup attach failures, tray-routed prompts) stay local.
+
+### Capability transport correction (after v4.0.7)
+
+A read-only status query on the user's host returned Helper 4.0.6 (`766f27f4`), including `app-mode` and `provider-editor`. Both capabilities were missing from the desktop `RemoteCapability` enum and `parse_remote_capability` mapping, so the health response dropped them before the shared UI could use them. This was a desktop adapter defect, not an unsupported helper.
+
+The correction preserves the existing parity workflows and local behavior: forward both capabilities, read installed capabilities over SSH without a GitHub release lookup, and distinguish pending/failed capability checks from confirmed lack of support. The settings page refresh/install actions also invalidate the selected target's capability cache. Full health checks still query release metadata, with a 15-second request limit and a separate update-check error. No provider, routing or tool configuration is changed by these checks.
+
+The earlier helper-command runs did not validate this desktop conversion. The correction is not part of v4.0.7; installed-app UI verification remains outstanding. Per the user's instruction, no tests or test plan were added or run for this follow-up; validation is limited to code review, type/compile and format checks.
 
 ### Real-host run (B10, first pass)
 

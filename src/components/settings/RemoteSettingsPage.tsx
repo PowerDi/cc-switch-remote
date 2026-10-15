@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   Activity,
@@ -50,6 +51,7 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useRemoteSettings } from "@/hooks/useRemoteSettings";
 import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
 import { remoteApi } from "@/lib/api";
+import { getManagementTargetKey } from "@/lib/managementTarget";
 import type { AppId } from "@/lib/api/types";
 import type { ManagementTarget, RemoteHealth } from "@/lib/api";
 import {
@@ -104,6 +106,8 @@ export function RemoteSettingsPage({
   target,
 }: RemoteSettingsPageProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const targetKey = getManagementTargetKey(target);
   const { capture, isCurrent, revision } = useTargetAsyncGeneration(target);
   const [activeTab, setActiveTab] = useState(coerceRemoteTab(defaultTab));
 
@@ -177,6 +181,9 @@ export function RemoteSettingsPage({
       const result = await remoteApi.checkHealth(target.profile, target.secret);
       if (!isCurrent(generation)) return null;
       setHealth(result);
+      void queryClient.invalidateQueries({
+        queryKey: ["remote-health", targetKey],
+      });
       return result;
     } catch (error) {
       if (!isCurrent(generation)) return null;
@@ -194,7 +201,15 @@ export function RemoteSettingsPage({
         setActiveRemoteTask(null);
       }
     }
-  }, [capture, isCurrent, t, target.profile, target.secret]);
+  }, [
+    capture,
+    isCurrent,
+    queryClient,
+    t,
+    target.profile,
+    target.secret,
+    targetKey,
+  ]);
 
   const refreshRemoteState = useCallback(async () => {
     const result = await loadHealth();
@@ -234,6 +249,9 @@ export function RemoteSettingsPage({
       );
       if (!isCurrent(generation)) return;
       setHealth(result);
+      void queryClient.invalidateQueries({
+        queryKey: ["remote-health", targetKey],
+      });
       toast.success(
         t("remote.health.installSuccess", {
           defaultValue: "远程 Helper 已安装",

@@ -154,7 +154,8 @@ export function formatRemoteHelperUpdateError(error: string, t: TFunction) {
     return error;
   }
   return t("remote.health.helperUpdateCheckFailed", {
-    defaultValue: "Helper 更新检测失败: {{error}}",
+    defaultValue:
+      "本机查询 Helper 最新发布信息失败，不影响远端已安装版本和功能：{{error}}",
     error,
   });
 }

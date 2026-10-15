@@ -4854,6 +4854,9 @@
         "showRemoteFailoverToggle": "メインページにリモートフェイルオーバー切り替えを表示",
         "showRemoteFailoverToggleDescription": "有効にすると、メインページ上部に現在のアプリのリモートフェイルオーバー切り替えが表示されます。現在のアプリでリモートルーティングが有効になっている必要があります。",
         "homepageTitle": "ホームページのスイッチ",
+        "appModeChecking": "SSH でリモート Helper のモード切替機能を確認しています…",
+        "appModeCheckFailed": "リモートのモード切替機能を確認できませんでした：{{error}}。未対応とは限りません。更新して再試行してください。",
+        "appModeCheckUnavailable": "リモート Helper を現在利用できません",
         "appModeUnsupported": "現在のリモート Helper はアプリごとの直結 / ルーティング / スタックモード切替に対応していません。app-mode capability を含む新しい Helper に更新してください。"
       }
     },
@@ -4876,7 +4879,7 @@
       "updateHelper": "Helper を更新",
       "helperUpdateAvailable": "新しい Helper があります",
       "helperUpdateDescription": "新しいリモート Helper をインストールできます。リモート管理機能を使う前に更新してください。",
-      "helperUpdateCheckFailed": "Helper 更新確認に失敗しました: {{error}}",
+      "helperUpdateCheckFailed": "このPCから Helper の最新リリース情報を確認できませんでした。リモートにインストール済みのバージョンと機能には影響しません：{{error}}",
       "platform": "プラットフォーム",
       "capabilities": "リモート機能サポート",
       "missingCapabilities": "不足している機能サポート",
