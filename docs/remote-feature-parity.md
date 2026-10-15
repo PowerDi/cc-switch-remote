@@ -92,7 +92,7 @@ A read-only status query on the user's host returned Helper 4.0.6 (`766f27f4`), 
 
 The correction preserves the existing parity workflows and local behavior: forward both capabilities, read installed capabilities over SSH without a GitHub release lookup, and distinguish pending/failed capability checks from confirmed lack of support. The settings page refresh/install actions also invalidate the selected target's capability cache. Full health checks still query release metadata, with a 15-second request limit and a separate update-check error. No provider, routing or tool configuration is changed by these checks.
 
-The earlier helper-command runs did not validate this desktop conversion. The correction is not part of v4.0.7; installed-app UI verification remains outstanding. Per the user's instruction, no tests or test plan were added or run for this follow-up; validation is limited to code review, type/compile and format checks.
+The earlier helper-command runs did not validate this desktop conversion. The correction is included in the v4.0.8 desktop release. The user's Helper 4.0.6 already reports both capabilities and does not need replacement; update the desktop app. Per the user's instruction, no tests or test plan were added or run for this follow-up; validation is limited to code review, type/compile and format checks.
 
 ### Real-host run (B10, first pass)
 

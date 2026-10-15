@@ -2,6 +2,8 @@
 
 All notable changes to CC Switch Remote will be documented in this file.
 
+> **Fork note (v4.0.8):** baseline is still upstream **v4.0.4**. Fixes remote Helper capability detection: the desktop app previously dropped `app-mode` and `provider-editor` while converting a valid Helper health response, so supported remote controls could appear unavailable. Capability checks now distinguish SSH status from GitHub release lookup; a release-check network failure no longer hides installed Helper capabilities. No database schema change; Helper 4.0.6 already advertises `app-mode` and does not need to be reinstalled. See `docs/release-notes/v4.0.8-remote-zh.md`.
+
 > **Fork note (v4.0.7):** baseline is still upstream **v4.0.4**. 4.0.7 is a UI-consistency
 > release: every user-visible self-reference now says **CC Switch Remote** instead of a bare
 > "CC Switch" (tray menu and tooltips, sidebar brand and version row, the Claude Desktop MCP

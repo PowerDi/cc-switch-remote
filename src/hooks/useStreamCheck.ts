@@ -39,7 +39,7 @@ export function useStreamCheck(
     queryFn: () => {
       const current = latestTarget.current;
       return current.type === "remote"
-        ? remoteApi.checkHealth(current.profile, current.secret, false)
+        ? remoteApi.checkHealth(current.profile, current.secret)
         : null;
     },
     enabled: target.type === "remote",

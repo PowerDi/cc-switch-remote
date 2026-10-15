@@ -8,9 +8,10 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 /** Local operations need no helper. A remote-only control stays unavailable
  * until the selected connection advertises support: a helper from an older
  * release must hide the control instead of failing with a low-level error.
- * Shares the health query key with useStreamCheck so one connection still
- * makes one health call, and a replaced host/credential can never lend its
- * capabilities to the new connection.
+ * The installed-capabilities suffix isolates this SSH-only response from full
+ * health checks that include release metadata. Both share the remote-health
+ * prefix so a settings-page refresh invalidates them for the same connection.
+ * A replaced host/credential must never inherit the old target's capabilities.
  */
 export function useTargetCapability(
   target: ManagementTarget,
@@ -30,7 +31,7 @@ export function useTargetCapabilityState(
   const latestTarget = useLatestTarget(target);
   const { revision } = useTargetAsyncGeneration(target);
   const health = useQuery({
-    queryKey: ["remote-health", targetKey, revision],
+    queryKey: ["remote-health", targetKey, revision, "installed-capabilities"],
     queryFn: () => {
       const current = latestTarget.current;
       return current.type === "remote"
