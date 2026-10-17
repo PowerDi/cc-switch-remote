@@ -36,7 +36,10 @@ pub fn remote_session_manager() -> &'static RemoteSessionManager {
 #[cfg(unix)]
 type PasswordAuthGuard = tempfile::TempPath;
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+type PasswordAuthGuard = std::path::PathBuf;
+
+#[cfg(not(any(unix, windows)))]
 type PasswordAuthGuard = ();
 
 #[derive(Debug, Serialize)]

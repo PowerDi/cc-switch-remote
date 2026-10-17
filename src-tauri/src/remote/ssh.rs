@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use crate::remote::types::{
     RemoteAuthMethod, RemoteCommandError, RemoteCommandResponse, RemoteConnectionSecret,
-    RemoteHostProfile,
+    RemoteConnectionStage, RemoteHostProfile,
 };
 use crate::remote_capabilities::REMOTE_HELPER_REQUIRED_CAPABILITIES;
 use serde::de::DeserializeOwned;
@@ -428,41 +428,45 @@ pub(crate) fn normalize_remote_stderr(profile: &RemoteHostProfile, stderr: &str)
         || stderr.contains("libwebkit2gtk")
         || stderr.contains("libayatana-appindicator")
     {
-        "远程 Helper 不是纯 CLI 构建，依赖服务器上不存在的桌面 GTK/WebKit 库。请重新安装最新的远程 Helper。".to_string()
+        format!(
+            "{HELPER_NOT_RUNNABLE_PREFIX}，依赖服务器上不存在的桌面 GTK/WebKit 库。请重新安装最新的远程 Helper。"
+        )
     } else if is_changed_host_key_error(stderr) {
         let host = extract_changed_host_key_host(stderr).unwrap_or(profile.host.as_str());
         let location = extract_offending_known_hosts_entry(stderr)
             .map(|entry| format!("冲突记录：{entry}。"))
             .unwrap_or_default();
         format!(
-            "远程主机密钥已变更，SSH 已拒绝连接以防止中间人攻击。若你确认这台服务器刚重装、重置或更换过系统，请在本机终端执行：ssh-keygen -R {host}，然后重新连接并确认新的主机指纹。{location}"
+            "{SSH_HOST_KEY_CHANGED_PREFIX}，SSH 已拒绝连接以防止中间人攻击。若你确认这台服务器刚重装、重置或更换过系统，请在本机终端执行：ssh-keygen -R {host}，然后重新连接并确认新的主机指纹。{location}"
         )
     } else if is_ssh_auth_error(stderr) {
         format!(
-            "SSH 认证失败：当前密钥或密码无法登录 {}@{}:{}。请检查远程账号、密钥文件、密码或服务器 authorized_keys。",
+            "{SSH_AUTH_FAILURE_PREFIX}：当前密钥或密码无法登录 {}@{}:{}。请检查远程账号、密钥文件、密码或服务器 authorized_keys。",
             profile.username, profile.host, profile.port
         )
     } else if is_ssh_connection_refused(stderr) {
         let endpoint = extract_ssh_connect_endpoint(stderr)
             .unwrap_or_else(|| format!("{}:{}", profile.host, profile.port));
         format!(
-            "SSH 连接被拒绝：{endpoint} 没有 SSH 服务监听，或连接被防火墙拒绝。请检查服务器 IP、端口和 sshd 状态。"
+            "{SSH_CONNECTION_REFUSED_PREFIX}：{endpoint} 没有 SSH 服务监听，或连接被防火墙拒绝。请检查服务器 IP、端口和 sshd 状态。"
         )
     } else if is_ssh_timeout(stderr) {
         let endpoint = extract_ssh_connect_endpoint(stderr)
             .unwrap_or_else(|| format!("{}:{}", profile.host, profile.port));
         format!(
-            "SSH 连接超时：无法连接到 {endpoint}。请检查网络、VPN、服务器状态、防火墙和 SSH 端口。"
+            "{SSH_TIMEOUT_PREFIX}：无法连接到 {endpoint}。请检查网络、VPN、服务器状态、防火墙和 SSH 端口。"
         )
     } else if let Some(host) = extract_unresolved_ssh_host(stderr) {
         format!(
-            "SSH 主机名无法解析：{host}。请检查远程服务器地址是否填写正确，或检查本机 DNS/网络。"
+            "{SSH_HOSTNAME_UNRESOLVED_PREFIX}：{host}。请检查远程服务器地址是否填写正确，或检查本机 DNS/网络。"
         )
     } else if is_ssh_control_socket_error(stderr) {
-        "SSH 连接复用控制 socket 异常，连接尚未到达远程 Helper。当前版本已默认禁用 SSH ControlMaster；请升级客户端后重试。若仍然出现，请检查本机 ~/.ssh/config 中该主机的 ControlMaster/ControlPath 配置。".to_string()
+        format!(
+            "{SSH_CONTROL_SOCKET_PREFIX}，连接尚未到达远程 Helper。当前版本已默认禁用 SSH ControlMaster；请升级客户端后重试。若仍然出现，请检查本机 ~/.ssh/config 中该主机的 ControlMaster/ControlPath 配置。"
+        )
     } else if is_helper_missing_error(profile, stderr) {
         format!(
-            "远程 Helper 未安装或路径不正确。请点击“安装 Helper”，或在远程服务器配置中修正 Helper 路径（当前：{}）。",
+            "{HELPER_MISSING_PREFIX}或路径不正确。请点击“安装 Helper”，或在远程服务器配置中修正 Helper 路径（当前：{}）。",
             profile.helper_path
         )
     } else {
@@ -676,7 +680,67 @@ fn create_askpass_script() -> Result<tempfile::TempPath, AppError> {
     Ok(askpass.into_temp_path())
 }
 
-#[cfg(unix)]
+/// `remote_failure_message` 与 `classify_remote_failure_message` 共用的消息前缀：
+/// 展示文案和分层判定必须保持同步，改一处不会漏改另一处。
+const SSH_AUTH_FAILURE_PREFIX: &str = "SSH 认证失败";
+const SSH_HOST_KEY_CHANGED_PREFIX: &str = "远程主机密钥已变更";
+const SSH_CONNECTION_REFUSED_PREFIX: &str = "SSH 连接被拒绝";
+const SSH_TIMEOUT_PREFIX: &str = "SSH 连接超时";
+const SSH_HOSTNAME_UNRESOLVED_PREFIX: &str = "SSH 主机名无法解析";
+const SSH_CONTROL_SOCKET_PREFIX: &str = "SSH 连接复用控制 socket 异常";
+const HELPER_MISSING_PREFIX: &str = "远程 Helper 未安装";
+const HELPER_NOT_RUNNABLE_PREFIX: &str = "远程 Helper 不是纯 CLI 构建";
+
+const SSH_TRANSPORT_FAILURE_PREFIXES: [&str; 5] = [
+    SSH_HOST_KEY_CHANGED_PREFIX,
+    SSH_CONNECTION_REFUSED_PREFIX,
+    SSH_TIMEOUT_PREFIX,
+    SSH_HOSTNAME_UNRESOLVED_PREFIX,
+    SSH_CONTROL_SOCKET_PREFIX,
+];
+
+/// 从 `normalize_remote_stderr` 产出的消息反推失败分层。
+///
+/// 未识别的错误返回 `None`，调用方应再用一次 SSH 探针确认真实分层，
+/// 而不是猜测。
+pub fn classify_remote_failure_message(message: &str) -> Option<RemoteConnectionStage> {
+    if message.contains(SSH_AUTH_FAILURE_PREFIX) {
+        return Some(RemoteConnectionStage::SshAuth);
+    }
+    if SSH_TRANSPORT_FAILURE_PREFIXES
+        .iter()
+        .any(|prefix| message.contains(prefix))
+    {
+        return Some(RemoteConnectionStage::SshTransport);
+    }
+    if message.contains(HELPER_MISSING_PREFIX) {
+        return Some(RemoteConnectionStage::HelperMissing);
+    }
+    if message.contains(HELPER_NOT_RUNNABLE_PREFIX) {
+        return Some(RemoteConnectionStage::HelperError);
+    }
+    None
+}
+
+/// 一次轻量 SSH 探针：确认 SSH 层（含认证）可用，并判断远端 Helper 文件是否存在。
+///
+/// SSH 层失败时返回 `Err`，消息与其它远程命令保持一致；成功时返回
+/// `Ok(true)` 表示 Helper 可执行，`Ok(false)` 表示未安装或路径不正确。
+pub fn probe_remote_helper_presence(
+    profile: &RemoteHostProfile,
+    secret: Option<&RemoteConnectionSecret>,
+) -> Result<bool, AppError> {
+    let helper_path = shell_quote_helper_path(&profile.helper_path);
+    let mut args = build_ssh_base_args(profile);
+    args.push(format!(
+        "if [ -x {helper_path} ]; then printf cc-switch-helper-present; else printf cc-switch-helper-missing; fi"
+    ));
+
+    let stdout = run_ssh_command(profile, args, secret)?;
+    Ok(stdout.contains("cc-switch-helper-present"))
+}
+
+#[cfg(any(unix, windows))]
 fn password_for_profile(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
@@ -741,32 +805,104 @@ pub fn configure_password_auth_for_tokio(
     Ok(Some(askpass_path))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn configure_password_auth(
     profile: &RemoteHostProfile,
     _secret: Option<&RemoteConnectionSecret>,
     _command: &mut Command,
 ) -> Result<Option<()>, AppError> {
     if matches!(profile.auth_method, RemoteAuthMethod::Password) {
-        return Err(AppError::Message(
-            "Remote SSH password auth is only supported on Unix desktops".to_string(),
+        return Err(AppError::localized(
+            "remote.ssh.password_unsupported_platform",
+            "当前平台不支持 SSH 密码认证，请改用密钥文件或 SSH Agent。",
+            "SSH password authentication is not supported on this platform; use a key file or SSH Agent instead.",
         ));
     }
     Ok(None)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn configure_password_auth_for_tokio(
     profile: &RemoteHostProfile,
     _secret: Option<&RemoteConnectionSecret>,
     _command: &mut tokio::process::Command,
 ) -> Result<Option<()>, AppError> {
     if matches!(profile.auth_method, RemoteAuthMethod::Password) {
-        return Err(AppError::Message(
-            "Remote SSH password auth is only supported on Unix desktops".to_string(),
+        return Err(AppError::localized(
+            "remote.ssh.password_unsupported_platform",
+            "当前平台不支持 SSH 密码认证，请改用密钥文件或 SSH Agent。",
+            "SSH password authentication is not supported on this platform; use a key file or SSH Agent instead.",
         ));
     }
     Ok(None)
+}
+
+/// Windows: locate the bundled askpass sidecar.
+///
+/// Windows has no `/bin/sh`, so the Unix temporary-script trick cannot work.
+/// The sidecar is a real executable embedded through
+/// `tauri.windows.conf.json` (`bundle.externalBin`); Tauri strips the target
+/// triple when it copies the binary next to the application, so both names are
+/// probed to also cover `tauri dev` layouts.
+#[cfg(windows)]
+fn resolve_askpass_helper_path() -> Result<std::path::PathBuf, AppError> {
+    let current_exe = std::env::current_exe().map_err(|error| {
+        AppError::Message(format!(
+            "Failed to locate the application executable for SSH askpass: {error}"
+        ))
+    })?;
+    let directory = current_exe.parent().ok_or_else(|| {
+        AppError::Message("Application directory is unavailable for SSH askpass".to_string())
+    })?;
+
+    let triple = env!("CC_SWITCH_REMOTE_TARGET_TRIPLE");
+    let candidates = [
+        directory.join("cc-switch-remote-askpass.exe"),
+        directory.join(format!("cc-switch-remote-askpass-{triple}.exe")),
+    ];
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(AppError::localized(
+        "remote.ssh.askpass_missing",
+        "缺少 SSH askpass 组件（cc-switch-remote-askpass.exe），无法使用密码认证。请重新安装 CC Switch Remote。",
+        "The SSH askpass helper (cc-switch-remote-askpass.exe) is missing, so password authentication is unavailable. Reinstall CC Switch Remote.",
+    ))
+}
+
+#[cfg(windows)]
+fn configure_password_auth(
+    profile: &RemoteHostProfile,
+    secret: Option<&RemoteConnectionSecret>,
+    command: &mut Command,
+) -> Result<Option<std::path::PathBuf>, AppError> {
+    let Some(password) = password_for_profile(profile, secret)? else {
+        return Ok(None);
+    };
+    let askpass_path = resolve_askpass_helper_path()?;
+    command.env("SSH_ASKPASS", &askpass_path);
+    command.env("SSH_ASKPASS_REQUIRE", "force");
+    command.env("CC_SWITCH_REMOTE_SSH_PASSWORD", password);
+    Ok(Some(askpass_path))
+}
+
+#[cfg(windows)]
+pub fn configure_password_auth_for_tokio(
+    profile: &RemoteHostProfile,
+    secret: Option<&RemoteConnectionSecret>,
+    command: &mut tokio::process::Command,
+) -> Result<Option<std::path::PathBuf>, AppError> {
+    let Some(password) = password_for_profile(profile, secret)? else {
+        return Ok(None);
+    };
+    let askpass_path = resolve_askpass_helper_path()?;
+    command.env("SSH_ASKPASS", &askpass_path);
+    command.env("SSH_ASKPASS_REQUIRE", "force");
+    command.env("CC_SWITCH_REMOTE_SSH_PASSWORD", password);
+    Ok(Some(askpass_path))
 }
 
 fn shell_quote_helper_path(value: &str) -> String {

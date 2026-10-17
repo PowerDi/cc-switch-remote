@@ -51,10 +51,13 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useRemoteSettings } from "@/hooks/useRemoteSettings";
 import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
 import { remoteApi } from "@/lib/api";
+import { diagnoseRemoteConnection } from "@/lib/api/remote";
 import { getManagementTargetKey } from "@/lib/managementTarget";
 import type { AppId } from "@/lib/api/types";
 import type { ManagementTarget, RemoteHealth } from "@/lib/api";
 import {
+  describeRemoteConnection,
+  describeRemoteFailureHint,
   formatRemoteCapabilitySummary,
   formatRemoteHelperBuild,
   formatRemoteHelperLatest,
@@ -195,12 +198,15 @@ export function RemoteSettingsPage({
     } catch (error) {
       if (!isCurrent(generation)) return null;
       console.error("[RemoteSettingsPage] Failed to check health", error);
-      setHealth({
-        reachable: false,
-        helperInstalled: false,
-        capabilities: [],
-        lastError: extractErrorMessage(error),
-      });
+      // 检查失败时再诊断一次，让界面能区分「SSH 没通」与「Helper 没装」，
+      // 而不是把两种情况都显示成一个不可用徽标。
+      const diagnosis = await diagnoseRemoteConnection(
+        target.profile,
+        target.secret,
+        error,
+      );
+      if (!isCurrent(generation)) return null;
+      setHealth(diagnosis);
       return null;
     } finally {
       if (isCurrent(generation)) {
@@ -272,6 +278,14 @@ export function RemoteSettingsPage({
     } catch (error) {
       if (!isCurrent(generation)) return;
       console.error("[RemoteSettingsPage] Failed to install helper", error);
+      // 安装失败也可能只是 SSH 层不可用；同样给出分层结论。
+      const diagnosis = await diagnoseRemoteConnection(
+        target.profile,
+        target.secret,
+        error,
+      );
+      if (!isCurrent(generation)) return;
+      setHealth(diagnosis);
       toast.error(
         t("remote.health.installFailed", {
           defaultValue: "安装远程 Helper 失败: {{error}}",
@@ -1045,6 +1059,10 @@ function RemoteHealthSection({
 }: RemoteHealthSectionProps) {
   const { t } = useTranslation();
   const helperReady = Boolean(health?.reachable && health.helperInstalled);
+  const connection = describeRemoteConnection(health);
+  const connectionHint = health
+    ? describeRemoteFailureHint(connection, t)
+    : null;
   const capabilitySummary = formatRemoteCapabilitySummary(health, t);
   const helperBuildText = formatRemoteHelperBuild(health);
   const helperLatestBuildText = formatRemoteHelperLatestBuild(health);
@@ -1075,7 +1093,11 @@ function RemoteHealthSection({
           <Badge variant={helperReady ? "default" : "destructive"}>
             {helperReady
               ? t("remote.status.connected", { defaultValue: "已连接" })
-              : t("remote.status.unavailable", { defaultValue: "不可用" })}
+              : connection.ssh === "failed"
+                ? t("remote.health.failedConnection", {
+                    defaultValue: "连接失败",
+                  })
+                : t("remote.status.unavailable", { defaultValue: "不可用" })}
           </Badge>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -1178,6 +1200,11 @@ function RemoteHealthSection({
         {health?.lastError ? (
           <div className="border-t border-border/50 px-4 py-3 text-sm text-destructive">
             {health.lastError}
+          </div>
+        ) : null}
+        {connectionHint ? (
+          <div className="border-t border-border/50 px-4 py-3 text-xs text-muted-foreground">
+            {connectionHint}
           </div>
         ) : null}
       </div>

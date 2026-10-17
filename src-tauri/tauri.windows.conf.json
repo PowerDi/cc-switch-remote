@@ -1,5 +1,5 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
+  "$schema": "https://tauri.app/config/2",
   "app": {
     "windows": [
       {
@@ -18,5 +18,8 @@
         "center": true
       }
     ]
+  },
+  "bundle": {
+    "externalBin": ["binaries/cc-switch-remote-askpass"]
   }
 }

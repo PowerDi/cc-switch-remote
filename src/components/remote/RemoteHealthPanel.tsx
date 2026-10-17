@@ -2,6 +2,7 @@ import {
   Activity,
   AlertTriangle,
   Download,
+  Plug,
   RefreshCw,
   Terminal,
 } from "lucide-react";
@@ -13,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
+  diagnoseRemoteConnection,
   remoteApi,
   type RemoteConnectionSecret,
   type RemoteHealth,
@@ -20,6 +22,8 @@ import {
 } from "@/lib/api";
 import {
   canReportRemoteCapabilities,
+  describeRemoteConnection,
+  describeRemoteFailureHint,
   EXPECTED_REMOTE_CAPABILITIES,
   formatRemoteHelperBuild,
   formatRemoteHelperLatest,
@@ -27,8 +31,33 @@ import {
   formatRemoteHelperUpdateError,
   formatRemoteHelperVersion,
   formatRemotePlatform,
+  type RemoteStageState,
 } from "@/lib/remoteHealth";
 import { extractErrorMessage } from "@/utils/errorUtils";
+
+const STAGE_DOT: Record<RemoteStageState, string> = {
+  ok: "bg-emerald-500",
+  failed: "bg-destructive",
+  missing: "bg-amber-500",
+  error: "bg-destructive",
+  unknown: "bg-muted-foreground/40",
+};
+
+const STAGE_LABEL_KEY: Record<RemoteStageState, string> = {
+  ok: "remote.health.stageOk",
+  failed: "remote.health.stageFailed",
+  missing: "remote.health.stageMissing",
+  error: "remote.health.stageError",
+  unknown: "remote.health.stageUnknown",
+};
+
+const STAGE_LABEL_DEFAULT: Record<RemoteStageState, string> = {
+  ok: "已连通",
+  failed: "未连通",
+  missing: "未安装",
+  error: "无法运行",
+  unknown: "未知",
+};
 
 export function RemoteHealthPanel({
   profile,
@@ -40,7 +69,47 @@ export function RemoteHealthPanel({
   const { t } = useTranslation();
   const [health, setHealth] = useState<RemoteHealth | null>(null);
   const [checking, setChecking] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const connection = describeRemoteConnection(health);
+  const connectionHint = health
+    ? describeRemoteFailureHint(connection, t)
+    : null;
+  const connectionBadge = !health
+    ? {
+        label: t("remote.health.notChecked", { defaultValue: "未检查" }),
+        variant: "outline" as const,
+      }
+    : connection.helper === "ok"
+      ? {
+          label: t("remote.health.ok", { defaultValue: "可连接" }),
+          variant: "default" as const,
+        }
+      : connection.ssh === "failed"
+        ? {
+            label: t("remote.health.failedConnection", {
+              defaultValue: "连接失败",
+            }),
+            variant: "destructive" as const,
+          }
+        : connection.helper === "missing"
+          ? {
+              label: t("remote.health.helperNeedsInstallBadge", {
+                defaultValue: "待安装 Helper",
+              }),
+              variant: "outline" as const,
+            }
+          : connection.ssh === "unknown" && connection.helper === "unknown"
+            ? {
+                label: t("remote.health.failed", { defaultValue: "失败" }),
+                variant: "destructive" as const,
+              }
+            : {
+                label: t("remote.health.helperErrorBadge", {
+                  defaultValue: "Helper 异常",
+                }),
+                variant: "destructive" as const,
+              };
   const healthCanReportCapabilities = canReportRemoteCapabilities(health);
   const capabilitySet = new Set(health?.capabilities ?? []);
   const missingCapabilities = healthCanReportCapabilities
@@ -70,15 +139,24 @@ export function RemoteHealthPanel({
       const result = await remoteApi.checkHealth(profile, secret);
       setHealth(result);
     } catch (error) {
-      const message = extractErrorMessage(error);
-      setHealth({
-        reachable: false,
-        helperInstalled: false,
-        capabilities: [],
-        lastError: message,
-      });
+      // 「检查」失败时仍然给出分层结论，否则「SSH 没通」和「Helper 没装」
+      // 会再次退化成同一个「失败」。
+      setHealth(await diagnoseRemoteConnection(profile, secret, error));
     } finally {
       setChecking(false);
+    }
+  };
+
+  const handleConnect = async () => {
+    if (!profile) return;
+    setConnecting(true);
+    try {
+      const result = await remoteApi.testConnection(profile, secret);
+      setHealth(result);
+    } catch (error) {
+      setHealth(await diagnoseRemoteConnection(profile, secret, error));
+    } finally {
+      setConnecting(false);
     }
   };
 
@@ -95,12 +173,7 @@ export function RemoteHealthPanel({
       );
     } catch (error) {
       const message = extractErrorMessage(error);
-      setHealth({
-        reachable: false,
-        helperInstalled: false,
-        capabilities: [],
-        lastError: message,
-      });
+      setHealth(await diagnoseRemoteConnection(profile, secret, error));
       toast.error(
         t("remote.health.installFailed", {
           defaultValue: "安装远程 Helper 失败: {{error}}",
@@ -123,12 +196,8 @@ export function RemoteHealthPanel({
           <span className="text-sm font-semibold">
             {t("remote.health.title", { defaultValue: "健康检查" })}
           </span>
-          <Badge variant={health?.reachable ? "default" : "outline"}>
-            {health
-              ? health.reachable
-                ? t("remote.health.ok", { defaultValue: "可连接" })
-                : t("remote.health.failed", { defaultValue: "失败" })
-              : t("remote.health.notChecked", { defaultValue: "未检查" })}
+          <Badge variant={connectionBadge.variant}>
+            {connectionBadge.label}
           </Badge>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
@@ -136,7 +205,7 @@ export function RemoteHealthPanel({
             size="sm"
             variant="outline"
             className="min-w-0"
-            disabled={!profile || checking || installing}
+            disabled={!profile || checking || connecting || installing}
             onClick={() => void handleInstall()}
           >
             <Download className="mr-2 h-4 w-4" />
@@ -146,9 +215,22 @@ export function RemoteHealthPanel({
           </Button>
           <Button
             size="sm"
+            variant="default"
+            className="min-w-0"
+            data-testid="remote-test-connection"
+            disabled={!profile || checking || connecting || installing}
+            onClick={() => void handleConnect()}
+          >
+            <Plug className="mr-2 h-4 w-4" />
+            {connecting
+              ? t("remote.health.connecting", { defaultValue: "连接中" })
+              : t("remote.health.connect", { defaultValue: "测试连接" })}
+          </Button>
+          <Button
+            size="sm"
             variant="outline"
             className="min-w-0"
-            disabled={!profile || checking || installing}
+            disabled={!profile || checking || connecting || installing}
             onClick={() => void handleCheck()}
           >
             <RefreshCw className="mr-2 h-4 w-4" />
@@ -158,6 +240,27 @@ export function RemoteHealthPanel({
           </Button>
         </div>
       </div>
+      {health && (
+        <div className="grid min-w-0 grid-cols-1 gap-0 border-b border-border-default sm:grid-cols-2">
+          <ConnectionStageRow
+            label={t("remote.health.stageSsh", { defaultValue: "SSH 连接" })}
+            state={connection.ssh}
+            t={t}
+          />
+          <ConnectionStageRow
+            label={t("remote.health.stageHelper", {
+              defaultValue: "远程 Helper",
+            })}
+            state={connection.helper}
+            t={t}
+          />
+        </div>
+      )}
+      {connectionHint && (
+        <div className="border-b border-border-default px-4 py-2 text-xs text-muted-foreground">
+          {connectionHint}
+        </div>
+      )}
       <div className="grid min-w-0 grid-cols-1 gap-0 sm:grid-cols-2 xl:grid-cols-5">
         <Metric
           label={t("remote.fields.host", { defaultValue: "主机" })}
@@ -281,6 +384,32 @@ export function RemoteHealthPanel({
         </div>
       )}
     </Card>
+  );
+}
+
+/** 连接结果里的一层（SSH 或 Helper）：圆点 + 标签 + 状态。 */
+function ConnectionStageRow({
+  label,
+  state,
+  t,
+}: {
+  label: string;
+  state: RemoteStageState;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 px-4 py-2 text-xs sm:border-r sm:last:border-r-0">
+      <span
+        aria-hidden
+        className={cn("h-2 w-2 shrink-0 rounded-full", STAGE_DOT[state])}
+      />
+      <span className="text-muted-foreground">{label}</span>
+      <span className="ml-auto font-medium text-foreground">
+        {t(STAGE_LABEL_KEY[state], {
+          defaultValue: STAGE_LABEL_DEFAULT[state],
+        })}
+      </span>
+    </div>
   );
 }
 

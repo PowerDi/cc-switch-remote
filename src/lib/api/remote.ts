@@ -24,6 +24,7 @@ import type { ProviderEditorSave, ProviderEditorView } from "./providers";
 import type { StreamCheckResult } from "./connectivity-check";
 import type { BackupEntry, LogConfig, SettingsSaveResult } from "./settings";
 import type { SubscriptionQuota } from "@/types/subscription";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import type { Prompt } from "./prompts";
 import type {
   DiscoverableSkill,
@@ -111,8 +112,17 @@ export interface RemoteConnectionSecret {
   password?: string;
 }
 
+/** 上一次远程检查失败发生在哪一层。SSH 未连通时不能报告「Helper 未安装」。 */
+export type RemoteConnectionStage =
+  | "ssh-transport"
+  | "ssh-auth"
+  | "helper-missing"
+  | "helper-error";
+
 export interface RemoteHealth {
   reachable: boolean;
+  /** SSH 层（连接 + 认证）是否可用，与 Helper 是否安装无关。 */
+  sshReachable?: boolean;
   helperInstalled: boolean;
   helperVersion?: string;
   helperBuild?: string;
@@ -124,6 +134,7 @@ export interface RemoteHealth {
   helperUpdateError?: string;
   platform?: "linux" | "macos" | "unknown";
   capabilities: string[];
+  failureStage?: RemoteConnectionStage | null;
   lastError?: string;
 }
 
@@ -409,6 +420,17 @@ export const remoteApi = {
       // the existing full health/update-check behavior for management pages.
       ...(includeLatest ? {} : { includeLatest: false }),
     });
+  },
+
+  /**
+   * 显式的「连接」动作：分层返回 SSH 与 Helper 状态，SSH 失败也返回结构化
+   * 结果而不是裸错误，界面因此能区分「连不上」与「Helper 没装」。
+   */
+  testConnection(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<RemoteHealth> {
+    return invoke<RemoteHealth>("remote_test_connection", { profile, secret });
   },
 
   installHelper(
@@ -2660,3 +2682,28 @@ export const remoteApi = {
     });
   },
 };
+
+/**
+ * 把一次失败的远程检查转成有层次的结果。
+ *
+ * 「SSH 没通」与「Helper 没装」必须是两个不同结论：直接调用更早的
+ * `checkHealth` 时两者都只是一个裸错误，界面无法区分。连接测试本身也失败时
+ * 归到 SSH 传输层，并把原始报错原文交给界面展示。
+ */
+export async function diagnoseRemoteConnection(
+  profile: RemoteHostProfile,
+  secret?: RemoteConnectionSecret,
+  fallbackError?: unknown,
+): Promise<RemoteHealth> {
+  try {
+    return await remoteApi.testConnection(profile, secret);
+  } catch (error) {
+    // 诊断命令本身失败时不能编造失败层次，保留原始报错让用户判断。
+    return {
+      reachable: false,
+      helperInstalled: false,
+      capabilities: [],
+      lastError: extractErrorMessage(fallbackError ?? error),
+    };
+  }
+}

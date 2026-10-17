@@ -8,10 +8,11 @@ use crate::proxy::types::{
 };
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::remote::{
-    build_helper_install_args, build_ssh_args, delete_profile, delete_profile_secret,
-    detect_helper_asset_target, install_helper_json, load_profiles, remote_session_manager,
-    run_helper_json, save_profile_secret, upload_helper_bytes_and_verify_json, upsert_profile,
-    validate_profile, RemoteAuthMethod, RemoteCapability, RemoteConnectionSecret, RemoteHealth,
+    build_helper_install_args, build_ssh_args, classify_remote_failure_message, delete_profile,
+    delete_profile_secret, detect_helper_asset_target, install_helper_json, load_profiles,
+    probe_remote_helper_presence, remote_session_manager, run_helper_json, save_profile_secret,
+    upload_helper_bytes_and_verify_json, upsert_profile, validate_profile, RemoteAuthMethod,
+    RemoteCapability, RemoteConnectionSecret, RemoteConnectionStage, RemoteHealth,
     RemoteHelperAssetTarget, RemoteHelperInstallSource, RemoteHostProfile, RemotePlatform,
     RemoteSessionStatus,
 };
@@ -198,6 +199,63 @@ pub async fn remote_check_health(
         Ok(None)
     };
     Ok(remote_health_from_status_with_latest_result(status, latest))
+}
+
+/// 显式的「连接」动作：分层报告 SSH 与 Helper 状态。
+///
+/// 与 `remote_check_health` 的区别是它不会因为 SSH 失败而返回裸错误：
+/// 界面需要区分「SSH 没连上」和「SSH 连上了但 Helper 没装」，
+/// 这两种情况用户的下一步操作完全不同，也不能把后者标成「未连接」。
+#[tauri::command]
+pub async fn remote_test_connection(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<RemoteHealth, String> {
+    validate_profile(&profile).map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        test_remote_connection_blocking(&profile, secret.as_ref()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Remote connection test task failed: {e}"))?
+}
+
+fn test_remote_connection_blocking(
+    profile: &RemoteHostProfile,
+    secret: Option<&RemoteConnectionSecret>,
+) -> Result<RemoteHealth, crate::error::AppError> {
+    match run_helper_json::<serde_json::Value>(profile, &["status".to_string()], secret) {
+        Ok(status) => Ok(remote_health_from_status_with_latest(status, None)),
+        Err(helper_error) => {
+            let helper_message = helper_error.to_string();
+            // 只有一次额外的 SSH 探针，且仅在本查询已经失败时才会发出：
+            // 探针同时确认 SSH 层可用，以及 Helper 文件是否真的存在。
+            match probe_remote_helper_presence(profile, secret) {
+                Ok(true) => Ok(remote_connection_failure_health(
+                    true,
+                    true,
+                    RemoteConnectionStage::HelperError,
+                    helper_message,
+                )),
+                Ok(false) => Ok(remote_connection_failure_health(
+                    true,
+                    false,
+                    RemoteConnectionStage::HelperMissing,
+                    helper_message,
+                )),
+                Err(ssh_error) => {
+                    let ssh_message = ssh_error.to_string();
+                    let stage = classify_remote_failure_message(&ssh_message)
+                        .unwrap_or(RemoteConnectionStage::SshTransport);
+                    Ok(remote_connection_failure_health(
+                        false,
+                        false,
+                        stage,
+                        ssh_message,
+                    ))
+                }
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -1345,6 +1403,8 @@ fn remote_health_from_status_with_latest(
 
     RemoteHealth {
         reachable: true,
+        // 能从 Helper 拿到 status，说明 SSH 连接与认证都已经通过。
+        ssh_reachable: true,
         helper_installed: true,
         helper_version,
         helper_build,
@@ -1372,7 +1432,35 @@ fn remote_health_from_status_with_latest(
                     .collect()
             })
             .unwrap_or_default(),
+        failure_stage: None,
         last_error: None,
+    }
+}
+
+/// 连接失败时的结构化结果：告诉界面失败在哪一层，
+/// 而不是让「没装 Helper」和「SSH 连不上」都变成一个裸错误。
+fn remote_connection_failure_health(
+    ssh_reachable: bool,
+    helper_installed: bool,
+    stage: RemoteConnectionStage,
+    message: String,
+) -> RemoteHealth {
+    RemoteHealth {
+        reachable: false,
+        ssh_reachable,
+        helper_installed,
+        helper_version: None,
+        helper_build: None,
+        helper_arch: None,
+        helper_latest_version: None,
+        helper_latest_build: None,
+        helper_latest_asset: None,
+        helper_update_available: false,
+        helper_update_error: None,
+        platform: None,
+        capabilities: Vec::new(),
+        failure_stage: Some(stage),
+        last_error: Some(message),
     }
 }
 

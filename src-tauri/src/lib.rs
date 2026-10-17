@@ -1673,6 +1673,7 @@ pub fn run() {
             commands::remote_get_session_status,
             commands::remote_close_session,
             commands::remote_check_health,
+            commands::remote_test_connection,
             commands::remote_install_helper,
             commands::remote_get_settings,
             commands::remote_save_settings,
