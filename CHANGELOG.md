@@ -2,6 +2,8 @@
 
 All notable changes to CC Switch Remote will be documented in this file.
 
+> **Fork note (v4.0.9):** baseline is still upstream **v4.0.4**. Adds staged remote connection diagnosis and Windows SSH password auth. A new "test connection" action reports SSH and remote Helper as separate layers (reachable / not installed / cannot run) instead of one "failed" badge, so a missing Helper is no longer shown as an unreachable host; failed checks and failed Helper installs run the same diagnosis. Windows password auth now works through a bundled `cc-switch-remote-askpass` sidecar (the Unix askpass trick needs `/bin/sh`), generated at build time rather than committed. Remote capability gates also invalidate only the active revision's `installed-capabilities` query. No Helper reinstall and no database schema change. See `docs/release-notes/v4.0.9-remote-zh.md`.
+
 > **Fork note (v4.0.8):** baseline is still upstream **v4.0.4**. Fixes remote Helper capability detection: the desktop app previously dropped `app-mode` and `provider-editor` while converting a valid Helper health response, so supported remote controls could appear unavailable. Capability checks now distinguish SSH status from GitHub release lookup; a release-check network failure no longer hides installed Helper capabilities. No database schema change; Helper 4.0.6 already advertises `app-mode` and does not need to be reinstalled. See `docs/release-notes/v4.0.8-remote-zh.md`.
 
 > **Fork note (v4.0.7):** baseline is still upstream **v4.0.4**. 4.0.7 is a UI-consistency
