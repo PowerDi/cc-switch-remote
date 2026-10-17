@@ -566,7 +566,9 @@ jobs:
           } else {
             Write-Warning 'No Windows MSI installer found'
           }
-          # 绿色版（portable）：仅可执行文件打 zip（不参与 Updater）
+          # 绿色版（portable）：可执行文件 + SSH askpass sidecar 打 zip（不参与 Updater）
+          # 便携版没有安装器，askpass 必须和主程序放在同一目录，否则 Windows 上的
+          # SSH 密码认证会提示缺少 askpass 组件。
           $exeCandidates = @(
             'src-tauri/target/release/cc-switch-remote.exe',
             'src-tauri/target/x86_64-pc-windows-msvc/release/cc-switch-remote.exe'
@@ -576,6 +578,15 @@ jobs:
             $portableDir = 'release-assets/CC-Switch-Remote-Portable'
             New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
             Copy-Item $exePath $portableDir
+            $exeDir = Split-Path -Parent $exePath
+            $askpass = Get-ChildItem -Path $exeDir -Filter 'cc-switch-remote-askpass*.exe' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($null -ne $askpass) {
+              Copy-Item $askpass.FullName (Join-Path $portableDir 'cc-switch-remote-askpass.exe')
+              Write-Host "Portable askpass sidecar copied: $($askpass.Name)"
+            } else {
+              Write-Warning 'SSH askpass sidecar not found; the portable build will not support SSH password auth'
+            }
             $portableIniPath = Join-Path $portableDir 'portable.ini'
             $portableContent = @(
               '# CC Switch Remote portable build marker',
