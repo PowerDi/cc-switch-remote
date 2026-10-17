@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
@@ -107,6 +107,8 @@ export function RemoteSettingsPage({
 }: RemoteSettingsPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const queryClientRef = useRef(queryClient);
+  queryClientRef.current = queryClient;
   const targetKey = getManagementTargetKey(target);
   const { capture, isCurrent, revision } = useTargetAsyncGeneration(target);
   const [activeTab, setActiveTab] = useState(coerceRemoteTab(defaultTab));
@@ -181,8 +183,13 @@ export function RemoteSettingsPage({
       const result = await remoteApi.checkHealth(target.profile, target.secret);
       if (!isCurrent(generation)) return null;
       setHealth(result);
-      void queryClient.invalidateQueries({
-        queryKey: ["remote-health", targetKey],
+      void queryClientRef.current.invalidateQueries({
+        queryKey: [
+          "remote-health",
+          targetKey,
+          revision,
+          "installed-capabilities",
+        ],
       });
       return result;
     } catch (error) {
@@ -204,7 +211,7 @@ export function RemoteSettingsPage({
   }, [
     capture,
     isCurrent,
-    queryClient,
+    revision,
     t,
     target.profile,
     target.secret,
@@ -249,8 +256,13 @@ export function RemoteSettingsPage({
       );
       if (!isCurrent(generation)) return;
       setHealth(result);
-      void queryClient.invalidateQueries({
-        queryKey: ["remote-health", targetKey],
+      void queryClientRef.current.invalidateQueries({
+        queryKey: [
+          "remote-health",
+          targetKey,
+          revision,
+          "installed-capabilities",
+        ],
       });
       toast.success(
         t("remote.health.installSuccess", {

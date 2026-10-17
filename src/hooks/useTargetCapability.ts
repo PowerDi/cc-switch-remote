@@ -42,13 +42,14 @@ export function useTargetCapabilityState(
     staleTime: 30_000,
     retry: false,
   });
+  const remoteUnavailable =
+    health.data?.reachable === false || health.data?.helperInstalled === false;
   const supported =
     enabled &&
     (target.type === "local" ||
       (!health.isError &&
-        health.data?.reachable === true &&
-        health.data.helperInstalled &&
-        health.data.capabilities.includes(capability)));
+        !remoteUnavailable &&
+        health.data?.capabilities.includes(capability) === true));
   const state = !enabled
     ? "disabled"
     : target.type === "local"
@@ -57,7 +58,7 @@ export function useTargetCapabilityState(
         ? "error"
         : !health.data
           ? "loading"
-          : !health.data.reachable || !health.data.helperInstalled
+          : remoteUnavailable
             ? "error"
             : supported
               ? "supported"

@@ -528,7 +528,11 @@ export function SwitchModePanel({
   if (!appModeSupported) {
     return (
       <>
-        <div className="px-4 pb-3 text-sm text-fg-2" role="status">
+        <div
+          className="px-4 pb-3 text-sm text-fg-2"
+          role={appModeCapability.state === "loading" ? undefined : "status"}
+          aria-live="polite"
+        >
           {appModeCapability.state === "loading"
             ? t("remote.settings.routing.appModeChecking")
             : appModeCapability.state === "error"
