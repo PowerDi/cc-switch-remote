@@ -35,7 +35,8 @@ export function CodexStaleClientsNotice({
   const restart = useRestartCodexAppServerDaemon(target);
   const acknowledge = useAcknowledgeCodexStaleClients(target);
   const dismiss = () => {
-    if (staleClients.unverified && target.type === "local") acknowledge.mutate();
+    if (staleClients.unverified && target.type === "local")
+      acknowledge.mutate();
     onDismiss?.();
   };
 

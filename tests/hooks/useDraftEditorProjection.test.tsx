@@ -62,6 +62,7 @@ describe("useDraftEditorProjection", () => {
       );
       result.current.projectDraft({ config: "b" }, "official", apply);
     });
+    // Fork：第六个参数是管理目标，本机不传
     expect(getEditorView).toHaveBeenNthCalledWith(
       1,
       "codex",
@@ -69,11 +70,13 @@ describe("useDraftEditorProjection", () => {
       undefined,
       undefined,
       copilotMeta,
+      undefined,
     );
     expect(getEditorView).toHaveBeenLastCalledWith(
       "codex",
       { config: "b" },
       "official",
+      undefined,
       undefined,
       undefined,
     );

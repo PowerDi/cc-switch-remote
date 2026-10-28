@@ -97,9 +97,8 @@ interface ManagedAccountsGroupProps {
   onSetDefault?: (accountId: string) => void;
   settingDefault: boolean;
   onRemove: (accountId: string, login: string) => void;
-  onRemoveAll?: () => void;
   removing: boolean;
-  /** 注销（logout）进行中：破坏性动作同样要锁住，避免连点两个销毁操作 */
+  /** 注销（logout）进行中：删账号同样要锁住，避免连点两个销毁操作 */
   logoutPending?: boolean;
   login: GroupLoginFlow;
   /** 确认框等 */
@@ -137,7 +136,6 @@ export function ManagedAccountsGroup({
   onSetDefault,
   settingDefault,
   onRemove,
-  onRemoveAll,
   removing,
   logoutPending = false,
   login,
@@ -257,37 +255,6 @@ export function ManagedAccountsGroup({
             {t("authCenter.addAccount", { defaultValue: "添加账号" })}
           </Button>
         )}
-        {ready && onRemoveAll && accounts.length > 1 && (
-          <DropdownMenu>
-            <HoverTip content={t("common.more", { defaultValue: "更多" })}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="quiet"
-                  size="icon-compact"
-                  aria-label={t("authCenter.groupMenu", {
-                    defaultValue: "{{service}} 的更多操作",
-                    service: name,
-                  })}
-                >
-                  <MoreHorizontal className="h-[15px] w-[15px]" />
-                </Button>
-              </DropdownMenuTrigger>
-            </HoverTip>
-            <DropdownMenuContent
-              align="end"
-              className="w-[168px] rounded-panel bg-surface p-1 shadow-v7-md"
-            >
-              <DropdownMenuItem
-                disabled={removing || logoutPending}
-                onSelect={onRemoveAll}
-                className="h-[30px] rounded-control px-2.5 text-body text-danger-text focus:text-danger-text"
-              >
-                {t("authCenter.removeAll", { defaultValue: "删除全部账号…" })}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
       </div>
 
       {notice && <div className="px-3 pb-3">{notice}</div>}
@@ -335,6 +302,7 @@ export function ManagedAccountsGroup({
             pendingId={pendingId}
             settingDefault={settingDefault}
             removing={removing}
+            logoutPending={logoutPending}
             onReauth={reauth}
             onSetDefault={onSetDefault}
             onRemove={onRemove}
@@ -530,10 +498,10 @@ interface AccountRowProps {
   pendingId: string;
   settingDefault: boolean;
   removing: boolean;
+  logoutPending: boolean;
   onReauth: (accountId: string) => void;
   onSetDefault?: (accountId: string) => void;
   onRemove: (accountId: string, login: string) => void;
-  onRemoveAll?: () => void;
 }
 
 function AccountRow({
@@ -545,6 +513,7 @@ function AccountRow({
   pendingId,
   settingDefault,
   removing,
+  logoutPending,
   onReauth,
   onSetDefault,
   onRemove,
@@ -661,7 +630,9 @@ function AccountRow({
             </DropdownMenuItem>
           )}
           <DropdownMenuItem
-            disabled={removing || Boolean(account.removeDisabledReason)}
+            disabled={
+              removing || logoutPending || Boolean(account.removeDisabledReason)
+            }
             onSelect={() => onRemove(account.id, account.login)}
             className={cn(
               "min-h-[30px] flex-col items-start justify-center gap-0 rounded-control px-2.5 text-body text-danger-text focus:text-danger-text",

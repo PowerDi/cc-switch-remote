@@ -7,7 +7,9 @@ import { PricingEditModal } from "@/components/usage/PricingEditModal";
 vi.mock("@/lib/query", () => ({
   useSettingsQuery: () => ({ data: { usageConfirmed: true } }),
 }));
-vi.mock("@/lib/query/usage", () => ({
+// Fork：用量脚本弹窗按管理目标生成查询键（usageScriptResultKey），保留真实实现
+vi.mock("@/lib/query/usage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/query/usage")>()),
   useUpdateModelPricing: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock("@/components/JsonEditor", () => ({ default: () => <div /> }));

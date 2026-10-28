@@ -23,16 +23,23 @@ import {
   type FetchedModel,
 } from "@/lib/api/model-fetch";
 
-vi.mock("@/lib/api/copilot", () => ({
-  copilotGetModels: vi.fn(),
-  copilotGetModelsForAccount: vi.fn(),
-}));
-vi.mock("@/lib/api/model-fetch", () => ({
-  fetchModelsForConfig: vi.fn(),
-  fetchXaiOauthModels: vi.fn(),
-  modelFetchRequestHeaders: vi.fn(),
-  showFetchModelsError: vi.fn(),
-}));
+// Fork：表单走按管理目标分流的包装函数，mock 里补上它们的本机分支（见 forkModelFetchMocks）
+vi.mock("@/lib/api/copilot", async () => {
+  const { withForkCopilot } = await import("../utils/forkModelFetchMocks");
+  return withForkCopilot({
+    copilotGetModels: vi.fn(),
+    copilotGetModelsForAccount: vi.fn(),
+  });
+});
+vi.mock("@/lib/api/model-fetch", async () => {
+  const { withForkModelFetch } = await import("../utils/forkModelFetchMocks");
+  return withForkModelFetch({
+    fetchModelsForConfig: vi.fn(),
+    fetchXaiOauthModels: vi.fn(),
+    modelFetchRequestHeaders: vi.fn(),
+    showFetchModelsError: vi.fn(),
+  });
+});
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
 }));
@@ -238,7 +245,11 @@ describe("Codex model-fetch lifecycle", () => {
           "github-account",
         );
       } else if (kind === "xai") {
-        expect(fetchXaiOauthModels).toHaveBeenCalledWith("xai-account");
+        // Fork：第二个参数是管理目标，本机表单不传
+        expect(fetchXaiOauthModels).toHaveBeenCalledWith(
+          "xai-account",
+          undefined,
+        );
       } else {
         expect(fetchModelsForConfig).toHaveBeenCalledWith(
           props.codexBaseUrl,

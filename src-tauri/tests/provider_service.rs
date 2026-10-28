@@ -3306,8 +3306,8 @@ fn claude_editor_global_settings_reach_account_dirs() {
         &serde_json::to_string_pretty(&a).expect("serialize"),
     );
 
-    // 本机账号表里有一个账号，目录已经建好
-    let app_dir = home.join(".cc-switch");
+    // 本机账号表里有一个账号，目录已经建好（fork 的应用目录是 ~/.cc-switch-remote）
+    let app_dir = home.join(".cc-switch-remote");
     let local_id = "0123456789abcdef0123456789abcdef";
     let config_dir = app_dir
         .join("claude-accounts")

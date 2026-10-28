@@ -336,9 +336,11 @@ describe("ProviderList Component", () => {
     expect(handleEdit).toHaveBeenCalledWith(providerB);
     expect(handleDuplicate).toHaveBeenCalledWith(providerB);
     expect(handleDelete).toHaveBeenCalledWith(providerA);
+    // Fork：拖拽排序按管理目标写入
     expect(useDragSortMock).toHaveBeenCalledWith(
       { a: providerA, b: providerB },
       "claude",
+      { type: "local" },
     );
   });
 

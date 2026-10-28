@@ -14,12 +14,16 @@ const modelFetchApiMock = vi.hoisted(() => ({
   showFetchModelsError: vi.fn(),
 }));
 
-vi.mock("@/lib/api/model-fetch", () => ({
-  fetchModelsForConfig: modelFetchApiMock.fetchModelsForConfig,
-  fetchXaiOauthModels: modelFetchApiMock.fetchXaiOauthModels,
-  modelFetchRequestHeaders: modelFetchApiMock.modelFetchRequestHeaders,
-  showFetchModelsError: modelFetchApiMock.showFetchModelsError,
-}));
+// Fork：表单走按管理目标分流的包装函数，mock 里补上它们的本机分支（见 forkModelFetchMocks）
+vi.mock("@/lib/api/model-fetch", async () => {
+  const { withForkModelFetch } = await import("../utils/forkModelFetchMocks");
+  return withForkModelFetch({
+    fetchModelsForConfig: modelFetchApiMock.fetchModelsForConfig,
+    fetchXaiOauthModels: modelFetchApiMock.fetchXaiOauthModels,
+    modelFetchRequestHeaders: modelFetchApiMock.modelFetchRequestHeaders,
+    showFetchModelsError: modelFetchApiMock.showFetchModelsError,
+  });
+});
 
 // 上游 v4.0.0 起 CodexFormFields 内部使用 useModelMetadataFill（依赖
 // QueryClientProvider）；本文件只测 model fetch 行为，mock 成 no-op 即可。

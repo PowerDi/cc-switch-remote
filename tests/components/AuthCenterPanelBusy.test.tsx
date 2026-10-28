@@ -18,6 +18,17 @@ vi.mock("@/components/providers/forms/XaiOAuthSection", () => ({
     <button onClick={() => onBusyChange?.(true)}>xai-busy</button>
   ),
 }));
+// 上游 v4.0.21 新增的本机账号区块（Claude / Kimi / Agy）不参与这里的锁，
+// 它们自带 React Query 查询，单测里直接替换掉。
+vi.mock("@/components/providers/forms/ClaudeOfficialSection", () => ({
+  ClaudeOfficialSection: () => null,
+}));
+vi.mock("@/components/providers/KimiAccountLogin", () => ({
+  KimiAccountLogin: () => null,
+}));
+vi.mock("@/components/providers/forms/AgyOAuthSection", () => ({
+  AgyOAuthSection: () => null,
+}));
 
 describe("AuthCenterPanel interaction lock", () => {
   it.each(["copilot", "codex", "xai"])(

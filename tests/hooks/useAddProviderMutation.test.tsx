@@ -83,10 +83,12 @@ describe("useAddProviderMutation", () => {
         addToLive: false,
       }),
     );
+    // Fork：第四个参数是管理目标
     expect(apiMocks.add).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Relay" }),
       "agy",
       false,
+      { type: "local" },
       undefined,
     );
   });

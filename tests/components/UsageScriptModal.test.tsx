@@ -201,9 +201,11 @@ describe("UsageScriptModal Oh My Pi credentials", () => {
       screen.getByRole("button", { name: "usageScript.testScript" }),
     );
 
+    // Fork：第三个参数是管理目标
     expect(getBalance).toHaveBeenCalledWith(
       "https://api.deepseek.com/v1",
       "sk-omp",
+      { type: "local" },
     );
   });
 });

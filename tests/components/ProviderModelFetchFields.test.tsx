@@ -22,6 +22,8 @@ vi.mock("@/lib/api/model-fetch", () => ({
   canUseStoredRemoteProviderApiKey:
     modelFetchApiMock.canUseStoredRemoteProviderApiKey,
   fetchModelsForProviderConfig: modelFetchApiMock.fetchModelsForProviderConfig,
+  // 上游 v4.0.21 起表单会把请求头覆盖一并传给获取模型
+  modelFetchRequestHeaders: () => undefined,
   showFetchModelsError: modelFetchApiMock.showFetchModelsError,
 }));
 

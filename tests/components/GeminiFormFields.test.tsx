@@ -10,7 +10,11 @@ const api = vi.hoisted(() => ({
   getAgyModels: vi.fn(),
   showFetchModelsError: vi.fn(),
 }));
-vi.mock("@/lib/api/model-fetch", () => api);
+// Fork：表单走按管理目标分流的包装函数，mock 里补上它们的本机分支（见 forkModelFetchMocks）
+vi.mock("@/lib/api/model-fetch", async () => {
+  const { withForkModelFetch } = await import("../utils/forkModelFetchMocks");
+  return withForkModelFetch(api);
+});
 
 function Harness(props: Partial<ComponentProps<typeof GeminiFormFields>>) {
   const form = useForm();

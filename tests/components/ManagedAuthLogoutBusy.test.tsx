@@ -103,15 +103,15 @@ describe("managed auth logout interaction lock", () => {
 
       await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(true));
 
-      // v4 把「注销/移除全部账号」收进了账号组菜单：注销进行中它必须是禁用的
-      // 账号组的 ⋯ 菜单排在每条账号之前
-      const groupMenu = screen.getAllByRole("button", {
+      // 上游 v4.0.21 去掉了「删除全部账号」，破坏性动作只剩每行的「删除账号…」：
+      // 注销进行中它必须是禁用的
+      const rowMenu = screen.getAllByRole("button", {
         name: /的更多操作/,
       })[0];
-      await user.click(groupMenu);
+      await user.click(rowMenu);
       // Radix 菜单项用 aria-disabled 表达禁用
       expect(
-        await screen.findByRole("menuitem", { name: /删除全部账号/ }),
+        await screen.findByRole("menuitem", { name: /删除账号/ }),
       ).toHaveAttribute("aria-disabled", "true");
     },
   );

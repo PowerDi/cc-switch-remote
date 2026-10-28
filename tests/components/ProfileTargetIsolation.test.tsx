@@ -337,9 +337,11 @@ describe("shared profile UI target safety", () => {
     });
     render(<ProfileSwitcher activeApp="codex" target={remote} />, { wrapper });
     await waitFor(() =>
+      // 能力门控只查已安装 Helper，不查 GitHub 最新版本（v4.0.8 起）
       expect(invoke).toHaveBeenCalledWith("remote_check_health", {
         profile: remote.profile,
         secret: remote.secret,
+        includeLatest: false,
       }),
     );
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();

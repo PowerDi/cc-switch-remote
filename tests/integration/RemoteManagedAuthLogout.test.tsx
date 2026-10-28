@@ -89,14 +89,16 @@ describe("remote managed-auth logout busy wiring", () => {
     );
   });
 
-  it("locks the page through the real hook, section, and Auth Center while logout is pending", async () => {
-    let resolveLogout!: () => void;
-    const logout = vi.spyOn(authApi, "authLogout").mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveLogout = resolve;
-        }),
-    );
+  it("locks the page through the real hook, section, and Auth Center while an account removal is pending", async () => {
+    let resolveRemove!: () => void;
+    const removeAccount = vi
+      .spyOn(authApi, "authRemoveAccount")
+      .mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveRemove = resolve;
+          }),
+      );
     const onInteractionBlockedChange = vi.fn();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -120,32 +122,36 @@ describe("remote managed-auth logout busy wiring", () => {
       </Wrapper>,
     );
 
-    // v4 把「注销所有账号」收进了账号组的 ⋯ 菜单（「删除全部账号…」→ 确认框），
-    // 该动作最终调用 provider 级的 authLogout。
-    const groupMenuTrigger = () =>
-      screen.getAllByRole("button", { name: /的更多操作/ })[0];
+    // 上游 v4.0.21（ee83fd89）去掉了账号组标题行的「删除全部账号」，
+    // 认证中心只能逐个删账号：每行账号的 ⋯ 菜单 →「删除账号…」→ 确认框。
+    const rowMenuTrigger = () =>
+      screen.getByRole("button", { name: /a@example\.com 的更多操作/ });
     await waitFor(() =>
       expect(onInteractionBlockedChange).toHaveBeenLastCalledWith(false),
     );
-    await user.click(groupMenuTrigger());
-    await user.click(
-      await screen.findByRole("menuitem", { name: /删除全部账号/ }),
-    );
-    await user.click(
-      await screen.findByRole("button", { name: /删除 2 个账号/ }),
-    );
+    await user.click(rowMenuTrigger());
+    await user.click(await screen.findByRole("menuitem", { name: /删除账号/ }));
+    await user.click(await screen.findByRole("button", { name: /^删除账号$/ }));
 
-    await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(removeAccount).toHaveBeenCalledWith(
+        "github_copilot",
+        "copilot-account-a",
+        expect.objectContaining({ type: "remote", profile }),
+      ),
+    );
     await waitFor(() =>
       expect(onInteractionBlockedChange).toHaveBeenLastCalledWith(true),
     );
-    // 注销进行中：同一组 ⋯ 菜单里的破坏性动作被锁住（logoutPending）
-    await user.click(groupMenuTrigger());
+    // 删除进行中：其他账号行的删除同样被锁住
+    await user.click(
+      screen.getByRole("button", { name: /b@example\.com 的更多操作/ }),
+    );
     expect(
-      await screen.findByRole("menuitem", { name: /删除全部账号/ }),
+      await screen.findByRole("menuitem", { name: /删除账号/ }),
     ).toHaveAttribute("aria-disabled", "true");
 
-    resolveLogout();
+    resolveRemove();
     await waitFor(() =>
       expect(onInteractionBlockedChange).toHaveBeenLastCalledWith(false),
     );

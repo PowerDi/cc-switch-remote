@@ -3371,10 +3371,11 @@ impl RequestForwarder {
         }
         #[cfg(feature = "desktop")]
         {
-            let app_handle = self
-                .app_handle
-                .as_ref()
-                .ok_or_else(|| ProxyError::ConfigError("Copilot runtime unavailable".into()))?;
+            let app_handle = self.app_handle.as_ref().ok_or_else(|| {
+                ProxyError::ConfigError(format!(
+                    "GitHub Copilot capabilities for model {model_id} cannot be resolved: AppHandle unavailable"
+                ))
+            })?;
             let copilot_state = app_handle.state::<CopilotAuthState>();
             let copilot_auth = copilot_state.0.read().await;
             let account_id = provider
@@ -3393,9 +3394,9 @@ impl RequestForwarder {
             return resolved.map_err(|error| codex_copilot_lookup_error(model_id, error));
         }
         #[cfg(not(feature = "desktop"))]
-        Err(ProxyError::ConfigError(
-            "Copilot runtime unavailable".into(),
-        ))
+        Err(ProxyError::ConfigError(format!(
+            "GitHub Copilot capabilities for model {model_id} cannot be resolved: Copilot runtime unavailable"
+        )))
     }
 
     async fn copilot_model_vendor(&self, provider: &Provider, model_id: &str) -> Option<String> {

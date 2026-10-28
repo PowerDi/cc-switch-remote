@@ -7,7 +7,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
 import { UNKNOWN_PROJECT_DIR_KEY } from "@/components/sessions/utils";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
@@ -96,7 +96,16 @@ const EXPANDED_KEY = "cc-switch.sessionManager.expandedProjects";
 const GROUP_MODE_STORAGE_KEY = "cc-switch.sessionManager.groupMode";
 
 describe("SessionManagerPage", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    // 会话按「今天 / 昨天 / 更早」分组，样例会话在 1–4 小时前：凌晨跑会落进「昨天」。
+    // 只固定 Date（中午），定时器保持真实，userEvent / waitFor 不受影响。
+    const noon = new Date();
+    noon.setHours(12, 0, 0, 0);
+    vi.useFakeTimers({ toFake: ["Date"], now: noon });
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     remoteListSessionsMock.mockReset();

@@ -108,6 +108,9 @@ function mockRemote(capabilities = ["providers", "app-mode", "settings"]) {
     http.post(`${TAURI_ENDPOINT}/remote_get_settings`, () =>
       HttpResponse.json({}),
     ),
+    http.post(`${TAURI_ENDPOINT}/remote_get_routing_failover_queue`, () =>
+      HttpResponse.json([]),
+    ),
     http.post(`${TAURI_ENDPOINT}/remote_get_routing_runtime_status`, () =>
       HttpResponse.json({ running: false, address: "127.0.0.1", port: 15721 }),
     ),
@@ -218,11 +221,16 @@ describe("SwitchModePanel — 远端目标", () => {
     mockRemote(["providers", "settings"]);
     renderPanel();
 
-    expect(
-      (await screen.findAllByRole("status")).some((element) =>
-        /不支持按应用切换/.test(element.textContent ?? ""),
-      ),
-    ).toBe(true);
+    // 面板里还有别的 status 区域（先渲染出来且为空），所以按文字等这条说明出现
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole("status")
+          .some((element) =>
+            /不支持按应用切换/.test(element.textContent ?? ""),
+          ),
+      ).toBe(true),
+    );
     // 能力不支持时不发任何模式命令
     expect(
       remoteCalls.some((call) => call.command === "remote_get_app_mode"),

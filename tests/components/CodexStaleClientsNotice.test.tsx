@@ -81,12 +81,17 @@ describe("CodexStaleClientsNotice", () => {
       screen.getByText("proxy.stackMode.codexStale.unverifiedHint"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "proxy.stackMode.codexStale.restart" }),
+      screen.queryByRole("button", {
+        name: "proxy.stackMode.codexStale.restart",
+      }),
     ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "common.close" }));
     await waitFor(() => expect(acknowledged).toBe(1));
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["providers", "codex"] });
+    // Fork：只刷新当前管理目标的供应商列表
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["providers", "codex", "local"],
+    });
   });
 
   it("does not record a dismissal for a notice backed by the process table", () => {
