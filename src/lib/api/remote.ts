@@ -12,6 +12,7 @@ import type {
   OpenClawToolsConfig,
   OpenClawWriteOutcome,
   Provider,
+  ProviderMeta,
   SessionMessage,
   SessionMeta,
   UniversalProvider,
@@ -46,6 +47,7 @@ import type {
   RemoteSnapshotInfo,
 } from "@/types";
 import type {
+  RouteSwitchResult,
   AppProxyConfig,
   AppRoutingPreflight,
   CircuitBreakerConfig,
@@ -364,6 +366,60 @@ async function invokeWithPreviewFallback<T>(
 }
 
 export const remoteApi = {
+  getOpenCodeDefaultModel(
+    profile: RemoteHostProfile,
+    secret?: RemoteConnectionSecret,
+  ): Promise<string | null> {
+    return invoke("remote_get_opencode_default_model", { profile, secret });
+  },
+  setOpenCodeDefaultModel(
+    profile: RemoteHostProfile,
+    model: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<void> {
+    return invoke("remote_set_opencode_default_model", {
+      profile,
+      model,
+      secret,
+    });
+  },
+  getPiCurrentState(
+    profile: RemoteHostProfile,
+    app: import("./pi").PiFamilyAppId,
+    secret?: RemoteConnectionSecret,
+  ): Promise<import("./pi").PiCurrentState> {
+    return invoke("remote_get_pi_current_state", { profile, app, secret });
+  },
+  updatePiProviderUsageScript(
+    profile: RemoteHostProfile,
+    app: import("./pi").PiFamilyAppId,
+    id: string,
+    usageScript: import("@/types").UsageScript,
+    secret?: RemoteConnectionSecret,
+  ): Promise<boolean> {
+    return invoke("remote_update_pi_provider_usage_script", {
+      profile,
+      app,
+      id,
+      usageScript,
+      secret,
+    });
+  },
+  getUsageFirstDate(
+    profile: RemoteHostProfile,
+    appType?: string,
+    providerName?: string,
+    model?: string,
+    secret?: RemoteConnectionSecret,
+  ): Promise<string | null> {
+    return invoke("remote_get_usage_first_date", {
+      profile,
+      appType,
+      providerName,
+      model,
+      secret,
+    });
+  },
   listProfiles(): Promise<RemoteHostProfile[]> {
     return invokeWithPreviewFallback(
       "remote_list_profiles",
@@ -1130,6 +1186,7 @@ export const remoteApi = {
     category?: string,
     providerId?: string,
     secret?: RemoteConnectionSecret,
+    meta?: ProviderMeta,
   ): Promise<ProviderEditorView> {
     return invoke<ProviderEditorView>("remote_get_provider_editor_view", {
       profile,
@@ -1137,6 +1194,7 @@ export const remoteApi = {
       settingsConfig,
       ...(category ? { category } : {}),
       ...(providerId ? { providerId } : {}),
+      ...(meta ? { meta } : {}),
       secret,
     });
   },
@@ -2036,8 +2094,8 @@ export const remoteApi = {
     appType: string,
     providerId: string,
     secret?: RemoteConnectionSecret,
-  ): Promise<void> {
-    return invoke("remote_set_app_route", {
+  ): Promise<RouteSwitchResult> {
+    return invoke<RouteSwitchResult>("remote_set_app_route", {
       profile,
       appType,
       providerId,

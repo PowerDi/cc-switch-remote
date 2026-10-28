@@ -58,6 +58,7 @@ describe("provider editor target routing", () => {
       { env: {} },
       undefined,
       "p1",
+      { providerType: "custom" },
       remote,
     );
     expect(invokeMock).toHaveBeenCalledWith("remote_get_provider_editor_view", {
@@ -65,6 +66,7 @@ describe("provider editor target routing", () => {
       app: "claude",
       settingsConfig: { env: {} },
       providerId: "p1",
+      meta: { providerType: "custom" },
       secret: remote.secret,
     });
     const [command] = invokeMock.mock.calls[0] as [string];

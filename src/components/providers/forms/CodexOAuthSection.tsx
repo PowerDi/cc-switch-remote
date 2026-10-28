@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Loader2, Plus, AlertTriangle, RefreshCw } from "lucide-react";
 import { useCodexOauth } from "./hooks/useCodexOauth";
+import type { CodexLoginMethod } from "@/lib/api/auth";
 import {
   ManagedAccountRemoveDialog,
   type ManagedAccountRemoveTarget,
@@ -21,6 +22,7 @@ import { useManagedAccountUsers } from "./hooks/useManagedAccountUsers";
 import CodexOauthAccountQuota from "@/components/CodexOauthAccountQuota";
 import type { ManagementTarget } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import {
   ManagedAccountsGroup,
   type GroupAccountRow,
@@ -80,7 +82,7 @@ interface CodexOAuthSectionProps {
  */
 export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   className,
-  target,
+  target = LOCAL_MANAGEMENT_TARGET,
   onBusyChange,
   mode = "manage",
   showAccountQuota = false,
@@ -101,6 +103,8 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   helpSide,
 }) => {
   const { t, i18n } = useTranslation();
+  const [loginMethod, setLoginMethod] =
+    React.useState<CodexLoginMethod>("browser");
 
   const {
     accounts,
@@ -124,9 +128,11 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
     removeAccount,
     setDefaultAccount,
     cancelAuth,
-    logout,
     refetchStatus,
-  } = useCodexOauth(target);
+  } = useCodexOauth(
+    target,
+    target.type === "remote" ? "device_code" : loginMethod,
+  );
   // 进行中的托管认证交互（轮询 / 注销 / 移除 / 设默认）：调用方据此锁住目标切换
   const interactionBusy =
     isPolling ||
@@ -139,7 +145,11 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
     return () => onBusyChange?.(false);
   }, [interactionBusy, onBusyChange]);
 
-  const accountUsers = useManagedAccountUsers("codex_oauth", defaultAccountId);
+  const accountUsers = useManagedAccountUsers(
+    "codex_oauth",
+    defaultAccountId,
+    target,
+  );
   const [removeTarget, setRemoveTarget] =
     React.useState<ManagedAccountRemoveTarget | null>(null);
 
@@ -182,11 +192,8 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   const confirmRemove = () => {
     const target = removeTarget;
     setRemoveTarget(null);
-    if (!target) return;
-    if (target.kind === "all") {
-      logout();
-      return;
-    }
+    // 标题行没有「删除全部」，只会是单个账号
+    if (target?.kind !== "one") return;
     removeAccount(target.accountId);
     if (selectedAccountId === target.accountId) {
       onSelectionInvalidated?.();
@@ -513,20 +520,37 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
         defaultValue: "还没有登录 {{service}} 账号。",
         service: "ChatGPT",
       })}
-      loginLabel={t("codexOauth.loginWithChatGPT", "使用 ChatGPT 登录")}
       onAdd={addAccount}
+      loginControl={
+        target.type === "local" && (
+          <Select
+            value={loginMethod}
+            onValueChange={(value) => setLoginMethod(value as CodexLoginMethod)}
+            disabled={isAddingAccount}
+          >
+            <SelectTrigger
+              aria-label={t("codexOauth.loginMethod")}
+              className="h-7 w-[136px]"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="browser">
+                {t("codexOauth.browserLogin")}
+              </SelectItem>
+              <SelectItem value="device_code">
+                {t("codexOauth.deviceCodeLogin")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        )
+      }
       canReauth={canTargetedReauth}
       onReauth={reauthAccount}
       onSetDefault={setDefaultAccount}
       settingDefault={isSettingDefaultAccount}
       onRemove={(accountId, login) =>
         setRemoveTarget({ kind: "one", accountId, login })
-      }
-      onRemoveAll={() =>
-        setRemoveTarget({
-          kind: "all",
-          accountIds: accounts.map((account) => account.id),
-        })
       }
       removing={isRemovingAccount}
       logoutPending={isLoggingOut}

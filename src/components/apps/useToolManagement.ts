@@ -14,8 +14,10 @@ import {
 } from "@/lib/managementTarget";
 import type { ManagementTarget } from "@/lib/api/remote";
 import type {
+  NodeRequirementGap,
   ToolInstallation,
   ToolInstallationReport,
+  ToolUninstallPlan,
 } from "@/lib/api/settings";
 import type { AppId } from "@/lib/api/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -23,7 +25,7 @@ import { isWindows } from "@/lib/platform";
 import { isUpdateAvailable } from "@/lib/version";
 
 /**
- * 「应用」页的安装 / 升级逻辑（原来在设置 → 关于）。任务、确认队列和版本结果放在模块级的
+ * 「应用」页的安装 / 升级 / 卸载逻辑。任务、确认队列和版本结果放在模块级的
  * store 里：离开页面也不中断，回来立刻恢复进度。
  */
 
@@ -37,6 +39,8 @@ export interface ToolVersion {
   installed_but_broken: boolean;
   env_type: "windows" | "wsl" | "macos" | "linux" | "unknown";
   wsl_distro: string | null;
+  // 有新版本、但这处安装用的 Node 达不到新版本的要求：不给升级，提示先升级 Node。
+  update_blocked_by_node: NodeRequirementGap | null;
 }
 
 export const TOOL_NAMES = [
@@ -49,9 +53,16 @@ export const TOOL_NAMES = [
   "hermes",
   "pi",
   "mcode",
+  "kimi",
+  "agy",
+  "omp",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
-export type ToolLifecycleAction = "install" | "update";
+export type ToolLifecycleAction = "install" | "update" | "uninstall";
+
+export function hermesUninstallMayLeaveFiles(plan: ToolUninstallPlan) {
+  return isWindows() && plan.tool === "hermes" && !plan.wsl_distro;
+}
 
 interface PendingUpgrade {
   toolNames: ToolName[];
@@ -118,21 +129,44 @@ const MCODE_WINDOWS_INSTALL_COMMAND = `powershell -NoProfile -ExecutionPolicy By
   "irm https://filecdn.minimax.chat/public/install.ps1 | iex",
 )}`;
 
+const KIMI_WINDOWS_INSTALL_COMMAND = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${powershellEncodedCommand(
+  "irm https://code.kimi.com/kimi-code/install.ps1 | iex",
+)}`;
+
+const AGY_WINDOWS_INSTALL_COMMAND = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncodedCommand(
+  "irm https://antigravity.google/cli/install.ps1 | iex",
+)}`;
+
+// 与后端 npm_install_command_for("claude") 保持一致：原生依赖和 postinstall 缺一不可，
+// 否则 bin/claude.exe 会保留文本占位文件，在 Windows 上报兼容性错误。
+const CLAUDE_NPM_INSTALL_COMMAND =
+  "npm i -g @anthropic-ai/claude-code@latest --ignore-scripts=false --include=optional --allow-scripts=@anthropic-ai/claude-code";
+
 // 与后端 npm_install_command_for("mcode") 保持一致：npm 12 默认拦截依赖的 install
 // 脚本，不放行 better-sqlite3 时 SQLite 不可用。
 const MCODE_NPM_INSTALL_COMMAND =
   'npm i -g @minimax-ai/code@latest --ignore-scripts=false --include=optional "--allow-scripts=@minimax-ai/code,better-sqlite3"';
 
+// 与后端 npm_install_command_for("opencode") 保持一致：postinstall 负责把平台二进制
+// 铺到 bin/opencode.exe，npm 12 拦截后只剩文本占位文件。
+const OPENCODE_NPM_INSTALL_COMMAND =
+  "npm i -g opencode-ai@latest --ignore-scripts=false --include=optional --allow-scripts=opencode-ai";
+
+// 与后端 npm_install_command_for("grok") 保持一致：postinstall 负责把平台二进制解到
+// ~/.grok/bin 并 relink，npm 12 拦截后升级会一直跑旧版。
+const GROK_NPM_INSTALL_COMMAND =
+  "npm i -g @xai-official/grok@latest --ignore-scripts=false --include=optional --allow-scripts=@xai-official/grok";
+
 const POSIX_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
-${posixScriptInstallCommand("https://claude.ai/install.sh")} || npm i -g @anthropic-ai/claude-code@latest
+${posixScriptInstallCommand("https://claude.ai/install.sh")} || ${CLAUDE_NPM_INSTALL_COMMAND}
 # Codex
 npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
 # Grok Build
-npm i -g @xai-official/grok@latest
+${GROK_NPM_INSTALL_COMMAND}
 # OpenCode
-${posixScriptInstallCommand("https://opencode.ai/install")} || npm i -g opencode-ai@latest
+${posixScriptInstallCommand("https://opencode.ai/install")} || ${OPENCODE_NPM_INSTALL_COMMAND}
 # OpenClaw
 npm i -g openclaw@latest
 # Hermes
@@ -140,18 +174,24 @@ ${posixScriptInstallCommand("https://raw.githubusercontent.com/NousResearch/herm
 # Pi
 npm i -g @earendil-works/pi-coding-agent@latest
 # MiniMax Code
-${posixScriptInstallCommand("https://filecdn.minimax.chat/public/install.sh")} || ${MCODE_NPM_INSTALL_COMMAND}`;
+${posixScriptInstallCommand("https://filecdn.minimax.chat/public/install.sh")} || ${MCODE_NPM_INSTALL_COMMAND}
+# Kimi Code
+${posixScriptInstallCommand("https://code.kimi.com/kimi-code/install.sh")}
+# Antigravity CLI
+${posixScriptInstallCommand("https://antigravity.google/cli/install.sh")}
+# Oh My Pi
+bun install -g @oh-my-pi/pi-coding-agent@latest`;
 
 const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
-npm i -g @anthropic-ai/claude-code@latest
+${CLAUDE_NPM_INSTALL_COMMAND}
 # Codex
 npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
 # Grok Build
-npm i -g @xai-official/grok@latest
+${GROK_NPM_INSTALL_COMMAND}
 # OpenCode
-npm i -g opencode-ai@latest
+${OPENCODE_NPM_INSTALL_COMMAND}
 # OpenClaw
 npm i -g openclaw@latest
 # Hermes
@@ -159,7 +199,13 @@ ${HERMES_WINDOWS_INSTALL_COMMAND}
 # Pi
 npm i -g @earendil-works/pi-coding-agent@latest
 # MiniMax Code
-${MCODE_WINDOWS_INSTALL_COMMAND}`;
+${MCODE_WINDOWS_INSTALL_COMMAND}
+# Kimi Code
+${KIMI_WINDOWS_INSTALL_COMMAND}
+# Antigravity CLI
+${AGY_WINDOWS_INSTALL_COMMAND}
+# Oh My Pi
+bun install -g @oh-my-pi/pi-coding-agent@latest`;
 
 export const ONE_CLICK_INSTALL_COMMANDS = isWindows()
   ? WINDOWS_ONE_CLICK_INSTALL_COMMANDS
@@ -175,6 +221,9 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   hermes: "Hermes",
   pi: "Pi",
   mcode: "MiniMax Code",
+  kimi: "Kimi Code",
+  agy: "Antigravity CLI",
+  omp: "Oh My Pi",
 };
 
 // 后端返回的 tool 是 string；这里收敛唯一的 ToolName 断言与兜底，供升级确认
@@ -193,6 +242,9 @@ export const TOOL_APP_IDS: Record<ToolName, AppId> = {
   hermes: "hermes",
   pi: "pi",
   mcode: "mcode",
+  kimi: "kimi",
+  agy: "agy",
+  omp: "omp",
 };
 
 // 工具版本探测代价高：每个工具一次 `--version` 子进程 + 一次 npm/github/pypi 网络请求。
@@ -303,7 +355,9 @@ export async function checkToolUpdatesInBackground(): Promise<void> {
   const cache = toolManagementStateOf(LOCAL_TOOL_TARGET_KEY).toolVersionsCache;
   if (cache && Date.now() - cache.at < TOOL_VERSIONS_CACHE_TTL_MS) return;
   const requestId = ++toolVersionRequestSequence;
-  TOOL_NAMES.forEach((name) => latestToolVersionRequests.set(name, requestId));
+  TOOL_NAMES.forEach((name) =>
+    latestToolVersionRequests.set(`local:${name}`, requestId),
+  );
   try {
     const results = await toolEnvironmentApi.getToolVersions(
       [...TOOL_NAMES],
@@ -311,7 +365,8 @@ export async function checkToolUpdatesInBackground(): Promise<void> {
       LOCAL_MANAGEMENT_TARGET,
     );
     const current = results.filter(
-      (tool) => latestToolVersionRequests.get(tool.name) === requestId,
+      (tool) =>
+        latestToolVersionRequests.get(`local:${tool.name}`) === requestId,
     );
     if (current.length === 0) return;
     const latest = toolManagementStateOf(
@@ -345,6 +400,7 @@ export function useToolManagement(
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
   /** 远端 helper 没广告 tools 能力时不要发工具命令（旧 helper 会直接报错） */
   enabled = true,
+  supportedTools: readonly ToolName[] = TOOL_NAMES,
 ) {
   const { t } = useTranslation();
   const targetKey = getManagementTargetKey(target);
@@ -383,12 +439,15 @@ export function useToolManagement(
   const [isDiagnosingAll, setIsDiagnosingAll] = useState(false);
   // 每个工具独立锁定，覆盖预检、等待确认、执行与版本刷新。
   // 共享状态同步加锁，避免重复点击或重挂后的页面重复提交同一工具。
-  const releaseTools = useCallback((toolNames: ToolName[]) => {
-    if (toolNames.length === 0) return;
-    const next = new Map(toolManagementStateOf(targetKey).busyTools);
-    toolNames.forEach((name) => next.delete(name));
-    updateToolManagementStateFor(targetKey, { busyTools: next });
-  }, []);
+  const releaseTools = useCallback(
+    (toolNames: ToolName[]) => {
+      if (toolNames.length === 0) return;
+      const next = new Map(toolManagementStateOf(targetKey).busyTools);
+      toolNames.forEach((name) => next.delete(name));
+      updateToolManagementStateFor(targetKey, { busyTools: next });
+    },
+    [target, targetKey],
+  );
 
   const toolVersionByName = useMemo(() => {
     return new Map(toolVersions.map((tool) => [tool.name, tool]));
@@ -396,15 +455,16 @@ export function useToolManagement(
 
   const updatableToolNames = useMemo(
     () =>
-      TOOL_NAMES.filter((toolName) => {
+      supportedTools.filter((toolName) => {
         const tool = toolVersionByName.get(toolName);
         return (
           !busyTools.has(toolName) &&
           !loadingTools[toolName] &&
+          !tool?.update_blocked_by_node &&
           isUpdateAvailable(tool?.version, tool?.latest_version)
         );
       }),
-    [toolVersionByName, busyTools, loadingTools],
+    [toolVersionByName, busyTools, loadingTools, supportedTools],
   );
 
   const refreshToolVersions = useCallback(
@@ -412,12 +472,12 @@ export function useToolManagement(
       toolNames: ToolName[],
       wslOverrides?: Record<string, WslShellPreference>,
     ): Promise<ToolVersion[]> => {
-      if (toolNames.length === 0) return [];
+      if (!enabled || toolNames.length === 0) return [];
 
       // 请求顺序跨组件挂载保留，旧页面的迟到响应不能覆盖后续刷新或升级结果。
       const requestId = ++toolVersionRequestSequence;
       toolNames.forEach((name) =>
-        latestToolVersionRequests.set(name, requestId),
+        latestToolVersionRequests.set(`${targetKey}:${name}`, requestId),
       );
 
       // 单工具刷新使用统一后端入口（get_tool_versions）并带工具过滤。
@@ -434,7 +494,9 @@ export function useToolManagement(
           target,
         );
         const current = updated.filter(
-          (tool) => latestToolVersionRequests.get(tool.name) === requestId,
+          (tool) =>
+            latestToolVersionRequests.get(`${targetKey}:${tool.name}`) ===
+            requestId,
         );
         if (current.length === 0) return [];
 
@@ -459,7 +521,10 @@ export function useToolManagement(
         setLoadingTools((prev) => {
           const next = { ...prev };
           for (const name of toolNames) {
-            if (latestToolVersionRequests.get(name) === requestId) {
+            if (
+              latestToolVersionRequests.get(`${targetKey}:${name}`) ===
+              requestId
+            ) {
               next[name] = false;
             }
           }
@@ -467,7 +532,7 @@ export function useToolManagement(
         });
       }
     },
-    [],
+    [target, targetKey, enabled, supportedTools],
   );
 
   const loadAllToolVersions = useCallback(
@@ -493,10 +558,12 @@ export function useToolManagement(
         // 不拖累其余），故 Promise.all 永不 reject。Respect current shell/flag overrides.
         // 切页后即使缓存已过期，也跳过忙碌工具，由原任务在执行结束后刷新版本。
         await Promise.all(
-          TOOL_NAMES.filter(
-            (toolName) =>
-              !toolManagementStateOf(targetKey).busyTools.has(toolName),
-          ).map((toolName) => refreshToolVersions([toolName], wslShellByTool)),
+          supportedTools
+            .filter(
+              (toolName) =>
+                !toolManagementStateOf(targetKey).busyTools.has(toolName),
+            )
+            .map((toolName) => refreshToolVersions([toolName], wslShellByTool)),
         );
       } finally {
         // 全量探测结束：把缓存时间戳刷新为现在，标记「刚完成一次全量加载」、重置 TTL。
@@ -509,7 +576,7 @@ export function useToolManagement(
         setIsLoadingTools(false);
       }
     },
-    [wslShellByTool, refreshToolVersions],
+    [wslShellByTool, refreshToolVersions, targetKey, supportedTools],
   );
 
   const handleToolShellChange = async (toolName: ToolName, value: string) => {
@@ -542,7 +609,7 @@ export function useToolManagement(
         return;
       try {
         const reports = await toolEnvironmentApi.listToolInstallations(
-          [...TOOL_NAMES],
+          [...supportedTools],
           target,
         );
         const next: Partial<Record<ToolName, ToolInstallationReport>> = {};
@@ -557,7 +624,7 @@ export function useToolManagement(
         );
       }
     },
-    [],
+    [target, targetKey, enabled, supportedTools],
   );
 
   useEffect(() => {
@@ -569,7 +636,7 @@ export function useToolManagement(
     // re-fetching all tools whenever wslShellByTool changes. Single-tool
     // refreshes are handled by refreshToolVersions in the shell/flag handlers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
+  }, [enabled, targetKey, supportedTools]);
 
   const checkForUpdates = useCallback(async () => {
     await Promise.all([
@@ -589,44 +656,49 @@ export function useToolManagement(
       );
       toast.error(t("settings.installCommandsCopyFailed"));
     }
-  }, [t]);
+  }, [t, target, targetKey, supportedTools]);
 
   // 升级后自动补诊单个工具：静默后台执行。有冲突写入结果；无冲突则清掉该工具可能残留
   // 的过期冲突展示（外部卸载/修复后冲突可能已消失，不清会一直显示旧列表）。不弹 toast、
   // 不报错打扰——与用户主动点的全量诊断区别对待。
-  const diagnoseToolSilently = useCallback(async (toolName: ToolName) => {
-    try {
-      const [report] = await toolEnvironmentApi.probeToolInstallations(
-        [toolName],
-        target,
-      );
-      // 同一份报告也是行上的路径 / 来源 / 「另有 N 处安装」：装完、升级完就刷新，
-      // 不用等手动「检查更新」
-      if (report) {
+  const diagnoseToolSilently = useCallback(
+    async (toolName: ToolName) => {
+      try {
+        const [report] = await toolEnvironmentApi.probeToolInstallations(
+          [toolName],
+          target,
+        );
+        // 没拿到报告代表状态未知，不能把它当成「没有其他安装」。
+        if (!report) return false;
+        // 同一份报告也是行上的路径 / 来源 / 「另有 N 处安装」：装完、升级完就刷新，
+        // 不用等手动「检查更新」
         updateToolManagementStateFor(targetKey, {
           installReports: {
             ...(toolManagementStateOf(targetKey).installReports ?? {}),
             [toolName]: report,
           },
         });
+        setToolDiagnostics((prev) => {
+          if (report.is_conflict) {
+            return { ...prev, [toolName]: report.installs };
+          }
+          // 无冲突：清掉残留;无旧结果则返回同引用，避免无谓 re-render。
+          if (!(toolName in prev)) return prev;
+          const next = { ...prev };
+          delete next[toolName];
+          return next;
+        });
+        return true;
+      } catch (error) {
+        console.error(
+          `[useToolManagement] Auto-diagnose failed for ${toolName}`,
+          error,
+        );
+        return false;
       }
-      setToolDiagnostics((prev) => {
-        if (report?.is_conflict) {
-          return { ...prev, [toolName]: report.installs };
-        }
-        // 无冲突：清掉残留;无旧结果则返回同引用，避免无谓 re-render。
-        if (!(toolName in prev)) return prev;
-        const next = { ...prev };
-        delete next[toolName];
-        return next;
-      });
-    } catch (error) {
-      console.error(
-        `[useToolManagement] Auto-diagnose failed for ${toolName}`,
-        error,
-      );
-    }
-  }, []);
+    },
+    [target, targetKey],
+  );
 
   // 顶部按钮：一次性诊断全部 6 个工具，有冲突的写入各自卡片，
   // 全部无冲突时给一条 info toast。后端逐工具枚举所有安装并判定分歧。
@@ -634,7 +706,7 @@ export function useToolManagement(
     setIsDiagnosingAll(true);
     try {
       const reports = await toolEnvironmentApi.probeToolInstallations(
-        [...TOOL_NAMES],
+        [...supportedTools],
         target,
       );
       const next: Partial<Record<ToolName, ToolInstallation[]>> = {};
@@ -670,7 +742,7 @@ export function useToolManagement(
     } finally {
       setIsDiagnosingAll(false);
     }
-  }, [t]);
+  }, [t, target, targetKey, supportedTools]);
 
   // 已通过必要的确认后，各工具独立提交、刷新和解锁；安装写入由后端串行调度。
   const executeRun = useCallback(
@@ -678,11 +750,12 @@ export function useToolManagement(
       toolNames: ToolName[],
       action: ToolLifecycleAction,
       wslOverrides: Record<string, WslShellPreference>,
+      uninstallPlan?: ToolUninstallPlan,
     ) => {
       const isBatch = toolNames.length > 1;
 
       // 每个工具独立调用后端，一个失败不会中断其它工具。
-      // soft=true 表示"命令成功执行但结果仍需用户介入"（版本没变/装上却跑不起来），
+      // soft=true 表示"命令成功执行但结果仍需用户介入"（版本没变/无法运行/卸载待核实），
       // 与命令本身报错（soft=false）区别对待：前者不算硬失败，toast 降级为 warning。
       const failures: {
         toolName: ToolName;
@@ -704,13 +777,57 @@ export function useToolManagement(
               action,
               wslOverrides,
               target,
+              uninstallPlan,
             );
+            if (action === "uninstall") {
+              const nextReports = {
+                ...toolManagementStateOf(targetKey).installReports,
+              };
+              delete nextReports[toolName];
+              updateToolManagementStateFor(targetKey, {
+                installReports: nextReports,
+              });
+              setToolDiagnostics((prev) => {
+                const next = { ...prev };
+                delete next[toolName];
+                return next;
+              });
+            }
             // 静默执行真正结束后刷新该工具版本，卡片立即反映结果。
             const refreshed = await refreshToolVersions(
               [toolName],
               wslOverrides,
             );
             const tool = refreshed.find((t) => t.name === toolName);
+            if (action === "uninstall") {
+              const diagnosed = await diagnoseToolSilently(toolName);
+              const warnings: string[] = [];
+              if (!tool || !diagnosed) {
+                warnings.push(t("settings.toolUninstallCheckFailed"));
+              }
+              if (
+                uninstallPlan &&
+                hermesUninstallMayLeaveFiles(uninstallPlan)
+              ) {
+                warnings.push(t("settings.toolUninstallHermesWindowsHint"));
+              }
+              if (tool?.version || tool?.installed_but_broken) {
+                toast.info(t("settings.toolUninstallRemaining"), {
+                  description: TOOL_DISPLAY_NAMES[toolName],
+                  closeButton: true,
+                });
+              }
+              if (warnings.length > 0) {
+                failures.push({
+                  toolName,
+                  detail: warnings.join("\n"),
+                  soft: true,
+                });
+                return;
+              }
+              succeeded += 1;
+              return;
+            }
             if (tool?.version) {
               const latestVersion =
                 tool.latest_version ?? previousLatestVersion;
@@ -781,7 +898,9 @@ export function useToolManagement(
       const actionLabel =
         action === "install"
           ? t("settings.toolInstall")
-          : t("settings.toolUpdate");
+          : action === "uninstall"
+            ? t("settings.toolUninstall")
+            : t("settings.toolUpdate");
 
       if (failures.length === 0) {
         if (succeeded > 0) {
@@ -815,22 +934,31 @@ export function useToolManagement(
         failures.every((f) => f.soft && f.kind === "versionUnchanged");
 
       if (succeeded === 0 && hardFailures.length === 0) {
-        // 命令均成功执行、但结果需要用户介入（版本没变 / 装上却跑不起来）
+        // 命令均成功执行、但结果需要用户介入（版本没变 / 无法运行 / 卸载待核实）
         // → 降级为 warning 并解释原因。
         toast.warning(
-          allSoftVersionUnchanged
-            ? t("settings.toolActionVersionUnchangedTitle")
-            : t("settings.toolActionInstalledNotRunnable"),
+          action === "uninstall"
+            ? t("settings.toolUninstallWarningTitle")
+            : allSoftVersionUnchanged
+              ? t("settings.toolActionVersionUnchangedTitle")
+              : t("settings.toolActionInstalledNotRunnable"),
           {
             description: failureDescription || undefined,
             closeButton: true,
           },
         );
       } else if (succeeded === 0) {
-        toast.error(t("settings.toolActionFailed"), {
-          description: failureDescription || undefined,
-          closeButton: true,
-        });
+        toast.error(
+          t(
+            action === "uninstall"
+              ? "settings.toolUninstallFailed"
+              : "settings.toolActionFailed",
+          ),
+          {
+            description: failureDescription || undefined,
+            closeButton: true,
+          },
+        );
       } else {
         // 部分成功：用 warning 汇总成败数量，详情列出失败的工具。
         toast.warning(
@@ -849,6 +977,8 @@ export function useToolManagement(
       refreshToolVersions,
       diagnoseToolSilently,
       releaseTools,
+      target,
+      targetKey,
     ],
   );
 
@@ -857,10 +987,14 @@ export function useToolManagement(
     async (
       requestedTools: ToolName[],
       action: ToolLifecycleAction,
-      options?: { fromBatchEntry?: boolean },
+      options?: { fromBatchEntry?: boolean; uninstallPlan?: ToolUninstallPlan },
     ) => {
+      if (!enabled || (target.type === "remote" && action === "uninstall"))
+        return;
       const toolNames = requestedTools.filter(
-        (name) => !toolManagementStateOf(targetKey).busyTools.has(name),
+        (name) =>
+          supportedTools.includes(name) &&
+          !toolManagementStateOf(targetKey).busyTools.has(name),
       );
       if (toolNames.length === 0) return;
       // 确认可能发生在重新挂载的页面，执行与结果刷新均使用提交时的参数快照。
@@ -884,9 +1018,14 @@ export function useToolManagement(
         updateToolManagementStateFor(targetKey, { batchAction: action });
       }
       try {
-        if (action === "install") {
+        if (action === "install" || action === "uninstall") {
           toolsToRelease = [];
-          await executeRun(toolNames, action, wslOverrides);
+          await executeRun(
+            toolNames,
+            action,
+            wslOverrides,
+            options?.uninstallPlan,
+          );
           return;
         }
         let reports: ToolInstallationReport[];
@@ -956,7 +1095,16 @@ export function useToolManagement(
         releaseTools(toolsToRelease);
       }
     },
-    [executeRun, releaseTools, t, wslShellByTool],
+    [
+      executeRun,
+      releaseTools,
+      t,
+      wslShellByTool,
+      target,
+      targetKey,
+      enabled,
+      supportedTools,
+    ],
   );
 
   const handleConfirmUpgrade = useCallback(() => {
@@ -1004,6 +1152,7 @@ export function useToolManagement(
     toolVersionsCache && toolVersionsCache.at > 0 ? toolVersionsCache.at : null;
 
   return {
+    enabled,
     toolVersionByName,
     installReports,
     isLoadingTools,

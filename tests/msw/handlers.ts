@@ -23,6 +23,8 @@ import {
   listSessions,
   resetProviderState,
   setCurrentProviderId,
+  ackPendingDeepLink,
+  peekPendingDeepLink,
   updateProvider,
   updateSortOrder,
   getSettings,
@@ -39,6 +41,10 @@ import {
   setRemoteHermesMemoryEnabled,
   upsertMcpServer,
   deleteMcpServer,
+  listCustomIcons,
+  addCustomIcon,
+  renameCustomIcon,
+  deleteCustomIcon,
 } from "./state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -84,9 +90,27 @@ export const handlers = [
   ),
 
   http.post(`${TAURI_ENDPOINT}/update_tray_menu`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/peek_pending_deeplink`, () =>
+    success(peekPendingDeepLink()),
+  ),
+  // 默认下载失败：确认框退回内置图标或首字母
+  http.post(`${TAURI_ENDPOINT}/fetch_deeplink_icon`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/ack_pending_deeplink`, async ({ request }) => {
+    const { id } = await withJson<{ id: number }>(request);
+    ackPendingDeepLink(id);
+    return success(null);
+  }),
 
   http.post(`${TAURI_ENDPOINT}/get_opencode_live_provider_ids`, () =>
     success(getLiveProviderIds("opencode")),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/get_opencode_default_model`, () =>
+    success(null),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_opencode_default_model`, () =>
+    success(null),
   ),
 
   http.post(`${TAURI_ENDPOINT}/get_openclaw_live_provider_ids`, () =>
@@ -351,6 +375,10 @@ export const handlers = [
     return success(true);
   }),
 
+  http.post(`${TAURI_ENDPOINT}/add_provider_to_live_config`, () =>
+    success(true),
+  ),
+
   http.post(`${TAURI_ENDPOINT}/remove_provider_from_live_config`, () =>
     success(true),
   ),
@@ -609,8 +637,16 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/set_proxy_stack_member`, () => success(null)),
 
+  http.post(`${TAURI_ENDPOINT}/codex_forces_multi_agent_v2`, () =>
+    success(false),
+  ),
+
   http.post(`${TAURI_ENDPOINT}/restart_codex_app_server_daemon`, () =>
     success("restarted"),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/acknowledge_codex_stale_clients`, () =>
+    success(null),
   ),
 
   http.post(`${TAURI_ENDPOINT}/get_proxy_takeover_status`, () =>
@@ -774,6 +810,16 @@ export const handlers = [
       accounts: [],
     });
   }),
+  http.post(`${TAURI_ENDPOINT}/claude_account_submit_paste`, () =>
+    success(null),
+  ),
+  http.post(`${TAURI_ENDPOINT}/get_claude_login_switch`, () =>
+    success({
+      active: true,
+      blocked: null,
+      live: null,
+    }),
+  ),
   // 应用页页头的「提示词：X ›」会读各应用的提示词列表
   http.post(`${TAURI_ENDPOINT}/get_prompts`, () => success({})),
   http.post(
@@ -797,6 +843,7 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/get_claude_desktop_status`, () =>
     success({
       supported: true,
+      installed: false,
       configured: false,
       proxyRunning: false,
       staleRawModels: false,
@@ -816,4 +863,22 @@ export const handlers = [
       userEnabled: true,
     }),
   ),
+  http.post(`${TAURI_ENDPOINT}/get_custom_icons`, () =>
+    success(listCustomIcons()),
+  ),
+  http.post(`${TAURI_ENDPOINT}/add_custom_icon`, async ({ request }) => {
+    const { name, data } = await withJson<{ name: string; data: string }>(
+      request,
+    );
+    return success(addCustomIcon(name, data));
+  }),
+  http.post(`${TAURI_ENDPOINT}/rename_custom_icon`, async ({ request }) => {
+    const { id, name } = await withJson<{ id: string; name: string }>(request);
+    return success(renameCustomIcon(id, name));
+  }),
+  http.post(`${TAURI_ENDPOINT}/delete_custom_icon`, async ({ request }) => {
+    const { id } = await withJson<{ id: string }>(request);
+    deleteCustomIcon(id);
+    return success(null);
+  }),
 ];

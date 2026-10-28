@@ -1,5 +1,21 @@
 #![cfg_attr(not(feature = "desktop"), allow(unused))]
 
+#[path = "../agy_config.rs"]
+#[cfg(not(feature = "desktop"))]
+mod agy_config;
+#[path = "../codex_rollout_file.rs"]
+#[cfg(not(feature = "desktop"))]
+mod codex_rollout_file;
+#[path = "../kimi_config.rs"]
+#[cfg(not(feature = "desktop"))]
+mod kimi_config;
+#[path = "../kimi_session.rs"]
+#[cfg(not(feature = "desktop"))]
+mod kimi_session;
+#[path = "../omp_config.rs"]
+#[cfg(not(feature = "desktop"))]
+mod omp_config;
+
 #[path = "../app_config.rs"]
 #[cfg(not(feature = "desktop"))]
 mod app_config;

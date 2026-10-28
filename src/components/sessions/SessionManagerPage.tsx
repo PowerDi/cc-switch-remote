@@ -1,3 +1,6 @@
+import { useTargetCapability } from "@/hooks/useTargetCapability";
+import { settingsApi } from "@/lib/api";
+import { getManagementTargetKey } from "@/lib/managementTarget";
 import type { ManagementTarget } from "@/lib/api/remote";
 import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,7 +25,6 @@ import {
   piKeys,
   useDeleteSessionMutation,
   useSessionsQuery,
-  useSettingsQuery,
 } from "@/lib/query";
 import { piApi, sessionsApi, type AppId } from "@/lib/api";
 import type { SessionMeta } from "@/types";
@@ -144,11 +146,18 @@ export function SessionManagerPage({
   onOpenTerminalSettings,
 }: SessionManagerPageProps) {
   const isRemoteTarget = target.type === "remote";
+  const ompSupported = useTargetCapability(target, "omp");
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data, isLoading, refetch } = useSessionsQuery(target);
   const sessions = useMemo(() => data ?? [], [data]);
-  const { data: settings } = useSettingsQuery();
+  const { data: settings } = useQuery({
+    queryKey:
+      target.type === "local"
+        ? ["settings"]
+        : ["settings", getManagementTargetKey(target)],
+    queryFn: () => settingsApi.get(target),
+  });
 
   const [appFilter, setAppFilter] = useState<AppFilter>(
     isSessionAppId(appId) ? appId : "claude",
@@ -195,7 +204,7 @@ export function SessionManagerPage({
   const piSessionDiscovery = useQuery({
     queryKey: piKeys.sessionDiscovery,
     queryFn: () => piApi.getSessionDiscovery(),
-    enabled: appFilter === "pi",
+    enabled: appFilter === "pi" && !isRemoteTarget,
     staleTime: 30 * 1000,
   });
 
@@ -204,11 +213,15 @@ export function SessionManagerPage({
     const visible = { ...DEFAULT_VISIBLE_APPS, ...settings?.visibleApps };
     return SESSION_APP_IDS.filter(
       (app) =>
-        visible[app] ||
-        (app === "claude" && visible["claude-desktop"]) ||
-        app === appFilter,
+        (!isRemoteTarget ||
+          (app !== "agy" &&
+            app !== "kimi" &&
+            (app !== "omp" || ompSupported))) &&
+        (visible[app] ||
+          (app === "claude" && visible["claude-desktop"]) ||
+          app === appFilter),
     );
-  }, [settings?.visibleApps, appFilter]);
+  }, [settings?.visibleApps, appFilter, isRemoteTarget, ompSupported]);
 
   const scopedSessions = useMemo(
     () =>
@@ -832,7 +845,7 @@ export function SessionManagerPage({
             aria-expanded={open}
             onClick={() => toggleGroup(group.key)}
             title={group.projectDir ?? undefined}
-            className="flex h-7 min-w-0 max-w-full items-center gap-2.5 rounded-control pe-2 ps-1.5 text-left font-semibold transition-colors hover:bg-selected"
+            className="flex h-7 w-full min-w-0 max-w-full items-center gap-2.5 rounded-control pe-2 ps-1.5 text-left font-semibold transition-colors hover:bg-selected"
           >
             <ChevronDown
               aria-hidden="true"

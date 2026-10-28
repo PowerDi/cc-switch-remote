@@ -30,29 +30,11 @@ pub async fn update_global_proxy_config(
         if let Err(error) = crate::mode::controller::resync_routes(state).await {
             failures.push(error);
         }
-        if let Err(error) = resync_claude_desktop_gateway(&state.db) {
-            failures.push(format!("claude-desktop: {error}"));
-        }
         if !failures.is_empty() {
             return Err(failures.join("; "));
         }
     }
     Ok(())
-}
-
-/// Claude Desktop 的模型映射卡把本地网关地址写死在 profile 里，不在 `resync_routes` 的
-/// 四个路由应用之内：服务换了地址就按当前那张卡重写一遍。
-fn resync_claude_desktop_gateway(db: &crate::database::Database) -> Result<(), String> {
-    if !crate::claude_desktop_config::current_provider_uses_proxy(db) {
-        return Ok(());
-    }
-    let Some(provider) =
-        crate::mode::current::direct_provider(db, &crate::app_config::AppType::ClaudeDesktop)
-            .map_err(|e| e.to_string())?
-    else {
-        return Ok(());
-    };
-    crate::claude_desktop_config::apply_provider(db, &provider).map_err(|e| e.to_string())
 }
 
 #[derive(Clone)]
@@ -83,10 +65,10 @@ impl SavedProxyConfig {
     }
 }
 
-/// 客户端连接代理用的地址。`listen_address` 可能是 `0.0.0.0` / `::`（监听所有网卡），
-/// 客户端连不上这个地址，改用本机回环；IPv6 加方括号。
-pub(crate) fn proxy_origin(listen_address: &str, listen_port: u16) -> String {
-    let host = match listen_address {
+/// 客户端连接代理用的地址。`host` 是设置里的客户端地址，没设时是监听地址，后者可能是
+/// `0.0.0.0` / `::`（监听所有网卡），客户端连不上这个地址，改用本机回环；IPv6 加方括号。
+pub(crate) fn proxy_origin(host: &str, listen_port: u16) -> String {
+    let host = match host {
         "0.0.0.0" => "127.0.0.1",
         "::" => "::1",
         other => other,
@@ -295,17 +277,20 @@ impl ProxyService {
     /// 各应用是否处于代理模式（读设备本地的模式状态，不读会随云同步的
     /// `proxy_config.enabled`）。
     pub async fn get_takeover_status(&self) -> Result<ProxyTakeoverStatus, String> {
-        let [claude, codex, gemini, grokbuild] = crate::mode::current::proxy_flags([
-            AppType::Claude,
-            AppType::Codex,
-            AppType::Gemini,
-            AppType::GrokBuild,
-        ]);
+        let [claude, codex, gemini, grokbuild, claude_desktop] =
+            crate::mode::current::proxy_flags([
+                AppType::Claude,
+                AppType::Codex,
+                AppType::Gemini,
+                AppType::GrokBuild,
+                AppType::ClaudeDesktop,
+            ]);
         Ok(ProxyTakeoverStatus {
             claude,
             codex,
             gemini,
             grokbuild,
+            claude_desktop,
             // OpenCode and OpenClaw don't support proxy features
             opencode: false,
             openclaw: false,
@@ -378,7 +363,8 @@ impl ProxyService {
             return Err("代理监听端口为 0，但代理服务器尚未运行，无法生成接管地址".to_string());
         }
 
-        let proxy_url = proxy_origin(&config.listen_address, listen_port);
+        let host = crate::settings::get_proxy_client_host().unwrap_or(config.listen_address);
+        let proxy_url = proxy_origin(&host, listen_port);
         let proxy_codex_base_url = format!("{proxy_url}/v1");
         Ok((proxy_url, proxy_codex_base_url))
     }
@@ -432,7 +418,11 @@ impl ProxyService {
     /// 是否有应用处于代理模式
     pub async fn is_takeover_active(&self) -> Result<bool, String> {
         let status = self.get_takeover_status().await?;
-        Ok(status.claude || status.codex || status.gemini || status.grokbuild)
+        Ok(status.claude
+            || status.codex
+            || status.gemini
+            || status.grokbuild
+            || status.claude_desktop)
     }
 
     fn is_claude_live_taken_over(config: &Value) -> bool {

@@ -1,3 +1,5 @@
+import type { ManagementTarget } from "@/lib/api/remote";
+import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type {
@@ -19,7 +21,7 @@ import {
   SettingsSwitchRow,
 } from "@/components/settings/SettingsLayout";
 
-const DIRECTORY_FIELD: Record<DirectoryAppId, keyof Settings> = {
+export const DIRECTORY_FIELD: Record<DirectoryAppId, keyof Settings> = {
   claude: "claudeConfigDir",
   codex: "codexConfigDir",
   gemini: "geminiConfigDir",
@@ -28,6 +30,7 @@ const DIRECTORY_FIELD: Record<DirectoryAppId, keyof Settings> = {
   openclaw: "openclawConfigDir",
   hermes: "hermesConfigDir",
   pi: "piConfigDir",
+  omp: "ompConfigDir",
 };
 
 const DIRECTORY_PLACEHOLDER: Record<DirectoryAppId, string> = {
@@ -39,9 +42,10 @@ const DIRECTORY_PLACEHOLDER: Record<DirectoryAppId, string> = {
   openclaw: "settings.browsePlaceholderOpenclaw",
   hermes: "settings.browsePlaceholderHermes",
   pi: "settings.browsePlaceholderPi",
+  omp: "settings.browsePlaceholderOmp",
 };
 
-const DIRECTORY_APPS: DirectoryAppId[] = [
+export const DIRECTORY_APPS: DirectoryAppId[] = [
   "claude",
   "codex",
   "gemini",
@@ -50,19 +54,22 @@ const DIRECTORY_APPS: DirectoryAppId[] = [
   "openclaw",
   "hermes",
   "pi",
+  "omp",
 ];
 
 const normalizeDir = (value: unknown) =>
   typeof value === "string" && value.trim() ? value.trim() : undefined;
 
 interface AppConfigSectionProps {
+  target?: ManagementTarget;
+  supportedApps?: DirectoryAppId[];
   settings: SettingsFormState;
   savedSettings?: Settings;
   resolvedDirs: ResolvedDirectories;
   isSaving: boolean;
   onAutoSave: (updates: Partial<SettingsFormState>) => Promise<boolean>;
   onDirectoryChange: (app: DirectoryAppId, value?: string) => void;
-  onBrowseDirectory: (app: DirectoryAppId) => Promise<void>;
+  onBrowseDirectory?: (app: DirectoryAppId) => Promise<void>;
   onResetDirectory: (app: DirectoryAppId) => Promise<void>;
   onSaveDirectories: () => Promise<void>;
 }
@@ -72,6 +79,8 @@ interface AppConfigSectionProps {
  * 目录改动要点「保存」才写入（各节自己的保存按钮，保存时一并写入所有改过的目录）。
  */
 export function AppConfigSection({
+  target = LOCAL_MANAGEMENT_TARGET,
+  supportedApps = DIRECTORY_APPS,
   settings,
   savedSettings,
   resolvedDirs,
@@ -110,7 +119,11 @@ export function AppConfigSection({
         resolvedValue={resolvedDirs[app]}
         placeholder={t(DIRECTORY_PLACEHOLDER[app])}
         onChange={(value) => onDirectoryChange(app, value)}
-        onBrowse={() => onBrowseDirectory(app)}
+        onBrowse={
+          target.type === "local" && onBrowseDirectory
+            ? () => onBrowseDirectory(app)
+            : undefined
+        }
         onReset={() => onResetDirectory(app)}
       />
     </SettingsRow>
@@ -138,9 +151,11 @@ export function AppConfigSection({
 
   return (
     <>
-      {DIRECTORY_APPS.map((app) => (
+      {supportedApps.map((app) => (
         <SettingsBlock
           key={app}
+          id={`app-config-${app}`}
+          className="rounded-panel"
           title={blockTitle(app)}
           actions={saveButton(app)}
         >
@@ -174,7 +189,12 @@ export function AppConfigSection({
               </>
             )}
             {app === "codex" && (
-              <CodexAuthSettings settings={settings} onChange={onAutoSave} />
+              <CodexAuthSettings
+                target={target}
+                settings={settings}
+                onChange={onAutoSave}
+                codexConfigDir={savedSettings?.codexConfigDir}
+              />
             )}
             {directoryRow(app)}
           </SettingsCard>

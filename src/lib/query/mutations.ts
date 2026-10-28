@@ -14,6 +14,7 @@ import { parseLiveEditConflict } from "@/lib/errors/liveEditConflict";
 import type { Provider, SessionMeta, Settings } from "@/types";
 import {
   extractErrorMessage,
+  translateKimiProviderMutationError,
   translatePiProviderMutationError,
 } from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
@@ -28,6 +29,7 @@ import {
 } from "@/lib/query/omo";
 import { sessionKeys } from "@/lib/query/sessions";
 import { invalidatePiProviderCaches } from "@/lib/query/pi";
+import { isPiFamilyApp } from "@/config/appConfig";
 import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 
 const targetKey = (target: ManagementTarget) =>
@@ -111,7 +113,9 @@ export const useAddProviderMutation = (
         appId === "openclaw" ||
         appId === "hermes" ||
         appId === "pi" ||
-        appId === "mcode"
+        appId === "mcode" ||
+        appId === "kimi" ||
+        appId === "omp"
       ) {
         if (
           providerInput.category === "omo" ||
@@ -185,9 +189,11 @@ export const useAddProviderMutation = (
       if (parseLiveEditConflict(error)) return;
       const rawDetail = extractErrorMessage(error);
       const detail =
-        (appId === "pi"
+        (isPiFamilyApp(appId)
           ? translatePiProviderMutationError(rawDetail, t)
-          : "") ||
+          : appId === "kimi"
+            ? translateKimiProviderMutationError(rawDetail, t)
+            : "") ||
         rawDetail ||
         t("common.unknown");
       toast.error(
@@ -198,8 +204,8 @@ export const useAddProviderMutation = (
       );
     },
     onSettled: async () => {
-      if (appId === "pi") {
-        await invalidatePiProviderCaches(queryClient);
+      if (isPiFamilyApp(appId)) {
+        await invalidatePiProviderCaches(queryClient, appId, target);
       }
     },
   });
@@ -265,9 +271,11 @@ export const useUpdateProviderMutation = (
       if (parseLiveEditConflict(error)) return;
       const rawDetail = extractErrorMessage(error);
       const detail =
-        (appId === "pi"
+        (isPiFamilyApp(appId)
           ? translatePiProviderMutationError(rawDetail, t)
-          : "") ||
+          : appId === "kimi"
+            ? translateKimiProviderMutationError(rawDetail, t)
+            : "") ||
         rawDetail ||
         t("common.unknown");
       toast.error(
@@ -278,8 +286,13 @@ export const useUpdateProviderMutation = (
       );
     },
     onSettled: async () => {
-      if (appId === "pi") {
-        await invalidatePiProviderCaches(queryClient);
+      if (isPiFamilyApp(appId)) {
+        await invalidatePiProviderCaches(queryClient, appId, target);
+      } else if (appId === "kimi") {
+        // 默认模型可能在 Kimi Code 里改过：失败时也重读，页面上的「默认」才跟得上
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", "kimi"],
+        });
       }
     },
   });
@@ -338,9 +351,11 @@ export const useDeleteProviderMutation = (
     onError: (error: Error) => {
       const rawDetail = extractErrorMessage(error);
       const detail =
-        (appId === "pi"
+        (isPiFamilyApp(appId)
           ? translatePiProviderMutationError(rawDetail, t)
-          : "") ||
+          : appId === "kimi"
+            ? translateKimiProviderMutationError(rawDetail, t)
+            : "") ||
         rawDetail ||
         t("common.unknown");
       toast.error(
@@ -351,8 +366,13 @@ export const useDeleteProviderMutation = (
       );
     },
     onSettled: async () => {
-      if (appId === "pi") {
-        await invalidatePiProviderCaches(queryClient);
+      if (isPiFamilyApp(appId)) {
+        await invalidatePiProviderCaches(queryClient, appId, target);
+      } else if (appId === "kimi") {
+        // 默认模型可能在 Kimi Code 里改过：失败时也重读，页面上的「默认」才跟得上
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", "kimi"],
+        });
       }
     },
   });
@@ -373,6 +393,12 @@ export const useSwitchProviderMutation = (
       await queryClient.invalidateQueries({
         queryKey: providerQueryKey(appId, target),
       });
+      if (appId === "claude" && target.type === "local") {
+        // 切到绑了账号的官方卡时，后端可能把原来的默认登录收成了新账号：授权中心要重读
+        await queryClient.invalidateQueries({
+          queryKey: ["managed-auth-status", "claude_official"],
+        });
+      }
       if (appId === "claude-desktop") {
         await queryClient.invalidateQueries({
           queryKey: proxyKeys.status(target),
@@ -435,8 +461,8 @@ export const useSwitchProviderMutation = (
       );
     },
     onSettled: async () => {
-      if (appId === "pi") {
-        await invalidatePiProviderCaches(queryClient);
+      if (isPiFamilyApp(appId)) {
+        await invalidatePiProviderCaches(queryClient, appId, target);
       }
     },
   });

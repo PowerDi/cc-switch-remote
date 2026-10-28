@@ -2,6 +2,7 @@ import type { TFunction } from "i18next";
 import type { RemoteConnectionStage, RemoteHealth } from "@/lib/api";
 
 export const EXPECTED_REMOTE_CAPABILITIES = [
+  { id: "omp", labelKey: "remote.capabilities.omp", defaultLabel: "Oh My Pi" },
   {
     id: "providers",
     labelKey: "remote.capabilities.providers",

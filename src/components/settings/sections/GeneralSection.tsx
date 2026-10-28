@@ -1,3 +1,5 @@
+import type { ManagementTarget } from "@/lib/api/remote";
+import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import { useTranslation } from "react-i18next";
 import { ChevronRight, Monitor, Moon, Sun } from "lucide-react";
 import type { SettingsFormState } from "@/hooks/useSettings";
@@ -27,9 +29,11 @@ const LANGUAGES: { value: Language; labelKey: string }[] = [
   { value: "zh-TW", labelKey: "settings.languageOptionTraditionalChinese" },
   { value: "en", labelKey: "settings.languageOptionEnglish" },
   { value: "ja", labelKey: "settings.languageOptionJapanese" },
+  { value: "tr", labelKey: "settings.languageOptionTurkish" },
 ];
 
 interface GeneralSectionProps {
+  target?: ManagementTarget;
   settings: SettingsFormState;
   onAutoSave: (updates: Partial<SettingsFormState>) => Promise<boolean>;
   onOpenApps: () => void;
@@ -41,6 +45,7 @@ interface GeneralSectionProps {
 }
 
 export function GeneralSection({
+  target = LOCAL_MANAGEMENT_TARGET,
   settings,
   onAutoSave,
   onOpenApps,
@@ -78,29 +83,58 @@ export function GeneralSection({
               </Select>
             }
           />
+          {target.type === "local" && (
+            <SettingsRow
+              label={t("settings.theme")}
+              control={
+                <SegmentedControl
+                  size="sm"
+                  aria-label={t("settings.theme")}
+                  value={theme}
+                  onValueChange={setTheme}
+                  items={[
+                    {
+                      value: "system",
+                      label: t("settings.themeSystem"),
+                      icon: Monitor,
+                    },
+                    {
+                      value: "light",
+                      label: t("settings.themeLight"),
+                      icon: Sun,
+                    },
+                    {
+                      value: "dark",
+                      label: t("settings.themeDark"),
+                      icon: Moon,
+                    },
+                  ]}
+                />
+              }
+            />
+          )}
           <SettingsRow
-            label={t("settings.theme")}
+            label={t("settings.general.quotaDisplay")}
+            help={{
+              title: t("settings.general.quotaDisplay"),
+              body: t("settings.general.quotaDisplayHelp"),
+            }}
             control={
               <SegmentedControl
                 size="sm"
-                aria-label={t("settings.theme")}
-                value={theme}
-                onValueChange={setTheme}
+                aria-label={t("settings.general.quotaDisplay")}
+                value={settings.quotaDisplay ?? "left"}
+                onValueChange={(value) =>
+                  void onAutoSave({ quotaDisplay: value })
+                }
                 items={[
                   {
-                    value: "system",
-                    label: t("settings.themeSystem"),
-                    icon: Monitor,
+                    value: "left",
+                    label: t("settings.general.quotaDisplayLeft"),
                   },
                   {
-                    value: "light",
-                    label: t("settings.themeLight"),
-                    icon: Sun,
-                  },
-                  {
-                    value: "dark",
-                    label: t("settings.themeDark"),
-                    icon: Moon,
+                    value: "used",
+                    label: t("settings.general.quotaDisplayUsed"),
                   },
                 ]}
               />
@@ -133,89 +167,134 @@ export function GeneralSection({
               void onAutoSave({ showProfileSwitcher: value })
             }
           />
-        </SettingsCard>
-      </SettingsBlock>
-
-      <SettingsBlock title={t("settings.general.updates")}>
-        <SettingsCard>
           <SettingsSwitchRow
-            label={t("settings.general.checkToolUpdates")}
+            label={t("settings.appVisibility.showProviderSearch")}
             help={{
-              title: t("settings.general.checkToolUpdates"),
-              body: t("settings.general.checkToolUpdatesHelp"),
+              title: t("settings.appVisibility.showProviderSearch"),
+              body: t("settings.appVisibility.showProviderSearchDescription"),
             }}
-            checked={settings.checkToolUpdatesOnStartup ?? false}
+            checked={settings.showProviderSearch ?? true}
             onCheckedChange={(value) =>
-              void onAutoSave({ checkToolUpdatesOnStartup: value })
+              void onAutoSave({ showProviderSearch: value })
             }
           />
         </SettingsCard>
       </SettingsBlock>
 
-      <SettingsBlock title={t("settings.general.windowAndTerminal")}>
-        <SettingsCard>
-          <SettingsSwitchRow
-            label={t("settings.launchOnStartup")}
-            checked={!!settings.launchOnStartup}
-            onCheckedChange={(value) =>
-              void onAutoSave({ launchOnStartup: value })
-            }
-          />
-          {settings.launchOnStartup && (
-            <SettingsSwitchRow
-              label={t("settings.silentStartup")}
-              help={{
-                title: t("settings.silentStartup"),
-                body: t("settings.silentStartupDescription"),
-              }}
-              checked={!!settings.silentStartup}
-              onCheckedChange={(value) =>
-                void onAutoSave({ silentStartup: value })
-              }
-            />
-          )}
-          <SettingsSwitchRow
-            label={t("settings.minimizeToTray")}
-            help={{
-              title: t("settings.minimizeToTray"),
-              body: t("settings.general.minimizeToTrayHelp"),
-            }}
-            checked={settings.minimizeToTrayOnClose}
-            onCheckedChange={(value) =>
-              void onAutoSave({ minimizeToTrayOnClose: value })
-            }
-          />
-          {isLinux() && (
-            <SettingsSwitchRow
-              label={t("settings.useAppWindowControls")}
-              help={{
-                title: t("settings.useAppWindowControls"),
-                body: t("settings.useAppWindowControlsDescription"),
-              }}
-              checked={!!settings.useAppWindowControls}
-              onCheckedChange={(value) =>
-                void onAutoSave({ useAppWindowControls: value })
-              }
-            />
-          )}
-          <SettingsRow
-            label={t("settings.terminal.title")}
-            help={{
-              title: t("settings.terminal.title"),
-              body: t("settings.general.terminalHelp"),
-            }}
-            control={
-              <TerminalSelect
-                className="h-8 w-[160px]"
-                value={settings.preferredTerminal}
-                onChange={(terminal) =>
-                  void onAutoSave({ preferredTerminal: terminal })
+      {target.type === "local" && (
+        <>
+          <SettingsBlock title={t("settings.general.updates")}>
+            <SettingsCard>
+              <SettingsSwitchRow
+                label={t("settings.general.checkToolUpdates")}
+                help={{
+                  title: t("settings.general.checkToolUpdates"),
+                  body: t("settings.general.checkToolUpdatesHelp"),
+                }}
+                checked={settings.checkToolUpdatesOnStartup ?? false}
+                onCheckedChange={(value) =>
+                  void onAutoSave({ checkToolUpdatesOnStartup: value })
                 }
               />
-            }
-          />
-        </SettingsCard>
-      </SettingsBlock>
+            </SettingsCard>
+          </SettingsBlock>
+
+          <SettingsBlock title={t("settings.general.windowAndTerminal")}>
+            <SettingsCard>
+              <SettingsSwitchRow
+                label={t("settings.launchOnStartup")}
+                checked={!!settings.launchOnStartup}
+                onCheckedChange={(value) =>
+                  void onAutoSave({ launchOnStartup: value })
+                }
+              />
+              {settings.launchOnStartup && (
+                <SettingsSwitchRow
+                  label={t("settings.silentStartup")}
+                  help={{
+                    title: t("settings.silentStartup"),
+                    body: t("settings.silentStartupDescription"),
+                  }}
+                  checked={!!settings.silentStartup}
+                  onCheckedChange={(value) =>
+                    void onAutoSave({ silentStartup: value })
+                  }
+                />
+              )}
+              <SettingsSwitchRow
+                label={t("settings.minimizeToTray")}
+                help={{
+                  title: t("settings.minimizeToTray"),
+                  body: t("settings.general.minimizeToTrayHelp"),
+                }}
+                checked={settings.minimizeToTrayOnClose}
+                onCheckedChange={(value) =>
+                  void onAutoSave({ minimizeToTrayOnClose: value })
+                }
+              />
+              {/* Linux（AppIndicator）只能出原生菜单，没得选 */}
+              {!isLinux() && (
+                <SettingsRow
+                  label={t("settings.general.trayStyle")}
+                  help={{
+                    title: t("settings.general.trayStyle"),
+                    body: t("settings.general.trayStyleHelp"),
+                  }}
+                  control={
+                    <SegmentedControl
+                      size="sm"
+                      aria-label={t("settings.general.trayStyle")}
+                      value={settings.nativeTrayMenu ? "menu" : "panel"}
+                      onValueChange={(value) =>
+                        void onAutoSave({ nativeTrayMenu: value === "menu" })
+                      }
+                      items={[
+                        {
+                          value: "panel",
+                          label: t("settings.general.trayStylePanel"),
+                        },
+                        {
+                          value: "menu",
+                          label: t("settings.general.trayStyleMenu"),
+                        },
+                      ]}
+                    />
+                  }
+                />
+              )}
+              {isLinux() && (
+                <SettingsSwitchRow
+                  label={t("settings.useAppWindowControls")}
+                  help={{
+                    title: t("settings.useAppWindowControls"),
+                    body: t("settings.useAppWindowControlsDescription"),
+                  }}
+                  checked={!!settings.useAppWindowControls}
+                  onCheckedChange={(value) =>
+                    void onAutoSave({ useAppWindowControls: value })
+                  }
+                />
+              )}
+              <SettingsRow
+                label={t("settings.terminal.title")}
+                help={{
+                  title: t("settings.terminal.title"),
+                  body: t("settings.general.terminalHelp"),
+                }}
+                control={
+                  <TerminalSelect
+                    className="h-8 w-[160px]"
+                    value={settings.preferredTerminal}
+                    onChange={(terminal) =>
+                      void onAutoSave({ preferredTerminal: terminal })
+                    }
+                  />
+                }
+              />
+            </SettingsCard>
+          </SettingsBlock>
+        </>
+      )}
     </>
   );
 }

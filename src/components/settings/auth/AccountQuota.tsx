@@ -8,17 +8,21 @@ import {
   ResetSlot,
   TONE_FILL,
   TONE_TEXT,
+  TonedText,
   useNow,
 } from "@/components/quota/QuotaLines";
+import { useQuotaDisplay } from "@/components/quota/useQuotaDisplay";
 import {
   QuotaBreakdownChevron,
   QuotaBreakdownRow,
 } from "@/components/quota/QuotaBreakdown";
 import {
+  barPercent,
   countdownStr,
   formatRelativeTime,
   lineHint,
   tierLine,
+  type QuotaDisplay,
   type QuotaLine,
 } from "@/components/quota/quotaRules";
 import {
@@ -27,7 +31,12 @@ import {
 } from "@/components/SubscriptionQuotaFooter";
 import type { SubscriptionQuota } from "@/types/subscription";
 import { useCopilotQuota } from "@/lib/query/copilot";
-import { useXaiOauthQuotaByAccountId } from "@/lib/query/subscription";
+import {
+  useAgyAccountQuota,
+  useClaudeAccountQuota,
+  useKimiAccountQuota,
+  useXaiOauthQuotaByAccountId,
+} from "@/lib/query/subscription";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
 export interface AccountQuotaRow {
@@ -35,10 +44,11 @@ export interface AccountQuotaRow {
   line: QuotaLine;
 }
 
-/** 额度列要画的东西：成功按档画条；查询失败写「额度没查到」+ 原因；null 表示不显示 */
+/** 额度列要画的东西：成功按档画条；查询失败写「额度查询失败」+ 原因；查成功但没有额度时写一句灰字；null 表示不显示 */
 export type AccountQuotaState =
   | { kind: "rows"; rows: AccountQuotaRow[] }
   | { kind: "failed"; reason: string }
+  | { kind: "note"; text: string }
   | { kind: "loading" }
   | null;
 
@@ -52,8 +62,10 @@ interface AccountQuotaColumnProps {
 }
 
 /**
- * 授权中心账号行右侧的额度（v7 Auth 画板）：212 宽的额度条（条和数字都按「剩余」画，
- * 平时 --chart-1；不到 10% 换 warning，用完换 danger）+ 84 宽的「x 分钟前 ↻」。
+ * 授权中心账号行右侧的额度（v7 Auth 画板）：额度条（条和数字按设置写剩余或已用，
+ * 平时 --chart-1；不到 20% 换 warning，用完换 danger）+ 84 宽的「x 分钟前 ↻」。
+ * 档名、数值、倒计时三格定宽，倒计时格没有也留着；整列宽度只随分组卡片宽度变
+ * （.auth-quota-col，见 index.css），各账号、各分组的条起点和长度一致。
  * 打开页面时查一次，不轮询；↻ 手动重查。
  */
 export function AccountQuotaColumn({
@@ -70,14 +82,10 @@ export function AccountQuotaColumn({
   );
   const agoId = useId();
   if (!state) return null;
-  // 有一档带重置时间，每行数值后面都留出倒计时那一格（各行对齐），整列加宽
-  const showReset =
-    state.kind === "rows" &&
-    state.rows.some(({ line }) => countdownStr(line.resetsAt, now));
-  const resetCell = (line: QuotaLine) =>
-    showReset ? (
-      <ResetSlot countdown={countdownStr(line.resetsAt, now)} className="" />
-    ) : null;
+  // 倒计时格始终留着（没有重置时间就空着），别的号的条才不会因此变宽或挪位
+  const resetCell = (line: QuotaLine) => (
+    <ResetSlot countdown={countdownStr(line.resetsAt, now)} className="" />
+  );
 
   const ago = queriedAt ? formatRelativeTime(queriedAt, now, t) : "";
   const agoText = loading
@@ -86,12 +94,7 @@ export function AccountQuotaColumn({
 
   return (
     <>
-      <div
-        className={cn(
-          "flex shrink-0 flex-col gap-0.5",
-          showReset ? "w-[272px]" : "w-[212px]",
-        )}
-      >
+      <div className="auth-quota-col flex shrink-0 flex-col gap-0.5">
         {state.kind === "rows" &&
           state.rows.map(({ label, line }) =>
             line.breakdown ? (
@@ -122,7 +125,7 @@ export function AccountQuotaColumn({
         {state.kind === "failed" && (
           <>
             <span className="h-[18px] text-caption font-medium text-danger-text">
-              {t("quota.failed", { defaultValue: "额度没查到" })}
+              {t("quota.failed", { defaultValue: "额度查询失败" })}
             </span>
             <span
               className="truncate text-caption text-fg-3"
@@ -131,6 +134,12 @@ export function AccountQuotaColumn({
               {state.reason}
             </span>
           </>
+        )}
+        {state.kind === "note" && (
+          // 写在额度行数值（「剩余 91%」）那一格：右边让出倒计时格（52）和间距（8），和别的号的数值对齐
+          <span className="me-[60px] self-end text-caption text-fg-3">
+            {state.text}
+          </span>
         )}
         {state.kind === "loading" && (
           <span className="text-caption text-fg-3">
@@ -185,13 +194,15 @@ function QuotaRowCells({
   /** 跟在说明文字后面的小图标（可点开的行用） */
   trailing?: ReactNode;
 }) {
-  const width = Number.isFinite(line.left)
-    ? Math.max(0, Math.min(100, line.left))
-    : 100;
+  const width = barPercent(line);
   const value = line.value ?? line.text;
   return (
     <>
-      <span className="min-w-[52px] shrink-0 whitespace-nowrap text-fg-2">
+      {/* 定宽：「Claude/GPT 每周」这类长档名不再把条挤短；更长的截断，悬停看全名 */}
+      <span
+        title={label}
+        className="w-[112px] shrink-0 truncate whitespace-nowrap text-fg-2"
+      >
         {label}
       </span>
       {line.caption ? (
@@ -217,13 +228,14 @@ function QuotaRowCells({
           />
         </span>
       )}
-      <span
-        className={cn(
-          "w-14 shrink-0 whitespace-nowrap text-end tabular-nums",
-          line.tone === "normal" ? "text-fg-1" : TONE_TEXT[line.tone],
-        )}
-      >
-        {value}
+      {/* 旁边已有额度条，正常时数值不上色 */}
+      {/* 64 宽放得下「剩余 100%」，和「剩余 99%」右边对齐 */}
+      <span className="w-16 shrink-0 whitespace-nowrap text-end tabular-nums text-fg-1">
+        <TonedText
+          text={value}
+          line={line}
+          className={line.tone === "normal" ? "" : TONE_TEXT[line.tone]}
+        />
       </span>
     </>
   );
@@ -235,6 +247,7 @@ export function subscriptionQuotaState(
   quota: SubscriptionQuota | undefined,
   loading: boolean,
   locale: string,
+  display: QuotaDisplay = "left",
 ): AccountQuotaState {
   if (!quota) return loading ? { kind: "loading" } : null;
   // 没有凭据 / 凭据解析失败：和供应商卡片一样不显示
@@ -250,7 +263,7 @@ export function subscriptionQuotaState(
       reason: quotaFailureReason(t, quota),
     };
   }
-  const rows = quotaRows(t, quota, locale);
+  const rows = quotaRows(t, quota, locale, { display });
   return rows.length > 0 ? { kind: "rows", rows } : null;
 }
 
@@ -263,6 +276,7 @@ export function CopilotAccountQuota({
   login: string;
 }) {
   const { t } = useTranslation();
+  const display = useQuotaDisplay();
   const query = useCopilotQuota(accountId, { enabled: true, autoQuery: false });
   const { data: quota, isFetching: loading } = query;
 
@@ -275,7 +289,7 @@ export function CopilotAccountQuota({
             kind: "rows",
             rows: quota.tiers.map((tier) => ({
               label,
-              line: tierLine(t, tier, label),
+              line: tierLine(t, tier, label, { display }),
             })),
           }
         : null;
@@ -313,6 +327,7 @@ export function XaiAccountQuota({
   login: string;
 }) {
   const { t, i18n } = useTranslation();
+  const display = useQuotaDisplay();
   const {
     data: quota,
     isFetching: loading,
@@ -324,7 +339,97 @@ export function XaiAccountQuota({
   return (
     <AccountQuotaColumn
       login={login}
-      state={subscriptionQuotaState(t, quota, loading, i18n.language)}
+      state={subscriptionQuotaState(t, quota, loading, i18n.language, display)}
+      queriedAt={quota?.queriedAt ?? null}
+      loading={loading}
+      onRefresh={() => void refetch()}
+    />
+  );
+}
+
+/** Kimi 官方账号的剩余额度（kimi_oauth_quota(accountId)，不用先切号） */
+export function KimiAccountQuota({
+  accountId,
+  login,
+}: {
+  accountId: string;
+  login: string;
+}) {
+  const { t, i18n } = useTranslation();
+  const display = useQuotaDisplay();
+  const {
+    data: quota,
+    isFetching: loading,
+    refetch,
+  } = useKimiAccountQuota(accountId, { enabled: true, autoQuery: false });
+  const state = subscriptionQuotaState(
+    t,
+    quota,
+    loading,
+    i18n.language,
+    display,
+  );
+  return (
+    <AccountQuotaColumn
+      login={login}
+      // 没订阅 Kimi Code 的号，额度接口返回空对象：查成功但一档都没有
+      state={
+        !state && quota?.success
+          ? { kind: "note", text: t("kimi.oauth.noSubscription") }
+          : state
+      }
+      queriedAt={quota?.queriedAt ?? null}
+      loading={loading}
+      onRefresh={() => void refetch()}
+    />
+  );
+}
+
+/** Antigravity 账号的剩余额度（agy_account_quota(accountId)，不用先切号） */
+export function AgyAccountQuota({
+  accountId,
+  login,
+}: {
+  accountId: string;
+  login: string;
+}) {
+  const { t, i18n } = useTranslation();
+  const display = useQuotaDisplay();
+  const {
+    data: quota,
+    isFetching: loading,
+    refetch,
+  } = useAgyAccountQuota(accountId, { enabled: true, autoQuery: false });
+  return (
+    <AccountQuotaColumn
+      login={login}
+      state={subscriptionQuotaState(t, quota, loading, i18n.language, display)}
+      queriedAt={quota?.queriedAt ?? null}
+      loading={loading}
+      onRefresh={() => void refetch()}
+    />
+  );
+}
+
+/** Claude 官方账号的订阅额度（get_claude_account_quota(accountId)，不用先切号） */
+export function ClaudeAccountQuota({
+  accountId,
+  login,
+}: {
+  accountId: string;
+  login: string;
+}) {
+  const { t, i18n } = useTranslation();
+  const display = useQuotaDisplay();
+  const {
+    data: quota,
+    isFetching: loading,
+    refetch,
+  } = useClaudeAccountQuota(accountId, { enabled: true, autoQuery: false });
+  return (
+    <AccountQuotaColumn
+      login={login}
+      state={subscriptionQuotaState(t, quota, loading, i18n.language, display)}
       queriedAt={quota?.queriedAt ?? null}
       loading={loading}
       onRefresh={() => void refetch()}

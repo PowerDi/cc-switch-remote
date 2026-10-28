@@ -99,6 +99,7 @@ export async function loadProvidersQueryData(
 }
 
 export interface UseProvidersQueryOptions {
+  enabled?: boolean;
   isProxyRunning?: boolean; // 代理服务是否运行中
   target?: ManagementTarget;
 }
@@ -122,10 +123,15 @@ export const useProvidersQuery = (
   appId: AppId,
   options?: UseProvidersQueryOptions,
 ): UseQueryResult<ProvidersQueryData> => {
-  const { isProxyRunning = false, target = { type: "local" } } = options || {};
+  const {
+    enabled = true,
+    isProxyRunning = false,
+    target = { type: "local" },
+  } = options || {};
 
   return useQuery({
     ...providersQueryOptions(appId, target),
+    enabled,
     // Remote targets are separate machines. Showing the previous target while
     // the next one loads leaves stale provider cards actionable against the
     // newly selected connection. Keep upstream's smooth local refresh only.
@@ -134,7 +140,8 @@ export const useProvidersQuery = (
     refetchOnWindowFocus: target.type === "local",
     // 当代理服务运行时，每 10 秒刷新一次供应商列表
     // 这样可以自动反映后端熔断器自动禁用代理目标的变更
-    refetchInterval: target.type === "local" && isProxyRunning ? 10000 : false,
+    refetchInterval:
+      enabled && target.type === "local" && isProxyRunning ? 10000 : false,
     retry: (failureCount, error) => {
       if (target.type === "remote" && isRemotePasswordRequiredError(error)) {
         return false;

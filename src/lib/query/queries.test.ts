@@ -118,3 +118,44 @@ describe("provider query loading", () => {
     );
   });
 });
+
+describe("provider query capability gating", () => {
+  it.each(["claude-desktop", "agy", "kimi", "omp"] as const)(
+    "does not read unsupported remote %s until enabled",
+    async (appId) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const wrapper = ({ children }: PropsWithChildren) =>
+        createElement(QueryClientProvider, { client }, children);
+      const getState = vi
+        .spyOn(providersApi, "getState")
+        .mockResolvedValue({ providers: {}, currentProviderId: "remote" });
+      const getAll = vi.spyOn(providersApi, "getAll");
+      const getCurrent = vi.spyOn(providersApi, "getCurrent");
+      const { result, rerender, unmount } = renderHook(
+        ({ enabled }) =>
+          useProvidersQuery(appId, {
+            target: remoteTarget,
+            enabled,
+            isProxyRunning: true,
+          }),
+        { wrapper, initialProps: { enabled: false } },
+      );
+      expect(result.current.fetchStatus).toBe("idle");
+      expect(getState).not.toHaveBeenCalled();
+      expect(getAll).not.toHaveBeenCalled();
+      expect(getCurrent).not.toHaveBeenCalled();
+      rerender({ enabled: true });
+      await waitFor(() =>
+        expect(result.current.data?.currentProviderId).toBe("remote"),
+      );
+      expect(getState).toHaveBeenCalledWith(appId, remoteTarget);
+      expect(getAll).not.toHaveBeenCalled();
+      expect(getCurrent).not.toHaveBeenCalled();
+      unmount();
+      client.clear();
+      vi.restoreAllMocks();
+    },
+  );
+});

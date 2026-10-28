@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { toast } from "@/lib/toast";
-import { providersApi, type AppId } from "@/lib/api";
+import { providersApi, type ManagementTarget, type AppId } from "@/lib/api";
+import type { ProviderMeta } from "@/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
 /** 编辑器投影读不了客户端配置文件（比如手改坏了）：编辑器退回显示保存的内容。 */
@@ -33,6 +34,7 @@ export type EditorBaseChange = (
 export function useDraftEditorProjection(
   appId: AppId,
   onEditorBaseChange?: EditorBaseChange,
+  target?: ManagementTarget,
 ) {
   const { t } = useTranslation();
   // 连续切换预设时只认最后一次请求。
@@ -42,7 +44,7 @@ export function useDraftEditorProjection(
     () => () => {
       sequence.current += 1;
     },
-    [],
+    [appId, onEditorBaseChange, target],
   );
 
   const projectDraft = useCallback(
@@ -50,12 +52,13 @@ export function useDraftEditorProjection(
       settings: Record<string, unknown>,
       category: string | undefined,
       apply: (shown: Record<string, unknown>) => void,
+      meta?: ProviderMeta,
     ) => {
       if (!onEditorBaseChange) return;
       const current = ++sequence.current;
       onEditorBaseChange(null);
       providersApi
-        .getEditorView(appId, settings, category)
+        .getEditorView(appId, settings, category, undefined, meta, target)
         .then((view) => {
           if (current !== sequence.current) return;
           apply(view.settings);
@@ -66,7 +69,7 @@ export function useDraftEditorProjection(
           toastEditorViewFailed(t, error);
         });
     },
-    [appId, onEditorBaseChange, t],
+    [appId, onEditorBaseChange, target, t],
   );
 
   /** 不再需要投影（比如切到了没有配置编辑框的官方卡）：作废进行中的请求。 */

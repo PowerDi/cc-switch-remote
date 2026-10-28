@@ -3,6 +3,7 @@ import type { ProviderMeta } from "@/types";
 import type { ManagementTarget } from "@/lib/api";
 import { useXaiOauthQuota } from "@/lib/query/subscription";
 import { SubscriptionQuotaView } from "@/components/SubscriptionQuotaFooter";
+import { useQuotaDisplay } from "@/components/quota/useQuotaDisplay";
 
 interface XaiOauthQuotaFooterProps {
   meta?: ProviderMeta;
@@ -25,6 +26,7 @@ const XaiOauthQuotaFooter: React.FC<XaiOauthQuotaFooterProps> = ({
   isCurrent = false,
   target,
 }) => {
+  const display = useQuotaDisplay();
   const {
     data: quota,
     isFetching: loading,
@@ -42,6 +44,7 @@ const XaiOauthQuotaFooter: React.FC<XaiOauthQuotaFooterProps> = ({
       refetch={refetch}
       appIdForExpiredHint="xai_oauth"
       inline={inline}
+      display={display}
     />
   );
 };

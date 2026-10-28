@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -28,6 +28,7 @@ const remoteApiMocks = vi.hoisted(() => ({
 }));
 
 const settingsHooks = vi.hoisted(() => ({
+  readLocalSettings: vi.fn(),
   updateSettings: vi.fn(),
   autoSaveSettings: vi.fn(async () => null),
   settings: { visibleApps: undefined as unknown },
@@ -55,11 +56,14 @@ vi.mock("@/lib/api/providers", async (importOriginal) => {
   };
 });
 vi.mock("@/hooks/useSettings", () => ({
-  useSettings: () => ({
-    settings: settingsHooks.settings,
-    updateSettings: settingsHooks.updateSettings,
-    autoSaveSettings: settingsHooks.autoSaveSettings,
-  }),
+  useSettings: () => {
+    settingsHooks.readLocalSettings();
+    return {
+      settings: settingsHooks.settings,
+      updateSettings: settingsHooks.updateSettings,
+      autoSaveSettings: settingsHooks.autoSaveSettings,
+    };
+  },
 }));
 vi.mock("sonner", () => ({
   toast: { info: vi.fn(), success: vi.fn(), warning: vi.fn(), error: vi.fn() },
@@ -110,6 +114,7 @@ beforeEach(() => {
   resetToolManagementStateForTests();
   for (const fn of Object.values(localApi)) fn.mockReset?.();
   for (const fn of Object.values(remoteApiMocks)) fn.mockReset?.();
+  settingsHooks.readLocalSettings.mockReset();
   settingsHooks.updateSettings.mockReset();
   settingsHooks.autoSaveSettings.mockReset();
   settingsHooks.settings = { visibleApps: undefined };
@@ -147,6 +152,7 @@ describe("AppsPage management target", () => {
     );
     // 本机命令一次都不该被调用
     expect(localApi.getToolVersions).not.toHaveBeenCalled();
+    expect(settingsHooks.readLocalSettings).not.toHaveBeenCalled();
   });
 
   it("keeps local tool checks on the local machine", async () => {
@@ -186,6 +192,70 @@ describe("AppsPage management target", () => {
     expect(screen.queryByText("Claude Desktop")).not.toBeInTheDocument();
   });
 
+  it("gates Oh My Pi until the selected helper advertises support", async () => {
+    renderApps(remoteTarget);
+    await waitFor(() =>
+      expect(remoteApiMocks.getToolVersions).toHaveBeenCalled(),
+    );
+    expect(document.querySelector('[data-tool-row="omp"]')).toBeNull();
+    expect(
+      remoteApiMocks.getToolVersions.mock.calls.flatMap((call) => call[1]),
+    ).not.toContain("omp");
+    expect(document.querySelector('[data-tool-row="agy"]')).toBeNull();
+    expect(document.querySelector('[data-tool-row="kimi"]')).toBeNull();
+  });
+
+  it("installs Oh My Pi through the remote adapter and refreshes remote state", async () => {
+    const user = userEvent.setup();
+    remoteApiMocks.checkHealth.mockResolvedValue({
+      reachable: true,
+      helperInstalled: true,
+      capabilities: ["providers", "tools", "omp"],
+    });
+    remoteApiMocks.getToolVersions.mockImplementation(
+      async (_profile, names: string[]) =>
+        names.map((name) =>
+          name === "omp" &&
+          !remoteApiMocks.runToolLifecycleAction.mock.calls.length
+            ? { ...toolVersion(name), version: null }
+            : toolVersion(name),
+        ),
+    );
+    remoteApiMocks.runToolLifecycleAction.mockResolvedValue(undefined);
+    renderApps(remoteTarget);
+    await waitFor(() =>
+      expect(document.querySelector('[data-tool-row="omp"]')).not.toBeNull(),
+    );
+    const row = () =>
+      within(document.querySelector('[data-tool-row="omp"]') as HTMLElement);
+    await waitFor(() =>
+      expect(
+        row().getByRole("button", { name: "settings.toolInstall" }),
+      ).toBeEnabled(),
+    );
+    await user.click(
+      row().getByRole("button", { name: "settings.toolInstall" }),
+    );
+    await waitFor(() =>
+      expect(remoteApiMocks.runToolLifecycleAction).toHaveBeenCalledWith(
+        profile,
+        ["omp"],
+        "install",
+        remoteTarget.secret,
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        row().queryByRole("button", { name: "settings.toolInstall" }),
+      ).toBeNull(),
+    );
+    expect(localApi.runToolLifecycleAction).not.toHaveBeenCalled();
+    expect(localApi.getToolVersions).not.toHaveBeenCalled();
+    expect(
+      row().queryByRole("button", { name: "appPage.moreActions" }),
+    ).toBeNull();
+  });
+
   it("writes the target's own visible apps", async () => {
     const user = userEvent.setup();
     settingsHooks.settings = { visibleApps: { gemini: true } };
@@ -196,8 +266,8 @@ describe("AppsPage management target", () => {
     renderApps(remoteTarget);
 
     // 第一行是 Claude Code：远端目标下开关要写那台主机的 visibleApps
-    const [claudeSwitch] = await screen.findAllByRole("switch");
-    await user.click(claudeSwitch);
+    await waitFor(() => expect(screen.getAllByRole("switch")[0]).toBeEnabled());
+    await user.click(screen.getAllByRole("switch")[0]);
 
     // 远端目标的可见应用写回那台主机（saveForTarget 内部走 remoteApi.saveSettings，
     // 路由本身在 settingsApi.saveForTarget 的单测里覆盖）

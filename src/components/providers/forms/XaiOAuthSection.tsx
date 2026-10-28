@@ -102,7 +102,11 @@ export const XaiOAuthSection: React.FC<XaiOAuthSectionProps> = ({
     return () => onBusyChange?.(false);
   }, [interactionBusy, onBusyChange]);
 
-  const accountUsers = useManagedAccountUsers("xai_oauth", defaultAccountId);
+  const accountUsers = useManagedAccountUsers(
+    "xai_oauth",
+    defaultAccountId,
+    target,
+  );
   const [removeTarget, setRemoveTarget] =
     React.useState<ManagedAccountRemoveTarget | null>(null);
   const resolvedMode = mode ?? (onAccountSelect ? "select" : "manage");
@@ -223,7 +227,6 @@ export const XaiOAuthSection: React.FC<XaiOAuthSectionProps> = ({
           defaultValue: "还没有登录 {{service}} 账号。",
           service: "xAI",
         })}
-        loginLabel={t("xaiOauth.login", "使用 xAI 登录")}
         onAdd={addAccount}
         canReauth
         // 后端不支持指定账号重新登录：发起一次普通登录，用同一个 xAI 账号登录会替换掉旧凭据
@@ -232,12 +235,6 @@ export const XaiOAuthSection: React.FC<XaiOAuthSectionProps> = ({
         settingDefault={isSettingDefaultAccount}
         onRemove={(accountId, login) =>
           setRemoveTarget({ kind: "one", accountId, login })
-        }
-        onRemoveAll={() =>
-          setRemoveTarget({
-            kind: "all",
-            accountIds: accounts.map((account) => account.id),
-          })
         }
         removing={isRemovingAccount}
         logoutPending={isLoggingOut}

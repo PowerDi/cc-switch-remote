@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import type { ManagedAuthProvider } from "@/lib/api/auth";
+import type { ManagementTarget } from "@/lib/api/remote";
 import { useProvidersQuery } from "@/lib/query";
 import {
   findManagedAccountUsers,
@@ -12,10 +13,18 @@ import {
 export function useManagedAccountUsers(
   authProvider: ManagedAuthProvider,
   defaultAccountId: string | null,
+  target?: ManagementTarget,
 ) {
-  const { data: claude } = useProvidersQuery("claude");
-  const { data: desktop } = useProvidersQuery("claude-desktop");
-  const { data: codex } = useProvidersQuery("codex");
+  const { data: claude } = useProvidersQuery("claude", { target });
+  const { data: desktop } = useProvidersQuery("claude-desktop", {
+    target,
+    enabled: target?.type !== "remote",
+  });
+  const { data: codex } = useProvidersQuery("codex", { target });
+  const { data: agy } = useProvidersQuery("agy", {
+    target,
+    enabled: target?.type !== "remote",
+  });
 
   return useCallback(
     (accountIds: readonly string[]): ManagedAccountUser[] =>
@@ -23,7 +32,8 @@ export function useManagedAccountUsers(
         claude: claude?.providers,
         "claude-desktop": desktop?.providers,
         codex: codex?.providers,
+        agy: agy?.providers,
       }),
-    [authProvider, defaultAccountId, claude, desktop, codex],
+    [authProvider, defaultAccountId, claude, desktop, codex, agy],
   );
 }

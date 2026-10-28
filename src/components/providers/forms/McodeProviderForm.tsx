@@ -18,8 +18,7 @@ import { OpenCodeFormFields } from "./OpenCodeFormFields";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
 import { normalizeRequestHeaders } from "./helpers/requestHeaders";
 import {
-  isKnownOpencodeOptionKey,
-  OPENCODE_EXTRA_OPTION_DRAFT_PREFIX,
+  mergeOpencodeExtraOptionRows,
   toOpencodeExtraOptions,
 } from "./helpers/opencodeFormUtils";
 import type { ProviderFormProps } from "./ProviderForm";
@@ -78,6 +77,7 @@ export function McodeProviderForm({
   showButtons = true,
   onSubmittingChange,
   onSubmitReadyChange,
+  target,
 }: ProviderFormProps) {
   const { t } = useTranslation();
   const isDarkMode = useDarkMode();
@@ -105,7 +105,7 @@ export function McodeProviderForm({
   // references embed it, so it is fixed once the provider exists.
   const isEdit = Boolean(initialData);
   const [providerKey, setProviderKey] = useState(providerId ?? "");
-  const { data: existing } = useProvidersQuery("mcode");
+  const { data: existing } = useProvidersQuery("mcode", { target });
   const keyTaken =
     !isEdit &&
     Object.prototype.hasOwnProperty.call(
@@ -287,23 +287,10 @@ export function McodeProviderForm({
             extraOptions={extraOptions}
             onExtraOptionsChange={(draft) => {
               setExtraOptions(draft);
-              const options = Object.fromEntries(
-                Object.entries(config.options ?? {}).filter(([key]) =>
-                  isKnownOpencodeOptionKey(key),
-                ),
-              );
-              for (const [key, value] of Object.entries(draft)) {
-                if (
-                  !key.trim() ||
-                  key.startsWith(OPENCODE_EXTRA_OPTION_DRAFT_PREFIX)
-                )
-                  continue;
-                try {
-                  options[key.trim()] = JSON.parse(value);
-                } catch {
-                  options[key.trim()] = value;
-                }
-              }
+              const options: OpenCodeProviderOptions = {
+                ...(config.options ?? {}),
+              };
+              mergeOpencodeExtraOptionRows(options, draft);
               update({ ...config, options });
             }}
           />

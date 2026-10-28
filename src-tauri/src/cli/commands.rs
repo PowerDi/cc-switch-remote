@@ -1315,7 +1315,10 @@ pub fn app_mode_exit(_app_type: &str) -> Result<(), String> {
 }
 
 #[cfg(feature = "proxy-runtime")]
-pub fn app_mode_set_route(app_type: &str, provider_id: &str) -> Result<(), String> {
+pub fn app_mode_set_route(
+    app_type: &str,
+    provider_id: &str,
+) -> Result<crate::mode::controller::RouteSwitchResult, String> {
     let state = routing_state()?;
     let app = app_mode_app(app_type)?;
     routing_runtime()?
@@ -1323,7 +1326,10 @@ pub fn app_mode_set_route(app_type: &str, provider_id: &str) -> Result<(), Strin
 }
 
 #[cfg(not(feature = "proxy-runtime"))]
-pub fn app_mode_set_route(_app_type: &str, _provider_id: &str) -> Result<(), String> {
+pub fn app_mode_set_route(
+    _app_type: &str,
+    _provider_id: &str,
+) -> Result<crate::mode::controller::RouteSwitchResult, String> {
     Err("This helper build does not include remote app mode support".to_string())
 }
 
@@ -1582,6 +1588,7 @@ pub fn save_settings(settings_json: &str) -> Result<crate::settings::SettingsSav
     let settings: crate::settings::AppSettings =
         serde_json::from_str(settings_json).map_err(|e| e.to_string())?;
     let state = build_command_state()?;
+    let _runtime_guard = auth_runtime()?.enter();
     crate::settings::save_settings_with_state(&state, settings)
 }
 
@@ -2176,6 +2183,7 @@ pub fn run_tool_lifecycle_action(tools_json: &str, action: &str) -> Result<(), S
         tools.clone(),
         action.to_string(),
         None,
+        None,
         outbound_proxy,
     ))?;
 
@@ -2342,6 +2350,8 @@ pub fn editor_view(
         category: Option<String>,
         #[serde(default)]
         provider_id: Option<String>,
+        #[serde(default)]
+        meta: Option<crate::provider::ProviderMeta>,
     }
 
     let settings_config: serde_json::Value =
@@ -2357,8 +2367,15 @@ pub fn editor_view(
         options.category,
     )
     .map_err(|e| e.to_string())?;
-    let view = ProviderService::editor_view(&state, app, &settings_config, category.as_deref())
-        .map_err(|e| e.to_string())?;
+    let view = ProviderService::editor_view_with_meta(
+        &state,
+        app,
+        &settings_config,
+        category.as_deref(),
+        options.provider_id.as_deref(),
+        options.meta.as_ref(),
+    )
+    .map_err(|e| e.to_string())?;
     let mut value = serde_json::to_value(view).map_err(|e| e.to_string())?;
     redact_secret_values(&mut value);
     Ok(value)
@@ -2443,6 +2460,12 @@ pub fn remove_provider_from_live_config(app: AppType, id: &str) -> Result<bool, 
 
 pub fn live_provider_ids(app: AppType) -> Result<Vec<String>, String> {
     match app {
+        AppType::Pi | AppType::Omp => crate::services::pi_state::PiStateService::current_for_app(
+            &build_command_state()?,
+            &app,
+        )
+        .map(|s| s.enabled_provider_ids)
+        .map_err(|e| e.to_string()),
         AppType::OpenCode => crate::opencode_config::get_providers()
             .map(|providers| providers.keys().cloned().collect())
             .map_err(|e| e.to_string()),
@@ -2740,6 +2763,12 @@ pub fn import_providers(app: AppType) -> Result<bool, String> {
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
     let state = build_remote_app_state(db);
     match app {
+        AppType::Pi => crate::services::provider::import_pi_providers_from_live(&state)
+            .map(|n| n > 0)
+            .or_else(live_config_missing_as_false),
+        AppType::Omp => crate::services::provider::import_omp_providers_from_live(&state)
+            .map(|n| n > 0)
+            .or_else(live_config_missing_as_false),
         AppType::OpenCode => crate::services::provider::import_opencode_providers_from_live(&state)
             .map(|count| count > 0)
             .or_else(live_config_missing_as_false),
@@ -3899,4 +3928,55 @@ mod tests {
             "http://192.168.1.10:15721/status"
         );
     }
+}
+
+/// Remote-adapted native provider state. The same service supplies the local Pi/OMP UI.
+pub fn pi_current_state(app: AppType) -> Result<crate::services::pi_state::PiCurrentState, String> {
+    if !matches!(app, AppType::Pi | AppType::Omp) {
+        return Err("Only Pi and Oh My Pi support this command".into());
+    }
+    crate::services::pi_state::PiStateService::current_for_app(&build_command_state()?, &app)
+        .map_err(|e| e.to_string())
+}
+
+pub fn update_pi_provider_usage_script(app: AppType, id: &str, json: &str) -> Result<bool, String> {
+    if !matches!(app, AppType::Pi | AppType::Omp) {
+        return Err("Only Pi and Oh My Pi support this command".into());
+    }
+    let mut incoming: crate::provider::UsageScript =
+        serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let state = build_command_state()?;
+    // Script credentials follow the centralized read/redact/restore contract.
+    if let Some(row) = state
+        .db
+        .get_provider_by_id(id, app.as_str())
+        .map_err(|e| e.to_string())?
+    {
+        if let Some(existing) = row.meta.and_then(|m| m.usage_script) {
+            let base = serde_json::to_value(existing).map_err(|e| e.to_string())?;
+            let mut draft = serde_json::to_value(incoming).map_err(|e| e.to_string())?;
+            restore_redacted_secret_values_for(&base, &mut draft).map_err(|e| e.to_string())?;
+            incoming = serde_json::from_value(draft).map_err(|e| e.to_string())?;
+        }
+    }
+    ProviderService::update_pi_usage_script(&state, app, id, incoming).map_err(|e| e.to_string())
+}
+
+pub fn usage_first_date(params_json: &str) -> Result<Option<String>, String> {
+    let params = parse_usage_params(params_json)?;
+    let db = Database::init().map_err(|e| e.to_string())?;
+    db.get_first_usage_date(
+        params.app_type.as_deref(),
+        params.provider_name.as_deref(),
+        params.model.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn opencode_default_model() -> Result<Option<String>, String> {
+    crate::opencode_config::get_default_model().map_err(|e| e.to_string())
+}
+
+pub fn set_opencode_default_model(model: &str) -> Result<(), String> {
+    crate::opencode_config::set_default_model(model).map_err(|e| e.to_string())
 }

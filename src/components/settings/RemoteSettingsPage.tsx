@@ -1,3 +1,4 @@
+import { RemoteAppConfigSection } from "./RemoteAppConfigSection";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -26,18 +27,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
-import { CodexAuthSettings } from "@/components/settings/CodexAuthSettings";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { BackupListSection } from "@/components/settings/BackupListSection";
 import { GeneralSection } from "@/components/settings/sections/GeneralSection";
-import {
-  SettingsBlock,
-  SettingsCard,
-} from "@/components/settings/SettingsLayout";
-import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
-import { APP_IDS } from "@/config/appConfig";
-import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
-import type { VisibleApps } from "@/types";
 import { RoutingSection } from "@/components/settings/sections/RoutingSection";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import { AdvancedSettingsAccordion } from "@/components/settings/AdvancedSettingsAccordion";
@@ -86,9 +78,10 @@ interface RemoteSettingsPageProps {
 
 function coerceRemoteTab(tab: string | undefined): string {
   if (tab === "proxy") return "routing";
-  if (tab === "data") return "advanced";
+  if (tab === "data" || tab === "network") return "advanced";
   if (tab === "about") return "environment";
-  return tab === "general" ||
+  return tab === "appConfig" ||
+    tab === "general" ||
     tab === "advanced" ||
     tab === "environment" ||
     tab === "auth" ||
@@ -310,12 +303,15 @@ export function RemoteSettingsPage({
         onValueChange={setActiveTab}
         className="flex flex-col h-full"
       >
-        <TabsList className="grid w-full grid-cols-6 mb-6 glass rounded-lg">
+        <TabsList className="grid w-full grid-cols-7 mb-6 glass rounded-lg">
           <TabsTrigger value="environment">
             {t("remote.settings.tabs.remote", { defaultValue: "远程" })}
           </TabsTrigger>
           <TabsTrigger value="general">
             {t("settings.tabGeneral", { defaultValue: "通用" })}
+          </TabsTrigger>
+          <TabsTrigger value="appConfig">
+            {t("settings.sections.appConfig")}
           </TabsTrigger>
           <TabsTrigger value="routing">
             {t("settings.tabProxy", { defaultValue: "代理" })}
@@ -389,12 +385,22 @@ export function RemoteSettingsPage({
                 settingsCapability={settingsCapability}
                 target={target}
                 settings={remoteSettings}
+                onOpenApps={onOpenApps}
                 isLoading={isLoadingRemoteSettings}
-                onSave={(updates) => {
-                  void saveRemoteSettings(updates);
-                }}
+                onSave={saveRemoteSettings}
               />
             </motion.div>
+          </TabsContent>
+
+          <TabsContent value="appConfig" className="space-y-6 mt-0 pb-4">
+            {helperReady && settingsCapability && remoteSettings && (
+              <RemoteAppConfigSection
+                target={target}
+                settings={remoteSettings}
+                isSaving={isSavingRemoteSettings}
+                onSave={saveRemoteSettings}
+              />
+            )}
           </TabsContent>
 
           <TabsContent value="routing" className="space-y-4 mt-0 pb-4">
@@ -446,12 +452,25 @@ export function RemoteSettingsPage({
               <UsageDashboard
                 target={target}
                 modelsDevSyncSupported={usageModelPricingSyncCapability}
+                settingsReady={remoteSettings != null}
+                sessionAutoSyncEnabled={
+                  remoteSettings?.sessionAutoSyncEnabled ?? true
+                }
+                onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) =>
+                  saveRemoteSettings({ sessionAutoSyncEnabled })
+                }
+                usageDisplay={remoteSettings?.usageDisplay}
+                onUsageDisplayChange={(usageDisplay) =>
+                  saveRemoteSettings({ usageDisplay })
+                }
                 sessionManualSyncSupported={usageManualSessionSyncCapability}
                 refreshIntervalMs={
                   remoteSettings?.usageDashboardRefreshIntervalMs
                 }
                 onRefreshIntervalChange={(usageDashboardRefreshIntervalMs) => {
-                  void saveRemoteSettings({ usageDashboardRefreshIntervalMs });
+                  return saveRemoteSettings({
+                    usageDashboardRefreshIntervalMs,
+                  });
                 }}
               />
             )}
@@ -497,6 +516,7 @@ export function RemoteSettingsPage({
                     ) : (
                       <RemoteDirectorySettings
                         target={target}
+                        showToolDirectories={false}
                         supportsAppConfigDir={appConfigDirCapability}
                         settings={remoteSettings}
                         isSaving={isSavingRemoteSettings}
@@ -929,7 +949,10 @@ interface RemoteGeneralSettingsSectionProps {
   target: Extract<ManagementTarget, { type: "remote" }>;
   settings: Settings | null;
   isLoading: boolean;
-  onSave: (updates: Partial<Settings>) => void | Promise<void>;
+  onOpenApps?: () => void;
+  onSave: (
+    updates: Partial<Settings>,
+  ) => boolean | void | Promise<boolean | void>;
 }
 
 function RemoteGeneralSettingsSection({
@@ -939,6 +962,7 @@ function RemoteGeneralSettingsSection({
   settings,
   isLoading,
   onSave,
+  onOpenApps,
 }: RemoteGeneralSettingsSectionProps) {
   const { t } = useTranslation();
   const unavailableMessage = !helperReady
@@ -974,78 +998,17 @@ function RemoteGeneralSettingsSection({
       {/* v4 把外观 / 侧栏 / 窗口 / 终端都收进了 GeneralSection（含 visibleApps、
           showProfileSwitcher），远端设置页沿用同一套模块，而不是另建 Remote 专属区块。 */}
       <GeneralSection
+        target={target}
         settings={settings as SettingsFormState}
         onAutoSave={async (updates) => {
-          await onSave(updates as Partial<Settings>);
-          return true;
+          return (await onSave(updates as Partial<Settings>)) !== false;
         }}
-        // 本机的「前往应用」入口在远端不适用（应用页管理的是本机工具环境），
-        // 这里换成那台主机自己的可见应用开关。
-        hideVisibleAppsRow
-        onOpenApps={() => undefined}
-      />
-      <RemoteAppVisibilityCard
-        settings={settings as SettingsFormState}
-        onSave={(updates) => onSave(updates as Partial<Settings>)}
-      />
-
-      <CodexAuthSettings
-        settings={settings}
-        target={target}
-        onChange={(updates) => void onSave(updates)}
+        onOpenApps={onOpenApps ?? (() => undefined)}
       />
 
       {/* Skill 存储位置在 v4 移到 Skills 页的 SkillsStorageSheet（远端由 skills 能力门控），
           不再放在设置里；远端 Skills 页批次接上。 */}
     </div>
-  );
-}
-
-/**
- * 远端主机的可见应用：写进那台主机自己的设置（visibleApps），本机目标不受影响。
- * 与「应用」页的本机开关同一套语义：至少留一个应用。
- */
-function RemoteAppVisibilityCard({
-  settings,
-  onSave,
-}: {
-  settings: SettingsFormState;
-  onSave: (updates: Partial<SettingsFormState>) => void | Promise<void>;
-}) {
-  const { t } = useTranslation();
-  const visibleApps: VisibleApps = {
-    ...DEFAULT_VISIBLE_APPS,
-    ...settings.visibleApps,
-  };
-  const visibleCount = Object.values(visibleApps).filter(Boolean).length;
-
-  return (
-    <SettingsBlock title={t("settings.general.sidebarAndHeader")}>
-      <SettingsCard>
-        <div className="flex flex-wrap gap-2 px-4 py-3">
-          {APP_IDS.map((app) => {
-            const visible = visibleApps[app];
-            return (
-              <Button
-                key={app}
-                type="button"
-                variant={visible ? "solid" : "quiet"}
-                size="compact"
-                aria-pressed={visible}
-                disabled={visible && visibleCount <= 1}
-                onClick={() =>
-                  void onSave({
-                    visibleApps: { ...visibleApps, [app]: !visible },
-                  })
-                }
-              >
-                {APP_DISPLAY_NAME[app]}
-              </Button>
-            );
-          })}
-        </div>
-      </SettingsCard>
-    </SettingsBlock>
   );
 }
 

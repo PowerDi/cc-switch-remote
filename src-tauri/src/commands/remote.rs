@@ -1752,6 +1752,10 @@ fn parse_remote_platform(value: &str) -> RemotePlatform {
 fn parse_remote_capability(value: &str) -> Option<RemoteCapability> {
     match value {
         "providers" => Some(RemoteCapability::Providers),
+        "omp" => Some(RemoteCapability::Omp),
+        "pi-native-state" => Some(RemoteCapability::PiNativeState),
+        "opencode-default-model" => Some(RemoteCapability::OpencodeDefaultModel),
+        "usage-first-date" => Some(RemoteCapability::UsageFirstDate),
         "provider-editor" => Some(RemoteCapability::ProviderEditor),
         "app-mode" => Some(RemoteCapability::AppMode),
         "universal-providers" => Some(RemoteCapability::UniversalProviders),
@@ -2475,12 +2479,14 @@ pub async fn remote_get_provider_editor_view(
     app: String,
     #[allow(non_snake_case)] settingsConfig: serde_json::Value,
     category: Option<String>,
+    meta: Option<crate::provider::ProviderMeta>,
     #[allow(non_snake_case)] providerId: Option<String>,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<serde_json::Value, String> {
     let settings_json = serde_json::to_string(&settingsConfig).map_err(|e| e.to_string())?;
     let options_json = serde_json::to_string(&serde_json::json!({
         "category": category,
+        "meta": meta,
         "providerId": providerId,
     }))
     .map_err(|e| e.to_string())?;
@@ -3174,7 +3180,7 @@ pub async fn remote_add_to_failover_queue(
     #[allow(non_snake_case)] appType: String,
     #[allow(non_snake_case)] providerId: String,
     secret: Option<RemoteConnectionSecret>,
-) -> Result<(), String> {
+) -> Result<crate::mode::controller::RouteSwitchResult, String> {
     run_remote_helper_json(
         profile,
         vec![
@@ -5008,4 +5014,107 @@ mod tests {
         assert_eq!(normalized[0]["installed_but_broken"], true);
         assert_eq!(normalized[0]["error"], "node: version too old");
     }
+}
+
+#[tauri::command]
+pub async fn remote_get_pi_current_state(
+    profile: RemoteHostProfile,
+    app: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<crate::services::pi_state::PiCurrentState, String> {
+    ensure_remote_helper_capability(profile.clone(), secret.clone(), "pi-native-state").await?;
+    if app == "omp" {
+        ensure_remote_helper_capability(profile.clone(), secret.clone(), "omp").await?;
+    }
+    run_remote_helper_json(
+        profile,
+        vec!["providers".into(), "current-state".into(), app],
+        secret,
+        "Remote native provider state",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_update_pi_provider_usage_script(
+    profile: RemoteHostProfile,
+    app: String,
+    id: String,
+    #[allow(non_snake_case)] usageScript: crate::provider::UsageScript,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<bool, String> {
+    ensure_remote_helper_capability(profile.clone(), secret.clone(), "pi-native-state").await?;
+    if app == "omp" {
+        ensure_remote_helper_capability(profile.clone(), secret.clone(), "omp").await?;
+    }
+    let script = serde_json::to_string(&usageScript).map_err(|e| e.to_string())?;
+    run_remote_helper_json(
+        profile,
+        vec![
+            "providers".into(),
+            "update-usage-script".into(),
+            app,
+            id,
+            script,
+        ],
+        secret,
+        "Remote native usage script",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_usage_first_date(
+    profile: RemoteHostProfile,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Option<String>, String> {
+    ensure_remote_helper_capability(profile.clone(), secret.clone(), "usage-first-date").await?;
+    let params = serialize_remote_usage_params(None, None, app_type, provider_name, model)?;
+    run_remote_helper_json(
+        profile,
+        vec!["usage".into(), "first-date".into(), params],
+        secret,
+        "Remote first usage date",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_get_opencode_default_model(
+    profile: RemoteHostProfile,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<Option<String>, String> {
+    ensure_remote_helper_capability(profile.clone(), secret.clone(), "opencode-default-model")
+        .await?;
+    run_remote_helper_json(
+        profile,
+        vec!["providers".into(), "opencode-default-model".into()],
+        secret,
+        "Remote OpenCode default model",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn remote_set_opencode_default_model(
+    profile: RemoteHostProfile,
+    model: String,
+    secret: Option<RemoteConnectionSecret>,
+) -> Result<(), String> {
+    ensure_remote_helper_capability(profile.clone(), secret.clone(), "opencode-default-model")
+        .await?;
+    run_remote_helper_json(
+        profile,
+        vec![
+            "providers".into(),
+            "set-opencode-default-model".into(),
+            model,
+        ],
+        secret,
+        "Remote OpenCode default model write",
+    )
+    .await
 }

@@ -175,3 +175,94 @@ describe("getOpenCodeModels", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 });
+
+import { modelFetchRequestHeaders } from "./model-fetch";
+describe("modelFetchRequestHeaders", () => {
+  it("合法的 Header 覆盖 JSON 原样转为请求头（键名归一为小写）", () => {
+    expect(
+      modelFetchRequestHeaders('{\n  "cf-aig-authorization": "secret"\n}'),
+    ).toEqual({ "cf-aig-authorization": "secret" });
+    expect(modelFetchRequestHeaders('{"X-Custom":"a","x-lower":"b"}')).toEqual({
+      "x-custom": "a",
+      "x-lower": "b",
+    });
+  });
+
+  it("空覆盖不携带请求头", () => {
+    expect(modelFetchRequestHeaders("")).toBeUndefined();
+    expect(modelFetchRequestHeaders("   \n  ")).toBeUndefined();
+    expect(modelFetchRequestHeaders("{}")).toBeUndefined();
+  });
+
+  it("JSON 非法或结构不符合时静默回退（不阻断取模型）", () => {
+    expect(modelFetchRequestHeaders("not json")).toBeUndefined();
+    expect(modelFetchRequestHeaders('["array"]')).toBeUndefined();
+    expect(modelFetchRequestHeaders('{"Name": 1}')).toBeUndefined();
+    expect(modelFetchRequestHeaders('{"Bad Name!": "v"}')).toBeUndefined();
+    expect(
+      modelFetchRequestHeaders('{"dup": "a", "DUP": "b"}'),
+    ).toBeUndefined();
+  });
+
+  it("本地代理托管头不允许借道模型列表请求", () => {
+    expect(
+      modelFetchRequestHeaders('{"authorization": "Bearer x"}'),
+    ).toBeUndefined();
+    expect(modelFetchRequestHeaders('{"x-api-key": "k"}')).toBeUndefined();
+  });
+});
+
+describe("model fetch headers and protocol target parity", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    remoteFetchModelsForProviderMock.mockReset();
+  });
+  it("preserves protocol, User-Agent and configured headers on the selected host", async () => {
+    const requestHeaders = { "x-tenant": "tenant" };
+    await fetchModelsForProviderConfig({
+      app: "omp",
+      providerId: "p",
+      target: remoteTarget,
+      baseUrl: "https://example.com",
+      apiKey: "[redacted]",
+      apiFormat: "anthropic",
+      customUserAgent: "omp",
+      requestHeaders,
+    });
+    expect(remoteFetchModelsForProviderMock).toHaveBeenCalledWith(
+      remoteProfile,
+      "omp",
+      "p",
+      {
+        baseUrl: "https://example.com",
+        isFullUrl: undefined,
+        modelsUrl: undefined,
+        customUserAgent: "omp",
+        apiFormat: "anthropic",
+        requestHeaders,
+      },
+      remoteTarget.secret,
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+  it("keeps the same options on the local model fetch command", async () => {
+    const requestHeaders = { "x-tenant": "tenant" };
+    await fetchModelsForProviderConfig({
+      app: "omp",
+      baseUrl: "https://example.com",
+      apiKey: "key",
+      apiFormat: "anthropic",
+      requestHeaders,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("fetch_models_for_config", {
+      baseUrl: "https://example.com",
+      apiKey: "key",
+      isFullUrl: undefined,
+      modelsUrl: undefined,
+      customUserAgent: undefined,
+      apiFormat: "anthropic",
+      requestHeaders,
+    });
+    expect(remoteFetchModelsForProviderMock).not.toHaveBeenCalled();
+  });
+});

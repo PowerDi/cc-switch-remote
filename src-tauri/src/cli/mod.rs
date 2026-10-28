@@ -57,6 +57,78 @@ mod tests {
     }
 
     #[test]
+    fn omp_capability_and_native_state_commands_are_registered() {
+        let status = run_command(&["status".into()]);
+        assert!(status["data"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "omp"));
+        for (args, code) in [
+            (
+                vec!["providers", "current-state", "claude"],
+                "providers_current_state_failed",
+            ),
+            (
+                vec!["providers", "update-usage-script", "claude", "id", "{}"],
+                "providers_update_usage_script_failed",
+            ),
+        ] {
+            let response = run_command(&args.into_iter().map(str::to_string).collect::<Vec<_>>());
+            assert_eq!(response["error"]["code"], code);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn omp_helper_uses_native_membership_and_restores_redacted_script_credentials() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", home.path());
+        let _agent = crate::omp_config::test_support::TestAgentDir::new();
+        let agent = crate::omp_config::get_omp_agent_dir().unwrap();
+        std::fs::write(
+            agent.join("config.yml"),
+            "modelRoles:\n  default: native/model-a\n",
+        )
+        .unwrap();
+        let provider = serde_json::json!({
+            "id":"native", "name":"Native", "settingsConfig": {
+                "api":"openai-completions", "baseUrl":"https://example.com/v1", "apiKey":"remote-native-key", "models":[{"id":"model-a"}]
+            }, "meta":{"usage_script":{"enabled":true,"language":"javascript","code":"return []","apiKey":"remote-script-key"}}
+        });
+        commands::add_provider(crate::app_config::AppType::Omp, &provider.to_string(), true)
+            .unwrap();
+        let response = run_command(&["providers".into(), "current-state".into(), "omp".into()]);
+        assert_eq!(
+            response["data"]["enabledProviderIds"],
+            serde_json::json!(["native"])
+        );
+        assert_eq!(response["data"]["defaultProviderId"], "native");
+        let native_before = std::fs::read(agent.join("models.yml")).unwrap();
+        let redacted = commands::list_providers(crate::app_config::AppType::Omp).unwrap();
+        let serialized = serde_json::to_string(&redacted).unwrap();
+        assert!(!serialized.contains("remote-native-key"));
+        assert!(!serialized.contains("remote-script-key"));
+        let script = serde_json::json!({"enabled":true,"language":"javascript","code":"return [1]","apiKey":"[redacted]"});
+        assert!(commands::update_pi_provider_usage_script(
+            crate::app_config::AppType::Omp,
+            "native",
+            &script.to_string()
+        )
+        .unwrap());
+        let db = crate::database::Database::init().unwrap();
+        let saved = db.get_provider_by_id("native", "omp").unwrap().unwrap();
+        assert_eq!(
+            saved.meta.unwrap().usage_script.unwrap().api_key.as_deref(),
+            Some("remote-script-key")
+        );
+        assert_eq!(
+            std::fs::read(agent.join("models.yml")).unwrap(),
+            native_before
+        );
+    }
+
+    #[test]
     fn set_auto_failover_rejects_invalid_bool_before_touching_state() {
         let args = vec![
             "routing-config".to_string(),
@@ -1614,6 +1686,32 @@ pub(crate) fn run_command(args: &[String]) -> Value {
                     .expect("serialize invalid app error"),
             }
         }
+        [group, cmd] if group == "providers" && cmd == "opencode-default-model" => {
+            match commands::opencode_default_model() {
+                Ok(data) => serde_json::to_value(types::ok(data)).expect("serialize OpenCode model"),
+                Err(message) => serde_json::to_value(types::err::<()>("opencode_default_model_failed", message)).expect("serialize OpenCode model error"),
+            }
+        }
+        [group, cmd, model] if group == "providers" && cmd == "set-opencode-default-model" => {
+            match commands::set_opencode_default_model(model) {
+                Ok(()) => serde_json::to_value(types::ok(())).expect("serialize OpenCode model write"),
+                Err(message) => serde_json::to_value(types::err::<()>("opencode_default_model_set_failed", message)).expect("serialize OpenCode model write error"),
+            }
+        }
+        [group, cmd, app] if group == "providers" && cmd == "current-state" => {
+            let result = app.parse::<crate::app_config::AppType>().map_err(|e| e.to_string()).and_then(commands::pi_current_state);
+            match result {
+                Ok(data) => serde_json::to_value(types::ok(data)).expect("serialize native state"),
+                Err(message) => serde_json::to_value(types::err::<()>("providers_current_state_failed", message)).expect("serialize native state error"),
+            }
+        }
+        [group, cmd, app, id, script] if group == "providers" && cmd == "update-usage-script" => {
+            let result = app.parse::<crate::app_config::AppType>().map_err(|e| e.to_string()).and_then(|app| commands::update_pi_provider_usage_script(app, id, script));
+            match result {
+                Ok(data) => serde_json::to_value(types::ok(data)).expect("serialize native usage script"),
+                Err(message) => serde_json::to_value(types::err::<()>("providers_update_usage_script_failed", message)).expect("serialize native usage error"),
+            }
+        }
         [group, cmd, app, id] if group == "providers" && cmd == "delete" => match app.parse() {
             Ok(app_type) => match commands::delete_provider(app_type, id) {
                 Ok(value) => serde_json::to_value(types::ok(value)).expect("serialize delete"),
@@ -1947,7 +2045,7 @@ pub(crate) fn run_command(args: &[String]) -> Value {
         }
         [group, cmd, app_type, provider_id] if group == "app-mode" && cmd == "set-route" => {
             match commands::app_mode_set_route(app_type, provider_id) {
-                Ok(()) => serde_json::to_value(types::ok(())).expect("serialize app mode route"),
+                Ok(value) => serde_json::to_value(types::ok(value)).expect("serialize app mode route"),
                 Err(message) => {
                     serde_json::to_value(types::err::<()>("app_mode_set_route_failed", message))
                         .expect("serialize app mode route error")
@@ -2081,6 +2179,12 @@ pub(crate) fn run_command(args: &[String]) -> Value {
                 Ok(value) => serde_json::to_value(types::ok(value)).expect("serialize usage summary by app"),
                 Err(message) => serde_json::to_value(types::err::<()>("usage_summary_by_app_failed", message))
                     .expect("serialize usage summary by app error"),
+            }
+        }
+        [group, cmd, params_json] if group == "usage" && cmd == "first-date" => {
+            match commands::usage_first_date(params_json) {
+                Ok(data) => serde_json::to_value(types::ok(data)).expect("serialize first date"),
+                Err(message) => serde_json::to_value(types::err::<()>("usage_first_date_failed", message)).expect("serialize first date error"),
             }
         }
         [group, cmd, params_json] if group == "usage" && cmd == "trends" => {

@@ -21,10 +21,15 @@ pub fn check_env_conflicts(app: &str) -> Result<Vec<EnvConflict>, String> {
     let keywords = get_keywords_for_app(app);
     let mut conflicts = Vec::new();
 
-    // Check system environment variables
+    // Check system environment variables (Windows Registry)
+    #[cfg(target_os = "windows")]
     conflicts.extend(check_system_env(&keywords)?);
 
-    // Check shell configuration files (Unix only)
+    // Check shell configuration files (Unix only). The process environment is
+    // deliberately not scanned here: it is inherited from whatever launched
+    // CC Switch (e.g. Claude Desktop injects ANTHROPIC_BASE_URL into the
+    // terminals it spawns, so `pnpm dev` started there always "conflicts"),
+    // and such variables cannot be removed from inside the app anyway.
     #[cfg(not(target_os = "windows"))]
     conflicts.extend(check_shell_configs(&keywords)?);
 
@@ -221,14 +226,14 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn process_env_is_not_reported_as_system_conflict_on_unix() {
-        std::env::set_var("ANTHROPIC_CCSWITCH_TEST_TRANSIENT", "test-value");
-        let conflicts = check_system_env(&[EnvKeyword::Prefix("ANTHROPIC")]).unwrap();
-        std::env::remove_var("ANTHROPIC_CCSWITCH_TEST_TRANSIENT");
+    fn inherited_process_env_is_not_reported_on_unix() {
+        const VAR: &str = "ANTHROPIC_CC_SWITCH_INHERITED_PROBE";
+        std::env::set_var(VAR, "https://api.anthropic.com");
+        let conflicts = check_env_conflicts("claude");
+        std::env::remove_var(VAR);
 
-        assert!(
-            conflicts.is_empty(),
-            "current process env is transient on Unix and should not be reported as a persistent system conflict"
-        );
+        let conflicts = conflicts.expect("check should succeed");
+        assert!(conflicts.iter().all(|c| c.source_type == "file"));
+        assert!(!conflicts.iter().any(|c| c.var_name == VAR));
     }
 }

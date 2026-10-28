@@ -6,6 +6,7 @@ import {
   type UseQueryOptions,
 } from "@tanstack/react-query";
 import { supportsLocalUsageRead } from "@/lib/api/usageSupport";
+import { useTargetCapability } from "@/hooks/useTargetCapability";
 import { useUsageTargetScope } from "./usageTargetScope";
 import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
@@ -36,6 +37,7 @@ function useTargetUsageQuery<T>(
 const DEFAULT_REFETCH_INTERVAL_MS = 30000;
 
 type UsageQueryOptions = {
+  enabled?: boolean;
   refetchInterval?: number | false;
   refetchIntervalInBackground?: boolean;
 };
@@ -122,6 +124,17 @@ export const usageKeys = {
       customStartDate ?? 0,
       customEndDate ?? 0,
       liveEndTime ?? false,
+      filters?.appType ?? null,
+      filters?.providerName ?? null,
+      filters?.model ?? null,
+    ] as const,
+  firstDate: (
+    filters?: UsageScopeFilters,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ) =>
+    [
+      ...usageKeys.all(target),
+      "first-date",
       filters?.appType ?? null,
       filters?.providerName ?? null,
       filters?.model ?? null,
@@ -318,6 +331,35 @@ export function useUsageTrends(
         target,
       );
     },
+    enabled: options?.enabled ?? true,
+    placeholderData: keepPreviousData,
+    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
+  });
+}
+
+/** 最早有用量记录的日期，「全部」的按年热力图据此决定从哪一年画起 */
+export function useUsageFirstDate(
+  filters?: UsageScopeFilters,
+  options?: UsageQueryOptions,
+  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+) {
+  const effective = normalizeScopeFilters(filters);
+  const supported = useTargetCapability(
+    target,
+    "usage-first-date",
+    options?.enabled ?? true,
+  );
+  return useTargetUsageQuery(target, {
+    queryKey: usageKeys.firstDate(effective, target),
+    queryFn: () =>
+      usageApi.getUsageFirstDate(
+        effective.appType,
+        effective.providerName,
+        effective.model,
+        target,
+      ),
+    enabled: (options?.enabled ?? true) && supported,
     placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
@@ -352,6 +394,7 @@ export function useProviderStats(
       );
     },
     placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -385,6 +428,7 @@ export function useModelStats(
       );
     },
     placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -416,6 +460,7 @@ export function useRequestLogs({
       return usageApi.getRequestLogs(effectiveFilters, page, pageSize, target);
     },
     placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS, // 每30秒自动刷新
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -434,14 +479,21 @@ export function useRequestDetail(
 
 /** The helper does not expose its scanner timestamp or per-session summary yet. */
 export function useSessionUsageLastSync(
-  target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  optionsOrTarget?: UsageQueryOptions | ManagementTarget,
+  explicitTarget: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
 ) {
+  const target =
+    optionsOrTarget && "type" in optionsOrTarget
+      ? optionsOrTarget
+      : explicitTarget;
+  const options =
+    optionsOrTarget && "type" in optionsOrTarget ? undefined : optionsOrTarget;
   return useTargetUsageQuery(target, {
     queryKey: [...usageKeys.all(target), "session-last-sync"] as const,
     queryFn: () => usageApi.getSessionUsageLastSync(target),
     enabled: supportsLocalUsageRead(target),
-    refetchInterval: DEFAULT_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: false,
+    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
 

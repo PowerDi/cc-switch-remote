@@ -1,4 +1,41 @@
+vi.mock("@/components/providers/forms/XaiOAuthSection", () => ({
+  XaiOAuthSection: () => <div data-testid="xai-oauth-section" />,
+}));
+vi.mock("@/components/providers/forms/hooks", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/providers/forms/hooks")>();
+  return {
+    ...actual,
+    useCopilotAuth: () => ({
+      isAuthenticated: false,
+      accounts: [],
+    }),
+    useCodexOauth: () => ({
+      isAuthenticated: true,
+      defaultAccountId: "acct-managed",
+      accounts: [
+        {
+          id: "acct-managed",
+          is_default: true,
+          reauth_required: authState.codexReauthRequired,
+          requires_reauth: false,
+        },
+      ],
+    }),
+    useXaiOauth: () => ({
+      isAuthenticated: false,
+      accounts: [],
+    }),
+  };
+});
+vi.mock("sonner", () => ({
+  toast: {
+    error: toastMocks.error,
+    success: vi.fn(),
+  },
+}));
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,18 +53,40 @@ const { codexOAuthSectionMock, copilotAuthSectionMock, modelFetchApiMock } =
       showFetchModelsError: vi.fn(),
     },
   }));
+const authState = vi.hoisted(() => ({
+  codexReauthRequired: false,
+}));
+const toastMocks = vi.hoisted(() => ({
+  error: vi.fn(),
+}));
+const modelFetchMocks = vi.hoisted(() => ({
+  fetchCodexOauthModels: vi.fn(),
+}));
+
+vi.mock("@/lib/api/model-fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/model-fetch")>();
+  return {
+    ...actual,
+    fetchCodexOauthModels: modelFetchMocks.fetchCodexOauthModels,
+    canUseStoredRemoteProviderApiKey:
+      modelFetchApiMock.canUseStoredRemoteProviderApiKey,
+    fetchModelsForProviderConfig:
+      modelFetchApiMock.fetchModelsForProviderConfig,
+    showFetchModelsError: modelFetchApiMock.showFetchModelsError,
+  };
+});
 
 vi.mock("@/components/providers/forms/CodexOAuthSection", () => ({
   CodexOAuthSection: (props: unknown) => {
     codexOAuthSectionMock(props);
-    return null;
+    return <div data-testid="codex-oauth-section" />;
   },
 }));
 
 vi.mock("@/components/providers/forms/CopilotAuthSection", () => ({
   CopilotAuthSection: (props: unknown) => {
     copilotAuthSectionMock(props);
-    return null;
+    return <div data-testid="copilot-auth-section" />;
   },
 }));
 
@@ -35,13 +94,6 @@ vi.mock("@/lib/api/providers", () => ({
   providersApi: {
     getClaudeDesktopDefaultRoutes: () => Promise.resolve([]),
   },
-}));
-
-vi.mock("@/lib/api/model-fetch", () => ({
-  canUseStoredRemoteProviderApiKey:
-    modelFetchApiMock.canUseStoredRemoteProviderApiKey,
-  fetchModelsForProviderConfig: modelFetchApiMock.fetchModelsForProviderConfig,
-  showFetchModelsError: modelFetchApiMock.showFetchModelsError,
 }));
 
 function renderForm(
@@ -68,113 +120,73 @@ describe("ClaudeDesktopProviderForm", () => {
   beforeEach(() => {
     codexOAuthSectionMock.mockClear();
     copilotAuthSectionMock.mockClear();
-    modelFetchApiMock.canUseStoredRemoteProviderApiKey.mockReset();
-    modelFetchApiMock.fetchModelsForProviderConfig.mockReset();
-    modelFetchApiMock.showFetchModelsError.mockReset();
     modelFetchApiMock.canUseStoredRemoteProviderApiKey.mockImplementation(
-      (target, providerId) => target?.type === "remote" && Boolean(providerId),
+      (target, id) => target?.type === "remote" && Boolean(id),
     );
-    modelFetchApiMock.fetchModelsForProviderConfig.mockResolvedValue([]);
+    modelFetchApiMock.fetchModelsForProviderConfig
+      .mockReset()
+      .mockResolvedValue([]);
+    modelFetchApiMock.showFetchModelsError.mockReset();
+    authState.codexReauthRequired = false;
+    toastMocks.error.mockReset();
+    modelFetchMocks.fetchCodexOauthModels.mockReset();
   });
 
-  it("远程 Claude Desktop Codex OAuth 表单使用远程目标的账号状态", () => {
-    const target: ManagementTarget = {
-      type: "remote",
-      profile: {
-        id: "remote-host",
-        name: "Remote Host",
-        host: "192.168.1.20",
-        port: 22,
-        username: "root",
-        authMethod: { type: "password" },
-        helperPath: "~/.local/bin/cc-switch-remote-helper",
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      secret: { password: "secret" },
-    };
-
-    renderForm(
-      {
-        name: "Codex OAuth",
-        category: "aggregator",
-        settingsConfig: {
-          env: {
-            ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
-          },
+  it("托管 OAuth 供应商也能获取模型并在映射行里选择（#8426）", async () => {
+    modelFetchMocks.fetchCodexOauthModels.mockResolvedValue([
+      { id: "gpt-5.6", ownedBy: "openai" },
+    ]);
+    renderForm({
+      name: "Codex OAuth Provider",
+      category: "third_party",
+      settingsConfig: { env: {} },
+      meta: {
+        providerType: "codex_oauth",
+        authBinding: {
+          source: "managed_account",
+          authProvider: "codex_oauth",
+          accountId: "acct-managed",
         },
-        meta: {
-          claudeDesktopMode: "proxy",
-          providerType: "codex_oauth",
+        claudeDesktopMode: "proxy",
+        claudeDesktopModelRoutes: {
+          "claude-sonnet-5": { model: "upstream-model" },
         },
       },
-      vi.fn(),
-      { target },
-    );
-
-    expect(codexOAuthSectionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ target }),
-    );
-  });
-
-  it("远程编辑 Claude Desktop 供应商时 API Key 留空也使用远端已存密钥获取模型", async () => {
-    const target: ManagementTarget = {
-      type: "remote",
-      profile: {
-        id: "remote-host",
-        name: "Remote Host",
-        host: "192.168.1.20",
-        port: 22,
-        username: "root",
-        authMethod: { type: "password" },
-        helperPath: "~/.local/bin/cc-switch-remote-helper",
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      secret: { password: "secret" },
-    };
-
-    renderForm(
-      {
-        name: "Remote Claude Desktop",
-        settingsConfig: {
-          env: {
-            ANTHROPIC_BASE_URL: "https://api.example.com",
-            ANTHROPIC_AUTH_TOKEN: "",
-          },
-        },
-        meta: {
-          claudeDesktopMode: "direct",
-          claudeDesktopModelRoutes: {
-            "claude-sonnet-5": { model: "claude-sonnet-5" },
-          },
-        },
-      },
-      vi.fn(),
-      { providerId: "remote-claude-desktop-provider", target },
-    );
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: /providerForm\.fetchModels|获取模型/,
-      }),
-    );
-
-    await waitFor(() => {
-      expect(
-        modelFetchApiMock.fetchModelsForProviderConfig,
-      ).toHaveBeenCalledWith({
-        app: "claude-desktop",
-        providerId: "remote-claude-desktop-provider",
-        target,
-        baseUrl: "https://api.example.com",
-        apiKey: "",
-      });
     });
-    expect(modelFetchApiMock.showFetchModelsError).not.toHaveBeenCalledWith(
-      null,
-      expect.anything(),
-      expect.objectContaining({ hasApiKey: false }),
+
+    fireEvent.click(screen.getByRole("button", { name: /获取模型/ }));
+
+    await waitFor(() =>
+      expect(modelFetchMocks.fetchCodexOauthModels).toHaveBeenCalledWith(
+        "acct-managed",
+        { type: "local" },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Select model" }).length,
+      ).toBeGreaterThan(0),
+    );
+  });
+
+  it("未登录的 Copilot 获取模型时提示先登录", async () => {
+    renderForm({
+      name: "Copilot Provider",
+      category: "third_party",
+      settingsConfig: { env: {} },
+      meta: {
+        providerType: "github_copilot",
+        claudeDesktopMode: "proxy",
+        claudeDesktopModelRoutes: {
+          "claude-sonnet-5": { model: "claude-sonnet-5" },
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /获取模型/ }));
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith("请先登录 GitHub Copilot"),
     );
   });
 
@@ -205,8 +217,264 @@ describe("ClaudeDesktopProviderForm", () => {
       });
       expect(modelModePicker).toHaveTextContent("模型映射");
       expect(modelModePicker).toBeDisabled();
+      if (providerType === "github_copilot") {
+        const formatControl = screen
+          .getByText("copilot.automaticFormat")
+          .closest("button");
+        expect(formatControl).toBeDisabled();
+        expect(screen.getByText(/copilot.automaticFormatHint/)).toBeVisible();
+      }
     },
   );
+
+  it.each(["codex_oauth", "xai_oauth"])(
+    "%s 忽略 Copilot 地址并保留自身协议与认证方式",
+    (providerType) => {
+      renderForm({
+        name: "Managed OAuth Provider",
+        settingsConfig: {
+          env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
+        },
+        meta: {
+          providerType,
+          claudeDesktopMode: "proxy",
+          apiFormat: "openai_responses",
+        },
+      });
+
+      expect(
+        screen.queryByText("copilot.automaticFormat"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("copilot.automaticFormatHint"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("copilot-auth-section"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId(
+          providerType === "codex_oauth"
+            ? "codex-oauth-section"
+            : "xai-oauth-section",
+        ),
+      ).toBeVisible();
+      if (providerType === "codex_oauth") {
+        expect(
+          screen
+            .getAllByRole("combobox")
+            .find((control) =>
+              control.textContent?.includes(
+                "OpenAI Responses API (需开启路由)",
+              ),
+            ),
+        ).toBeEnabled();
+      }
+    },
+  );
+
+  it.each([
+    "anthropic",
+    "openai_chat",
+    "openai_responses",
+    "gemini_native",
+  ] as const)("手动配置 Copilot 地址时禁用旧格式 %s 的手选", (apiFormat) => {
+    renderForm({
+      name: "Custom Copilot",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.githubcopilot.com",
+          ANTHROPIC_AUTH_TOKEN: "test-token",
+        },
+      },
+      meta: { claudeDesktopMode: "proxy", apiFormat },
+    });
+
+    expect(
+      screen.getByText("copilot.automaticFormat").closest("button"),
+    ).toBeDisabled();
+    expect(screen.getByText("copilot.automaticFormatHint")).toBeVisible();
+    expect(screen.getByLabelText("API Key")).toBeVisible();
+    expect(
+      screen.queryByTestId("copilot-auth-section"),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "https://api.githubcopilot.com",
+      "https://api.githubcopilot.com",
+      "anthropic",
+    ],
+    ["https://api.example.com", "https://api.githubcopilot.com", "anthropic"],
+    [
+      "https://api.githubcopilot.com",
+      "https://api.example.com",
+      "gemini_native",
+    ],
+    ["https://api.example.com", "https://api.example.com", "gemini_native"],
+  ])(
+    "遗留 Gemini 格式从 %s 编辑为 %s 后保存为 %s",
+    async (initialUrl, finalUrl, expectedFormat) => {
+      const { onSubmit } = renderForm({
+        name: "Legacy Gemini Provider",
+        settingsConfig: {
+          api_format: "gemini_native",
+          env: {
+            ANTHROPIC_BASE_URL: initialUrl,
+            ANTHROPIC_AUTH_TOKEN: "test-token",
+          },
+        },
+        meta: {
+          claudeDesktopMode: "proxy",
+          apiFormat: "gemini_native",
+          claudeDesktopModelRoutes: {
+            "claude-sonnet-5": { model: "upstream-model" },
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText("providerForm.apiEndpoint"), {
+        target: { value: finalUrl },
+      });
+      if (finalUrl.includes("githubcopilot.com")) {
+        expect(
+          screen.getByText("copilot.automaticFormat").closest("button"),
+        ).toBeDisabled();
+      }
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      const values = onSubmit.mock.calls[0][0];
+      expect(values.meta.apiFormat).toBe(expectedFormat);
+      expect(values.meta.providerType).toBeUndefined();
+      expect(values.meta.authBinding).toBeUndefined();
+      expect(JSON.parse(values.settingsConfig).env).toMatchObject({
+        ANTHROPIC_BASE_URL: finalUrl,
+        ANTHROPIC_AUTH_TOKEN: "test-token",
+      });
+    },
+  );
+
+  it("修改自定义上游地址时同步切换自动格式并保留原格式", async () => {
+    renderForm({
+      name: "Custom Provider",
+      settingsConfig: {
+        env: { ANTHROPIC_BASE_URL: "https://api.example.com" },
+      },
+      meta: { claudeDesktopMode: "proxy", apiFormat: "openai_chat" },
+    });
+
+    const formatControl = screen
+      .getAllByRole("combobox")
+      .find((control) =>
+        control.textContent?.includes("OpenAI Chat Completions (需开启路由)"),
+      );
+    expect(formatControl).toBeEnabled();
+    expect(
+      screen.queryByText("copilot.automaticFormatHint"),
+    ).not.toBeInTheDocument();
+
+    const endpoint = screen.getByLabelText("providerForm.apiEndpoint");
+    fireEvent.change(endpoint, {
+      target: { value: "https://api.business.githubcopilot.com" },
+    });
+    expect(formatControl).toBeDisabled();
+    await waitFor(() =>
+      expect(formatControl).toHaveTextContent("copilot.automaticFormat"),
+    );
+    expect(screen.getByText("copilot.automaticFormatHint")).toBeVisible();
+
+    fireEvent.change(endpoint, {
+      target: { value: "https://api.example.com" },
+    });
+    expect(formatControl).toBeEnabled();
+    expect(formatControl).toHaveTextContent(
+      "OpenAI Chat Completions (需开启路由)",
+    );
+    expect(
+      screen.queryByText("copilot.automaticFormatHint"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("新建自定义供应商默认使用直连并显示模型列表", () => {
+    renderForm(undefined);
+
+    expect(
+      screen.getByRole("combobox", { name: "接入方式" }),
+    ).toHaveTextContent("直连");
+    expect(screen.getByText("模型列表")).toBeInTheDocument();
+    expect(screen.queryByText("模型角色")).not.toBeInTheDocument();
+  });
+
+  it("直连预设保留预设模型列表", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderForm(undefined, onSubmit);
+
+    await user.click(screen.getByRole("button", { name: /PackyCode/ }));
+
+    expect(screen.getByDisplayValue("claude-sonnet-5")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("claude-opus-5")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("claude-haiku-4-5")).toBeInTheDocument();
+
+    await user.clear(screen.getByDisplayValue("claude-sonnet-5"));
+    await user.type(screen.getByLabelText("API Key"), "sk-test");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(
+      onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes,
+    ).toMatchObject({
+      "claude-opus-5": { model: "claude-opus-5" },
+      "claude-haiku-4-5": { model: "claude-haiku-4-5" },
+    });
+    expect(
+      onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes,
+    ).not.toHaveProperty("claude-sonnet-5");
+  });
+
+  it("直连与模型映射分别保留自己的模型列表", async () => {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const user = userEvent.setup();
+    renderForm({
+      name: "Proxy Provider",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.example.com",
+          ANTHROPIC_AUTH_TOKEN: "sk-test",
+        },
+      },
+      meta: {
+        claudeDesktopMode: "proxy",
+        claudeDesktopModelRoutes: {
+          "claude-sonnet-5": {
+            model: "upstream-sonnet",
+          },
+        },
+      },
+    });
+
+    expect(screen.getByDisplayValue("upstream-sonnet")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "接入方式" }));
+    await user.click(await screen.findByRole("option", { name: "直连" }));
+
+    expect(screen.getByText("模型列表")).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("claude-sonnet-4-6"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByDisplayValue("claude-sonnet-5"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "接入方式" }));
+    await user.click(await screen.findByRole("option", { name: "模型映射" }));
+
+    expect(screen.getByDisplayValue("upstream-sonnet")).toBeInTheDocument();
+  });
 
   it("编辑模型映射的菜单显示名时保持输入框焦点", () => {
     renderForm({
@@ -441,5 +709,106 @@ describe("ClaudeDesktopProviderForm", () => {
         model: "claude-sonnet-5",
       },
     });
+  });
+
+  it("远程 Claude Desktop Codex OAuth 表单使用远程目标的账号状态", () => {
+    const target: ManagementTarget = {
+      type: "remote",
+      profile: {
+        id: "remote-host",
+        name: "Remote Host",
+        host: "192.168.1.20",
+        port: 22,
+        username: "root",
+        authMethod: { type: "password" },
+        helperPath: "~/.local/bin/cc-switch-remote-helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      secret: { password: "secret" },
+    };
+
+    renderForm(
+      {
+        name: "Codex OAuth",
+        category: "aggregator",
+        settingsConfig: {
+          env: {
+            ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
+          },
+        },
+        meta: {
+          claudeDesktopMode: "proxy",
+          providerType: "codex_oauth",
+        },
+      },
+      vi.fn(),
+      { target },
+    );
+
+    expect(codexOAuthSectionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ target }),
+    );
+  });
+
+  it("远程编辑 Claude Desktop 供应商时 API Key 留空也使用远端已存密钥获取模型", async () => {
+    const target: ManagementTarget = {
+      type: "remote",
+      profile: {
+        id: "remote-host",
+        name: "Remote Host",
+        host: "192.168.1.20",
+        port: 22,
+        username: "root",
+        authMethod: { type: "password" },
+        helperPath: "~/.local/bin/cc-switch-remote-helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      secret: { password: "secret" },
+    };
+
+    renderForm(
+      {
+        name: "Remote Claude Desktop",
+        settingsConfig: {
+          env: {
+            ANTHROPIC_BASE_URL: "https://api.example.com",
+            ANTHROPIC_AUTH_TOKEN: "",
+          },
+        },
+        meta: {
+          claudeDesktopMode: "direct",
+          claudeDesktopModelRoutes: {
+            "claude-sonnet-5": { model: "claude-sonnet-5" },
+          },
+        },
+      },
+      vi.fn(),
+      { providerId: "remote-claude-desktop-provider", target },
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /providerForm\.fetchModels|获取模型/,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        modelFetchApiMock.fetchModelsForProviderConfig,
+      ).toHaveBeenCalledWith({
+        app: "claude-desktop",
+        providerId: "remote-claude-desktop-provider",
+        target,
+        baseUrl: "https://api.example.com",
+        apiKey: "",
+      });
+    });
+    expect(modelFetchApiMock.showFetchModelsError).not.toHaveBeenCalledWith(
+      null,
+      expect.anything(),
+      expect.objectContaining({ hasApiKey: false }),
+    );
   });
 });

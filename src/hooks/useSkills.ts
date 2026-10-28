@@ -369,21 +369,26 @@ export function useImportSkillsFromApps(
         (oldData) => mergeImportedSkills(oldData, importedSkills),
       );
     },
-    onSettled: () =>
-      Promise.all([
+    // Import may persist Skills or auto-discovered repositories before a
+    // later item fails, so refresh every affected authoritative collection.
+    // 只等导入弹窗关心的两个列表：mutation 要等 onSettled 返回的 Promise
+    // 才结束，「发现」重拉要从 GitHub 下载仓库，等它会让弹窗一直锁着（#7994）
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["skills", "repos", targetKey],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["skills", "discoverable", targetKey],
+      });
+      return Promise.all([
         queryClient.invalidateQueries({
           queryKey: ["skills", "installed", targetKey],
         }),
         queryClient.invalidateQueries({
           queryKey: ["skills", "unmanaged", targetKey],
         }),
-        queryClient.invalidateQueries({
-          queryKey: ["skills", "repos", targetKey],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["skills", "discoverable", targetKey],
-        }),
-      ]),
+      ]);
+    },
   });
 }
 

@@ -18,6 +18,7 @@ interface RemoteDirectorySettingsProps {
   settings: Settings;
   target: Extract<ManagementTarget, { type: "remote" }>;
   supportsAppConfigDir?: boolean;
+  showToolDirectories?: boolean;
   isSaving?: boolean;
   onSave: (
     updates: Partial<Settings>,
@@ -39,6 +40,7 @@ export function RemoteDirectorySettings({
   settings,
   target,
   supportsAppConfigDir = true,
+  showToolDirectories = true,
   isSaving = false,
   onSave,
 }: RemoteDirectorySettingsProps) {
@@ -227,75 +229,77 @@ export function RemoteDirectorySettings({
         )}
       </section>
 
-      <section className="space-y-4">
-        <header className="space-y-1">
-          <h3 className="text-sm font-medium">
-            {t("settings.configDirectoryOverride")}
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.configDirectoryDescription")}
-          </p>
-        </header>
+      {showToolDirectories && (
+        <section className="space-y-4">
+          <header className="space-y-1">
+            <h3 className="text-sm font-medium">
+              {t("settings.configDirectoryOverride")}
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.configDirectoryDescription")}
+            </p>
+          </header>
 
-        <div className="space-y-3">
-          {REMOTE_DIRECTORY_FIELDS.map((field) => {
-            const value = drafts[field.app];
-            const currentValue = getRemoteDirectoryValue(settings, field.app);
-            const dirty = value.trim() !== currentValue;
-            const rowSaving = savingApp === field.app;
-            return (
-              <div key={field.app} className="space-y-1.5">
-                <p className="text-xs font-medium text-foreground">
-                  {t(field.labelKey)}
-                </p>
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={value}
-                    className="text-xs"
-                    placeholder={t(field.placeholderKey, {
-                      defaultValue: field.defaultPlaceholder,
-                    })}
-                    disabled={isSaving || rowSaving}
-                    onChange={(event) =>
-                      setDrafts((prev) => ({
-                        ...prev,
-                        [field.app]: event.target.value,
-                      }))
-                    }
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    disabled={isSaving || rowSaving || !dirty}
-                    title={t("common.save")}
-                    onClick={() => void saveApp(field.app, value)}
-                  >
-                    {rowSaving ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Save className="h-4 w-4" />
-                    )}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    disabled={isSaving || rowSaving || !currentValue}
-                    title={t("settings.resetDefault")}
-                    onClick={() => {
-                      setDrafts((prev) => ({ ...prev, [field.app]: "" }));
-                      void saveApp(field.app, "");
-                    }}
-                  >
-                    <Undo2 className="h-4 w-4" />
-                  </Button>
+          <div className="space-y-3">
+            {REMOTE_DIRECTORY_FIELDS.map((field) => {
+              const value = drafts[field.app];
+              const currentValue = getRemoteDirectoryValue(settings, field.app);
+              const dirty = value.trim() !== currentValue;
+              const rowSaving = savingApp === field.app;
+              return (
+                <div key={field.app} className="space-y-1.5">
+                  <p className="text-xs font-medium text-foreground">
+                    {t(field.labelKey)}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={value}
+                      className="text-xs"
+                      placeholder={t(field.placeholderKey, {
+                        defaultValue: field.defaultPlaceholder,
+                      })}
+                      disabled={isSaving || rowSaving}
+                      onChange={(event) =>
+                        setDrafts((prev) => ({
+                          ...prev,
+                          [field.app]: event.target.value,
+                        }))
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      disabled={isSaving || rowSaving || !dirty}
+                      title={t("common.save")}
+                      onClick={() => void saveApp(field.app, value)}
+                    >
+                      {rowSaving ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      disabled={isSaving || rowSaving || !currentValue}
+                      title={t("settings.resetDefault")}
+                      onClick={() => {
+                        setDrafts((prev) => ({ ...prev, [field.app]: "" }));
+                        void saveApp(field.app, "");
+                      }}
+                    >
+                      <Undo2 className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

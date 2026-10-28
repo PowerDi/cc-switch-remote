@@ -175,6 +175,29 @@ export const usageApi = {
     });
   },
 
+  /** 最早有用量记录的本地日期 `YYYY-MM-DD`，没有记录时为 null */
+  getUsageFirstDate: async (
+    appType?: string,
+    providerName?: string,
+    model?: string,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<string | null> => {
+    if (target.type === "remote") {
+      return remoteApi.getUsageFirstDate(
+        target.profile,
+        appType,
+        providerName,
+        model,
+        target.secret,
+      );
+    }
+    return invoke("get_usage_first_date", {
+      appType,
+      providerName,
+      model,
+    });
+  },
+
   getProviderStats: async (
     startDate?: number,
     endDate?: number,

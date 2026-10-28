@@ -162,6 +162,9 @@ const settings: Settings = {
     hermes: true,
     pi: true,
     mcode: true,
+    kimi: false,
+    agy: false,
+    omp: false,
   },
   skillSyncMethod: "auto",
   skillStorageLocation: "cc_switch",
@@ -247,6 +250,7 @@ describe("RemoteSettingsPage", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "远程",
       "通用",
+      "settings.sections.appConfig",
       "代理",
       "认证",
       "高级",
@@ -323,7 +327,7 @@ describe("RemoteSettingsPage", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /gemini/i }),
+        screen.getByRole("button", { name: "settings.general.goToApps" }),
       ).toBeInTheDocument();
     });
 
@@ -423,12 +427,14 @@ describe("RemoteSettingsPage", () => {
     expect(runningMarker).not.toHaveClass("animate-pulse");
   });
 
-  it("loads remote general settings and saves per-host app visibility", async () => {
+  it("loads remote general settings and opens the shared Apps workflow", async () => {
+    const onOpenApps = vi.fn();
     const user = userEvent.setup();
 
     renderSettingsPage(
       <RemoteSettingsPage
         open
+        onOpenApps={onOpenApps}
         onOpenChange={vi.fn()}
         target={{ type: "remote", profile, secret: { password: "secret" } }}
       />,
@@ -443,7 +449,7 @@ describe("RemoteSettingsPage", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /gemini/i }),
+        screen.getByRole("button", { name: "settings.general.goToApps" }),
       ).toBeInTheDocument();
     });
 
@@ -452,20 +458,15 @@ describe("RemoteSettingsPage", () => {
       screen.queryByText("这些设置保存到当前远程主机自己的配置目录。"),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /gemini/i }));
+    await user.click(
+      screen.getByRole("button", { name: "settings.general.goToApps" }),
+    );
 
-    await waitFor(() => {
-      expect(saveSettingsMock).toHaveBeenCalledWith(
-        profile,
-        expect.objectContaining({
-          visibleApps: expect.objectContaining({ gemini: false }),
-        }),
-        { password: "secret" },
-      );
-    });
+    expect(onOpenApps).toHaveBeenCalledOnce();
+    expect(saveSettingsMock).not.toHaveBeenCalled();
   });
 
-  it("does not run local Codex history backup actions from remote general settings", async () => {
+  it("does not run local Codex history backup actions from remote app config settings", async () => {
     const user = userEvent.setup();
     getSettingsMock.mockResolvedValueOnce({
       ...settings,
@@ -477,7 +478,7 @@ describe("RemoteSettingsPage", () => {
       <RemoteSettingsPage
         open
         onOpenChange={vi.fn()}
-        defaultTab="general"
+        defaultTab="appConfig"
         target={{ type: "remote", profile, secret: { password: "secret" } }}
       />,
     );

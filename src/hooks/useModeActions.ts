@@ -9,21 +9,17 @@ import { proxyApi } from "@/lib/api/proxy";
 import { proxyKeys } from "@/lib/query/proxy";
 import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 import type { AppMode } from "@/types/proxy";
-import { extractErrorMessage } from "@/utils/errorUtils";
 import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
 
 /** 这几个客户端只在启动时读配置：改写了客户端文件要提示重启（Claude Code 会自己重读）。 */
-const RESTART_TO_APPLY = new Set<AppId>(["codex", "gemini", "grokbuild"]);
+const RESTART_TO_APPLY = new Set<AppId>([
+  "codex",
+  "gemini",
+  "grokbuild",
+  "claude-desktop",
+]);
 
-export interface ModeSnapshot {
-  mode: AppMode;
-  routeProviderId: string | null;
-}
-
-/**
- * 进入 / 离开路由和聚合模式。进入要先在确认框里确认；回到直连不弹框，toast 里给「撤销」，
- * 撤销按原来的模式和路由目标重新进入。
- */
+/** 进入 / 离开路由和聚合模式。两个方向都先在确认框里确认，出错由确认框就地显示。 */
 export function useModeActions(
   app: AppId,
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
@@ -69,14 +65,17 @@ export function useModeActions(
         await refresh();
         toast.success(
           mode === "route"
-            ? t("mode.toast.enteredRoute", {
+            ? // Desktop 的模型列表也换成了路由那家的，要重启才看得到
+              t("mode.toast.enteredRoute", {
                 app: appName,
                 provider: routeName ?? "",
-              })
+              }) + (app === "claude-desktop" ? restartHint : "")
             : t(
                 app === "codex"
                   ? "mode.toast.enteredStack"
-                  : "mode.toast.enteredStackLive",
+                  : app === "claude-desktop"
+                    ? "mode.toast.enteredStackDesktop"
+                    : "mode.toast.enteredStackLive",
                 { app: appName },
               ),
           { closeButton: true },
@@ -85,21 +84,19 @@ export function useModeActions(
         setPending(false);
       }
     },
-    [app, appName, refresh, t, target],
+    [app, appName, refresh, restartHint, t, target],
   );
 
   /**
-   * 回到直连。`useProviderId` 不为空时回到直连后改用这家（「回到直连并使用」）。
-   * `previous` 是离开前的模式，用来撤销。
+   * 回到直连（确认框里确认后调用）。`useProviderId` 不为空时回到直连后改用这家
+   * （「回到直连并使用」）。抛出错误给确认框显示。
    */
   const exitToDirect = useCallback(
     async ({
-      previous,
       directProviderId,
       useProviderId,
       providerName,
     }: {
-      previous: ModeSnapshot;
       directProviderId: string | null;
       useProviderId?: string;
       providerName: string;
@@ -108,34 +105,9 @@ export function useModeActions(
       try {
         await proxyApi.setProxyTakeoverForApp(app, false, false, null, target);
         if (useProviderId && useProviderId !== directProviderId) {
-          await providersApi.switch(useProviderId, app);
+          await providersApi.switch(useProviderId, app, target);
         }
         await refresh();
-        const undo = async () => {
-          try {
-            if (
-              useProviderId &&
-              directProviderId &&
-              useProviderId !== directProviderId
-            ) {
-              await providersApi.switch(directProviderId, app);
-            }
-            await proxyApi.setProxyTakeoverForApp(
-              app,
-              true,
-              previous.mode === "stack",
-              previous.routeProviderId,
-              target,
-            );
-            await refresh();
-          } catch (error) {
-            toast.error(
-              t("mode.toast.failed", {
-                detail: extractErrorMessage(error) || t("common.unknown"),
-              }),
-            );
-          }
-        };
         toast.success(
           [
             t("mode.toast.exited", { app: appName, provider: providerName }),
@@ -143,27 +115,16 @@ export function useModeActions(
           ]
             .filter(Boolean)
             .join(""),
-          {
-            closeButton: true,
-            duration: 8000,
-            action:
-              previous.mode !== "direct"
-                ? { label: t("mode.toast.undo"), onClick: () => void undo() }
-                : undefined,
-          },
+          { closeButton: true },
         );
       } catch (error) {
-        toast.error(
-          t("mode.toast.failed", {
-            detail: extractErrorMessage(error) || t("common.unknown"),
-          }),
-        );
         await refresh();
+        throw error;
       } finally {
         setPending(false);
       }
     },
-    [app, appName, refresh, restartHint, t],
+    [app, appName, refresh, restartHint, t, target],
   );
 
   return { enter, exitToDirect, pending, restartHint };

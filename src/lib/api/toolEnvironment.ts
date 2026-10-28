@@ -1,7 +1,11 @@
 import { settingsApi } from "@/lib/api";
 import { remoteApi } from "@/lib/api/remote";
 import type { ManagementTarget } from "@/lib/api/remote";
-import type { ToolInstallationReport } from "@/lib/api/settings";
+import type {
+  ToolInstallationReport,
+  ToolUninstallPlan,
+  ToolUninstallCandidate,
+} from "@/lib/api/settings";
 import { LOCAL_MANAGEMENT_TARGET } from "@/lib/managementTarget";
 
 /**
@@ -22,6 +26,15 @@ export type WslShellByTool = Record<
 >;
 
 export const toolEnvironmentApi = {
+  async prepareToolUninstall(
+    tool: string,
+    wslShellByTool?: WslShellByTool,
+    target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  ): Promise<ToolUninstallCandidate[]> {
+    if (target.type === "remote")
+      throw new Error("REMOTE_HELPER_UPGRADE_REQUIRED: tool-uninstall");
+    return settingsApi.prepareToolUninstall(tool, wslShellByTool);
+  },
   async getToolVersions(
     tools: string[],
     wslShellByTool?: WslShellByTool,
@@ -39,11 +52,14 @@ export const toolEnvironmentApi = {
 
   async runToolLifecycleAction(
     tools: string[],
-    action: "install" | "update",
+    action: "install" | "update" | "uninstall",
     wslShellByTool?: WslShellByTool,
     target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+    uninstallPlan?: ToolUninstallPlan,
   ): Promise<void> {
     if (target.type === "remote") {
+      if (action === "uninstall")
+        throw new Error("REMOTE_HELPER_UPGRADE_REQUIRED: tool-uninstall");
       await remoteApi.runToolLifecycleAction(
         target.profile,
         tools,
@@ -52,7 +68,16 @@ export const toolEnvironmentApi = {
       );
       return;
     }
-    await settingsApi.runToolLifecycleAction(tools, action, wslShellByTool);
+    if (action === "uninstall") {
+      await settingsApi.runToolLifecycleAction(
+        tools,
+        action,
+        wslShellByTool,
+        uninstallPlan,
+      );
+    } else {
+      await settingsApi.runToolLifecycleAction(tools, action, wslShellByTool);
+    }
   },
 
   async probeToolInstallations(

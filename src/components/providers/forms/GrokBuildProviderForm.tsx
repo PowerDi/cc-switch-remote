@@ -80,6 +80,7 @@ export function GrokBuildProviderForm({
   showButtons = true,
   inactiveFields = [],
   onEditorBaseChange,
+  target,
 }: GrokBuildProviderFormProps) {
   const { t } = useTranslation();
   const isDarkMode = useDarkMode();
@@ -120,6 +121,7 @@ export function GrokBuildProviderForm({
   const { projectDraft, clearDraftProjection } = useDraftEditorProjection(
     "grokbuild",
     onEditorBaseChange,
+    target,
   );
   const projectGrokDraft = (config: string, presetCategory?: string) =>
     projectDraft({ config }, presetCategory, (shown) =>
@@ -468,6 +470,7 @@ export function GrokBuildProviderForm({
           <>
             <CodexFormFields
               appId="grokbuild"
+              modelFetchTarget={target}
               providerId={providerId}
               codexApiKey={apiKey}
               onApiKeyChange={(value) => {
@@ -571,9 +574,8 @@ export function GrokBuildProviderForm({
               <InactiveFieldsPanel
                 fields={inactiveFields}
                 hint={t("grokBuild.inactiveFieldsHint", {
-                  count: inactiveFields.length,
                   defaultValue:
-                    "这个供应商还保存着 {{count}} 个不随切换生效的设置。点击复制它的 TOML，按需粘贴到上方；供应商里保存的原值不会删除。",
+                    "这些是旧版存进卡里的设置，现在切换不会写出去。点一下复制 TOML，需要时粘贴到上方。",
                 })}
                 action={{
                   kind: "copy",

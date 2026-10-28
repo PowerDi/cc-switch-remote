@@ -6,6 +6,7 @@ import { useCopilotQuota } from "@/lib/query/copilot";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { QuotaBars, QuotaLines } from "@/components/quota/QuotaLines";
+import { useQuotaDisplay } from "@/components/quota/useQuotaDisplay";
 import { failedLines, tierLine } from "@/components/quota/quotaRules";
 
 interface CopilotQuotaFooterProps {
@@ -23,6 +24,7 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
   target,
 }) => {
   const { t } = useTranslation();
+  const display = useQuotaDisplay();
   const accountId = resolveManagedAccountId(
     meta,
     PROVIDER_TYPES.GITHUB_COPILOT,
@@ -56,7 +58,7 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
   const rows = quota.tiers.map((tier) => ({
     label,
     line: {
-      ...tierLine(t, tier, label),
+      ...tierLine(t, tier, label, { display }),
       detail: quota.plan || undefined,
     },
   }));

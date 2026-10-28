@@ -195,7 +195,7 @@ describe.each(targets)("Skill install/import ($type)", (target) => {
     expect(apiMocks.importFromApps).toHaveBeenCalledWith([], target);
     expect(client.getQueryData(key("installed"))).toEqual([imported]);
     expect(invalidate.mock.calls).toEqual(
-      ["installed", "unmanaged", "repos", "discoverable"].map((collection) => [
+      ["repos", "discoverable", "installed", "unmanaged"].map((collection) => [
         { queryKey: key(collection) },
       ]),
     );
@@ -234,7 +234,7 @@ describe.each(targets)("Skill install/import ($type)", (target) => {
       const affected =
         action === "install"
           ? ["installed", "unmanaged"]
-          : ["installed", "unmanaged", "repos", "discoverable"];
+          : ["repos", "discoverable", "installed", "unmanaged"];
       await waitFor(() =>
         expect(invalidate).toHaveBeenCalledTimes(affected.length),
       );
@@ -302,3 +302,55 @@ describe("local ZIP install", () => {
     );
   });
 });
+
+describe.each(targets)(
+  "skill import discovery does not block $type",
+  (target) => {
+    it.each([false, true])(
+      "waits only for installed/unmanaged even after failure=%s",
+      async (failure) => {
+        const { client, wrapper } = setup();
+        const imported = [makeSkill()];
+        if (failure)
+          apiMocks.importFromApps.mockRejectedValueOnce(
+            new Error("sync failed"),
+          );
+        else apiMocks.importFromApps.mockResolvedValueOnce(imported);
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const invalidate = vi
+          .spyOn(client, "invalidateQueries")
+          .mockImplementation((filters) => {
+            const collection = filters?.queryKey?.[1];
+            return collection === "installed" || collection === "unmanaged"
+              ? pending
+              : new Promise<void>(() => {});
+          });
+        const { result } = renderHook(() => useImportSkillsFromApps(target), {
+          wrapper,
+        });
+        let operation!: Promise<InstalledSkill[]>;
+        act(() => {
+          operation = result.current.mutateAsync([]);
+          void operation.catch(() => {});
+        });
+        await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(4));
+        expect(result.current.isPending).toBe(true);
+        expect(
+          invalidate.mock.calls.every(
+            ([filters]) =>
+              filters?.queryKey?.[2] === getManagementTargetKey(target),
+          ),
+        ).toBe(true);
+        await act(async () => {
+          release();
+          if (failure) await expect(operation).rejects.toThrow("sync failed");
+          else await expect(operation).resolves.toEqual(imported);
+        });
+        await waitFor(() => expect(result.current.isPending).toBe(false));
+      },
+    );
+  },
+);

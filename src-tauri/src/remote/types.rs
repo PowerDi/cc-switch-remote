@@ -102,6 +102,10 @@ pub enum RemotePlatform {
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteCapability {
     Providers,
+    Omp,
+    PiNativeState,
+    OpencodeDefaultModel,
+    UsageFirstDate,
     ProviderEditor,
     AppMode,
     UniversalProviders,

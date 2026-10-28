@@ -60,10 +60,16 @@ pub async fn get_settings() -> Result<crate::settings::AppSettings, String> {
 /// 保存设置
 #[tauri::command]
 pub async fn save_settings(
+    app: tauri::AppHandle,
     state: tauri::State<'_, crate::store::AppState>,
     settings: crate::settings::AppSettings,
 ) -> Result<crate::settings::SettingsSaveResult, String> {
-    crate::settings::save_settings_with_state(state.inner(), settings)
+    let old_style = crate::settings::get_settings().native_tray_menu;
+    let result = crate::settings::save_settings_with_state(state.inner(), settings)?;
+    if old_style != crate::settings::get_settings().native_tray_menu {
+        crate::tray::apply_tray_style(&app);
+    }
+    Ok(result)
 }
 
 #[derive(serde::Serialize)]
@@ -80,6 +86,47 @@ pub struct CodexUnifyHistoryRestoreResult {
 #[tauri::command]
 pub async fn has_codex_unify_history_backup() -> Result<bool, String> {
     Ok(crate::codex_history_migration::has_codex_official_history_unify_backup())
+}
+
+/// Codex 的 `config.toml` 是不是用 `[features] multi_agent_v2` 强制了新版子 agent 工具
+/// （这时「经典子 agent 工具」开关不生效，界面上提示）。
+#[tauri::command]
+pub async fn codex_forces_multi_agent_v2() -> Result<bool, String> {
+    let text = crate::codex_config::read_codex_config_text().map_err(|e| e.to_string())?;
+    Ok(crate::codex_config::codex_config_forces_multi_agent_v2(
+        &text,
+    ))
+}
+
+/// Codex 会话压缩开关（`[features] local_thread_store_compression`）当前是否开启。
+#[tauri::command]
+pub async fn get_codex_session_compression() -> Result<bool, String> {
+    crate::services::codex_session_compression::is_enabled().map_err(|e| e.to_string())
+}
+
+/// 开关 Codex 会话压缩，返回写入后的状态。
+#[tauri::command]
+pub async fn set_codex_session_compression(
+    state: tauri::State<'_, crate::store::AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::codex_session_compression::set_enabled(&db, enabled)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// Codex 会话目录（sessions + archived_sessions）当前占用的字节数。
+#[tauri::command]
+pub async fn get_codex_sessions_disk_usage() -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(
+        crate::services::codex_session_compression::sessions_disk_usage,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// 按迁移备份账本把当时迁入共享桶的官方会话还原回 "openai" 桶。
@@ -137,7 +184,15 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
 /// 这里把退出清理、安装和重启串在同一个后端流程中，避免依赖旧前端继续执行。
 #[tauri::command]
 pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> {
-    let updater = updater_builder_for_app(&app)?
+    let builder = updater_builder_for_app(&app)?;
+    // Windows 上 updater 以 `msiexec /passive /promptrestart` 安装 MSI。passive 没有模态框、
+    // 未指定重启选项时，安装目录里有文件被占用，Windows Installer 会不经确认直接重启系统
+    // （#8534）。`/promptrestart` 只对应 REBOOTPROMPT，挡不住这一点，因此显式追加
+    // REBOOT=ReallySuppress（即 `/norestart`）。旧版本的 updater 不带这个参数，
+    // 由 MSI 模板自身的 REBOOT 属性兜底。
+    #[cfg(target_os = "windows")]
+    let builder = builder.installer_arg("REBOOT=ReallySuppress");
+    let updater = builder
         .build()
         .map_err(|e| format!("初始化更新器失败: {e}"))?;
 
@@ -263,6 +318,50 @@ mod tests {
         CodexThirdPartyHistoryProviderBucketMigration, LocalMigrations, S3SyncSettings,
         WebDavSyncSettings,
     };
+
+    #[test]
+    fn recovery_update_commands_remain_available_without_app_state() {
+        let source = include_str!("settings.rs");
+        for name in ["install_update_and_restart", "check_app_update_available"] {
+            let marker = format!("pub async fn {name}(");
+            let declaration = source
+                .split(&marker)
+                .nth(1)
+                .expect("recovery command declaration")
+                .split('{')
+                .next()
+                .unwrap();
+            assert!(
+                !declaration.contains("State<"),
+                "{name} requires initialized state"
+            );
+        }
+        assert!(source.contains("app.try_state::<crate::store::AppState>()"));
+    }
+
+    #[test]
+    fn save_settings_should_keep_the_existing_lightweight_mode() {
+        let existing = AppSettings {
+            lightweight_mode: true,
+            ..AppSettings::default()
+        };
+
+        let merged = merge_settings_for_save(AppSettings::default(), &existing);
+
+        assert!(merged.lightweight_mode);
+    }
+
+    #[test]
+    fn save_settings_should_keep_the_existing_proxy_client_host() {
+        let existing = AppSettings {
+            proxy_client_host: Some("172.25.144.1".to_string()),
+            ..AppSettings::default()
+        };
+
+        let merged = merge_settings_for_save(AppSettings::default(), &existing);
+
+        assert_eq!(merged.proxy_client_host.as_deref(), Some("172.25.144.1"));
+    }
 
     #[test]
     fn save_settings_should_preserve_existing_webdav_when_payload_omits_it() {
@@ -467,6 +566,7 @@ mod tests {
                     migrated_state_rows: 7,
                     codex_config_dir: None,
                 }),
+                ..LocalMigrations::default()
             }),
             ..AppSettings::default()
         };
@@ -520,6 +620,7 @@ mod tests {
                     migrated_state_rows: 2,
                     codex_config_dir: None,
                 }),
+                ..LocalMigrations::default()
             }),
             ..AppSettings::default()
         };

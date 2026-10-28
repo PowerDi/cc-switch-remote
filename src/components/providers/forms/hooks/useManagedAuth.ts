@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
 import { authApi, remoteApi, settingsApi } from "@/lib/api";
 import { CODEX_OAUTH_DUPLICATE_ACCOUNT_ERROR } from "@/lib/api/auth";
+import type { CodexLoginMethod } from "@/lib/api/auth";
 import { copyText } from "@/lib/clipboard";
 import {
   getManagementTargetKey,
@@ -22,12 +23,14 @@ type LoginRequest = {
   targetAccountId?: string;
   generation: number;
   connectionGeneration: number;
+  loginMethod?: CodexLoginMethod;
 };
 
 export function useManagedAuth(
   authProvider: ManagedAuthProvider,
   githubDomain?: string,
   target: ManagementTarget = LOCAL_MANAGEMENT_TARGET,
+  loginMethod?: CodexLoginMethod,
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -82,7 +85,8 @@ export function useManagedAuth(
   });
   const isAuthSupported =
     target.type === "local" ||
-    remoteHealthQuery.data?.capabilities.includes("auth") === true;
+    (["github_copilot", "codex_oauth", "xai_oauth"].includes(authProvider) &&
+      remoteHealthQuery.data?.capabilities.includes("auth") === true);
   const canTargetedReauth =
     isAuthSupported &&
     (target.type === "local" ||
@@ -129,7 +133,13 @@ export function useManagedAuth(
 
   const cancelBackendFlow = useCallback(
     async (activeDeviceCode: string | null): Promise<boolean> => {
-      if (authProvider !== "codex_oauth" || !activeDeviceCode) return true;
+      if (
+        !activeDeviceCode ||
+        (authProvider !== "codex_oauth" &&
+          authProvider !== "agy_oauth" &&
+          authProvider !== "claude_official")
+      )
+        return true;
       try {
         const cancelled = await authApi.authCancelLogin(
           authProvider,
@@ -180,12 +190,14 @@ export function useManagedAuth(
     mutationFn: async ({
       targetAccountId,
       connectionGeneration: requestConnectionGeneration,
+      loginMethod: method,
     }: LoginRequest) => ({
       response: await authApi.authStartLogin(
         authProvider,
         githubDomain,
         target,
         targetAccountId,
+        method,
       ),
       connectionGeneration: requestConnectionGeneration,
     }),
@@ -205,10 +217,14 @@ export function useManagedAuth(
       setPollingState("polling");
       setError(null);
 
-      try {
-        await copyText(response.user_code);
-      } catch (e) {
-        console.debug("[ManagedAuth] Failed to copy user code:", e);
+      // Browser login has no verification code; leave the clipboard untouched.
+      const browserFlow = !response.user_code;
+      if (!browserFlow) {
+        try {
+          await copyText(response.user_code);
+        } catch (e) {
+          console.debug("[ManagedAuth] Failed to copy user code:", e);
+        }
       }
       if (
         !isCurrentGeneration(requestGeneration) ||
@@ -219,7 +235,7 @@ export function useManagedAuth(
 
       // Device-code login can be completed in a browser, but only the local
       // target may launch one. Remote users retain the verification URL in UI.
-      if (target.type === "local") {
+      if (target.type === "local" && !response.browser_opened) {
         try {
           await settingsApi.openExternal(response.verification_uri);
         } catch (e) {
@@ -235,10 +251,15 @@ export function useManagedAuth(
 
       // Add a small buffer on top of GitHub's suggested interval to avoid
       // hitting slow_down responses too aggressively during device polling.
-      const interval = Math.max((response.interval || 5) + 3, 8) * 1000;
+      // The browser flow only checks a local result, so it can poll quickly.
+      const interval = browserFlow
+        ? 1500
+        : Math.max((response.interval || 5) + 3, 8) * 1000;
+      let pollInFlight = false;
       const expiresAt = Date.now() + response.expires_in * 1000;
 
       const pollOnce = async () => {
+        if (pollInFlight) return;
         if (
           !isCurrentGeneration(requestGeneration) ||
           request.generation !== flowGenerationRef.current
@@ -252,11 +273,16 @@ export function useManagedAuth(
           void cancelBackendFlow(response.device_code);
           flowGenerationRef.current += 1;
           setPollingState("error");
-          setError("Device code expired. Please try again.");
+          setError(
+            t("codexOauth.loginExpired", {
+              defaultValue: "Login expired. Please try again.",
+            }),
+          );
           return;
         }
 
         try {
+          pollInFlight = true;
           const newAccount = await authApi.authPollForAccount(
             authProvider,
             response.device_code,
@@ -313,6 +339,8 @@ export function useManagedAuth(
                 : errorMessage,
             );
           }
+        } finally {
+          pollInFlight = false;
         }
       };
 
@@ -329,7 +357,11 @@ export function useManagedAuth(
         void cancelBackendFlow(response.device_code);
         flowGenerationRef.current += 1;
         setPollingState("error");
-        setError("Device code expired. Please try again.");
+        setError(
+          t("codexOauth.loginExpired", {
+            defaultValue: "Login expired. Please try again.",
+          }),
+        );
       }, response.expires_in * 1000);
       void pollOnce();
     },
@@ -368,6 +400,13 @@ export function useManagedAuth(
       setError(e instanceof Error ? e.message : String(e));
       await refetchStatus();
     },
+    onSettled: async () => {
+      if (authProvider === "codex_oauth") {
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", "codex"],
+        });
+      }
+    },
   });
 
   const removeAccountMutation = useMutation({
@@ -389,9 +428,18 @@ export function useManagedAuth(
       await refetchStatus();
       await queryClient.invalidateQueries({ queryKey });
     },
-    onError: (e) => {
+    onError: async (e) => {
       console.error("[ManagedAuth] Failed to remove account:", e);
       setError(e instanceof Error ? e.message : String(e));
+      // Account removal can succeed before provider unbinding fails.
+      if (authProvider === "codex_oauth") await refetchStatus();
+    },
+    onSettled: async () => {
+      if (authProvider === "codex_oauth") {
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", "codex"],
+        });
+      }
     },
   });
 
@@ -402,6 +450,14 @@ export function useManagedAuth(
     },
     onSuccess: async (generation) => {
       if (!isCurrentGeneration(generation)) return;
+      if (target.type === "local" && authProvider === "agy_oauth") {
+        const running = await authApi.agyAccountIsRunning().catch(() => false);
+        if (running) {
+          toast.warning(t("authCenter.agy.switchedWhileRunning"));
+        } else {
+          toast.success(t("authCenter.agy.switched"));
+        }
+      }
       await refetchStatus();
       await queryClient.invalidateQueries({ queryKey });
     },
@@ -428,11 +484,13 @@ export function useManagedAuth(
           targetAccountId,
           generation,
           connectionGeneration,
+          loginMethod,
         });
       });
     },
     [
       connectionGeneration,
+      loginMethod,
       queueBackendCancellation,
       startLoginMutation,
       stopPolling,

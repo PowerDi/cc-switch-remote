@@ -76,8 +76,9 @@ impl Database {
     }
 
     // Backfill and activation must commit together with MiniMax Code's live file.
-    pub(crate) fn save_mcode_prompts(
+    pub(crate) fn save_native_prompts(
         &self,
+        app_type: &str,
         prompts: &IndexMap<String, Prompt>,
     ) -> Result<(), AppError> {
         let mut conn = lock_conn!(self.conn);
@@ -89,7 +90,7 @@ impl Database {
                 .execute(
                     "INSERT OR REPLACE INTO prompts (
                     id, app_type, name, content, description, enabled, created_at, updated_at
-                ) VALUES (?1, 'mcode', ?2, ?3, ?4, ?5, ?6, ?7)",
+                ) VALUES (?1, ?8, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![
                         prompt.id,
                         prompt.name,
@@ -97,7 +98,8 @@ impl Database {
                         prompt.description,
                         prompt.enabled,
                         prompt.created_at,
-                        prompt.updated_at
+                        prompt.updated_at,
+                        app_type
                     ],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;

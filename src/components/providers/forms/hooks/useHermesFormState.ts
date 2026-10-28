@@ -47,7 +47,10 @@ export interface HermesFormState {
   handleHermesApiModeChange: (mode: HermesApiMode) => void;
   handleHermesModelsChange: (models: HermesModel[]) => void;
   handleHermesRateLimitDelayChange: (delay: number | undefined) => void;
-  resetHermesState: (config?: Partial<HermesProviderSettingsConfig>) => void;
+  resetHermesState: (
+    config?: Partial<HermesProviderSettingsConfig>,
+    providerKey?: string,
+  ) => void;
 }
 
 function parseHermesField<T>(
@@ -201,8 +204,8 @@ export function useHermesFormState({
   );
 
   const resetHermesState = useCallback(
-    (config?: Partial<HermesProviderSettingsConfig>) => {
-      setHermesProviderKey("");
+    (config?: Partial<HermesProviderSettingsConfig>, providerKey?: string) => {
+      setHermesProviderKey(providerKey ?? "");
       setHermesBaseUrl(config?.base_url || "");
       setHermesApiKey(getDisplaySecretValue(config?.api_key));
       setHermesApiMode(config?.api_mode ?? HERMES_DEFAULT_API_MODE);

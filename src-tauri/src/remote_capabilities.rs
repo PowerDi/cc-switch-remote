@@ -1,5 +1,10 @@
 pub const REMOTE_HELPER_CAPABILITIES: &[&str] = &[
     "providers",
+    // Parity through shared native provider, tool, MCP, prompt, skill and session services.
+    "omp",
+    "pi-native-state",
+    "opencode-default-model",
+    "usage-first-date",
     // v4 editor projection: helper `providers editor-view` / `add-editor` /
     // `update-editor` reuse the desktop EditorSave path (redacted view,
     // restored base, row rollback when the live write fails).

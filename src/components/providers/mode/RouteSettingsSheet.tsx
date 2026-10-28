@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { ChevronRight } from "lucide-react";
 import type { ProxyAppId } from "@/config/appConfig";
+import type { ManagementTarget } from "@/lib/api";
 import {
   Sheet,
   SheetBody,
@@ -15,6 +16,7 @@ import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPa
 import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
 
 interface RouteSettingsSheetProps {
+  target?: ManagementTarget;
   app: ProxyAppId;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -23,6 +25,7 @@ interface RouteSettingsSheetProps {
 
 /** 路由页签上的「路由设置 ›」：当前应用的超时、重试、熔断；更多在设置 → 本地路由。 */
 export function RouteSettingsSheet({
+  target,
   app,
   open,
   onOpenChange,
@@ -37,7 +40,7 @@ export function RouteSettingsSheet({
           <SheetDescription>{APP_DISPLAY_NAME[app]}</SheetDescription>
         </SheetHeader>
         <SheetBody>
-          <AutoFailoverConfigPanel appType={app} />
+          <AutoFailoverConfigPanel appType={app} target={target} />
         </SheetBody>
         <SheetFooter className="justify-start">
           <Button

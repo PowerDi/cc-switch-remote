@@ -1,11 +1,15 @@
 import { useManagedAuth } from "./useManagedAuth";
 import type { ManagementTarget } from "@/lib/api";
+import type { CodexLoginMethod } from "@/lib/api/auth";
 
 /**
  * Codex OAuth (ChatGPT Plus/Pro) 认证 hook
  *
  * 复用通用 useManagedAuth，仅指定 provider 为 "codex_oauth"
  */
-export function useCodexOauth(target?: ManagementTarget) {
-  return useManagedAuth("codex_oauth", undefined, target);
+export function useCodexOauth(
+  target?: ManagementTarget,
+  loginMethod: CodexLoginMethod = "browser",
+) {
+  return useManagedAuth("codex_oauth", undefined, target, loginMethod);
 }

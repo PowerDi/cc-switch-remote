@@ -10,11 +10,18 @@ import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
 import { invoke } from "@tauri-apps/api/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, KeyRound, MoreHorizontal, Plus } from "lucide-react";
+import {
+  ExternalLink,
+  KeyRound,
+  MoreHorizontal,
+  Plus,
+  Search,
+} from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, Settings as AppSettings, VisibleApps } from "@/types";
 import { KNOWN_APP_TYPES, type AppTypeFilter } from "@/types/usage";
 import type { EnvConflict } from "@/types/env";
+import type { SubscriptionQuota } from "@/types/subscription";
 import {
   providersQueryOptions,
   proxyKeys,
@@ -44,11 +51,12 @@ import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
 import {
   extractErrorMessage,
+  translateKimiProviderMutationError,
   translatePiProviderMutationError,
 } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { deepClone } from "@/utils/deepClone";
-import { isLinux, isWindows } from "@/lib/platform";
+import { isLinux, isMac, isWindows } from "@/lib/platform";
 import {
   APP_STORAGE_KEY,
   appPageBelongsTo,
@@ -61,6 +69,7 @@ import {
   type View,
 } from "@/lib/navigation";
 import { Sidebar } from "@/components/shell/Sidebar";
+import { useUpdate } from "@/contexts/UpdateContext";
 import { NewLayoutDialog } from "@/components/shell/NewLayoutDialog";
 import {
   AppPageHeader,
@@ -77,6 +86,7 @@ import {
 } from "@/components/providers/forms/helpers/opencodeFormUtils";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { OpenTerminalDialog } from "@/components/providers/OpenTerminalDialog";
 import { discardUnsavedChanges, hasUnsavedChanges } from "@/lib/unsavedChanges";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
@@ -88,7 +98,6 @@ import {
 import { UsagePage } from "@/components/usage/UsagePage";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { SwitchModePanel } from "@/components/providers/mode/SwitchModePanel";
-import { DesktopAccessBar } from "@/components/providers/mode/DesktopAccessBar";
 import { proxyApi } from "@/lib/api/proxy";
 import type { AppMode, StartupAttachFailure } from "@/types/proxy";
 import UsageScriptModal from "@/components/UsageScriptModal";
@@ -152,8 +161,11 @@ import { useRemoteSessionStatus } from "@/lib/query";
 import {
   APP_IDS,
   DEFAULT_VISIBLE_APPS,
-  isProxyAppId,
+  isModeAppId,
+  isPiFamilyApp,
+  orderAppIds,
 } from "@/config/appConfig";
+import type { PiFamilyAppId } from "@/lib/api/pi";
 
 interface SyncStatusUpdatedPayload {
   source?: string;
@@ -174,12 +186,14 @@ const getInitialApp = (): AppId => {
 function App() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { hasUpdate } = useUpdate();
 
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
   const sharedFeatureApp = sharedFeatureAppOf(activeApp);
   const [currentView, setCurrentView] = useState<View>(readStoredView);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("general");
+  const [appConfigScrollTarget, setAppConfigScrollTarget] = useState<AppId>();
   // 进设置前停留的页面：设置目录里的「← 返回」回到这里
   const settingsReturnViewRef = useRef<View>("providers");
   const [openclawConfigTab, setOpenclawConfigTab] =
@@ -188,6 +202,13 @@ function App() {
     PROMPT_APP_IDS.includes(sharedFeatureApp) ? sharedFeatureApp : "claude",
   );
   const [isAddOpen, setIsAddOpen] = useState(false);
+  // 供应商搜索面板：页头按钮和 ⌘F 都能打开；换应用或离开供应商页就收起
+  const [providerSearchOpen, setProviderSearchOpen] = useState(false);
+  const [connectionStatusSlot, setConnectionStatusSlot] =
+    useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    setProviderSearchOpen(false);
+  }, [activeApp, currentView]);
   // 供应商页顶部正在看的那格（直连 / 路由 / 聚合），由 SwitchModePanel 报上来。打开新增、
   // 编辑时记下当时那格，表单按它选布局：在聚合那格打开就是聚合的简化表单。
   const [providerModeView, setProviderModeView] = useState<{
@@ -381,21 +402,57 @@ function App() {
   // Windows 一律去掉系统标题栏，用页头里的应用内窗口按钮；Linux 由设置决定
   const useAppWindowControls =
     isWindows() || (isLinux() && (settingsData?.useAppWindowControls ?? false));
+  const ompSupported = useTargetCapability(managementTarget, "omp");
+  const piNativeStateSupported = useTargetCapability(
+    managementTarget,
+    "pi-native-state",
+  );
+
   // 远端目标用这台主机的可见应用列表；本机目标才看本机设置
   const visibleApps = useMemo<VisibleApps>(
     () =>
       activeRemoteProfile
-        ? (activeRemoteSettings?.visibleApps ?? DEFAULT_VISIBLE_APPS)
+        ? {
+            ...DEFAULT_VISIBLE_APPS,
+            ...activeRemoteSettings?.visibleApps,
+            "claude-desktop": false,
+            agy: false,
+            kimi: false,
+            omp:
+              ompSupported &&
+              (activeRemoteSettings?.visibleApps?.omp ??
+                DEFAULT_VISIBLE_APPS.omp),
+          }
         : { ...DEFAULT_VISIBLE_APPS, ...settingsData?.visibleApps },
     [
       activeRemoteProfile,
+      ompSupported,
       activeRemoteSettings?.visibleApps,
       settingsData?.visibleApps,
     ],
   );
 
+  const promptApps = PROMPT_APP_IDS.filter(
+    (app) =>
+      (!isRemoteTarget ||
+        (app !== "agy" && app !== "kimi" && (app !== "omp" || ompSupported))) &&
+      (visibleApps[app] ||
+        (app === "claude" && visibleApps["claude-desktop"]) ||
+        app === promptsApp),
+  );
+  useEffect(() => {
+    if (!promptApps.includes(promptsApp))
+      setPromptsApp(promptApps[0] ?? "claude");
+  }, [promptsApp, promptApps.join(",")]);
+
   const getFirstVisibleApp = (): AppId => {
-    return APP_IDS.find((app) => visibleApps[app]) ?? "claude";
+    return (
+      orderAppIds(
+        isRemoteTarget
+          ? activeRemoteSettings?.appOrder
+          : settingsData?.appOrder,
+      ).find((app) => visibleApps[app]) ?? "claude"
+    );
   };
 
   useEffect(() => {
@@ -407,14 +464,15 @@ function App() {
   // 启动后把其他可见应用的供应商列表预取进缓存：第一次切过去直接有数据，不先画骨架
   const providersPrefetchedRef = useRef(false);
   useEffect(() => {
-    if (!settingsData || providersPrefetchedRef.current) return;
+    if (isRemoteTarget || !settingsData || providersPrefetchedRef.current)
+      return;
     providersPrefetchedRef.current = true;
     for (const app of APP_IDS) {
       if (app !== activeApp && visibleApps[app]) {
         void queryClient.prefetchQuery(providersQueryOptions(app));
       }
     }
-  }, [settingsData, visibleApps, activeApp, queryClient]);
+  }, [settingsData, visibleApps, activeApp, queryClient, isRemoteTarget]);
 
   // 「启动时检查应用更新」（默认关）：打开了才在后台查一次，查到新版本侧栏「应用」上出现圆点
   const checkToolUpdatesOnStartup =
@@ -422,10 +480,15 @@ function App() {
   const toolUpdatesAvailable = useToolUpdatesAvailable();
   const startupToolCheckDoneRef = useRef(false);
   useEffect(() => {
-    if (!checkToolUpdatesOnStartup || startupToolCheckDoneRef.current) return;
+    if (
+      isRemoteTarget ||
+      !checkToolUpdatesOnStartup ||
+      startupToolCheckDoneRef.current
+    )
+      return;
     startupToolCheckDoneRef.current = true;
     void checkToolUpdatesInBackground();
-  }, [checkToolUpdatesOnStartup]);
+  }, [checkToolUpdatesOnStartup, isRemoteTarget]);
 
   // 启动时没能接上路由 / 聚合、已退回直连的应用：在对应的应用页提示一次并给「重试」
   const [startupFailures, setStartupFailures] = useState<
@@ -460,6 +523,9 @@ function App() {
     provider: Provider;
     action: "remove" | "delete";
   } | null>(null);
+  const [terminalProvider, setTerminalProvider] = useState<Provider | null>(
+    null,
+  );
   const [envConflicts, setEnvConflicts] = useState<EnvConflict[]>([]);
   const [showEnvBanner, setShowEnvBanner] = useState(false);
 
@@ -486,7 +552,7 @@ function App() {
 
   const { isRunning: isProxyRunning, takeoverStatus } =
     useProxyStatus(managementTarget);
-  const proxyAppId = isProxyAppId(activeApp) ? activeApp : null;
+  const modeAppId = isModeAppId(activeApp) ? activeApp : null;
   // 换了应用、新面板还没报上来时为 undefined：表单按应用实际生效的模式
   const currentModeView =
     providerModeView?.app === activeApp ? providerModeView.view : undefined;
@@ -494,10 +560,9 @@ function App() {
     setFormModeView(modeView);
     setIsAddOpen(true);
   };
-  const currentAppUsesProxy =
-    proxyAppId !== null || activeApp === "claude-desktop";
-  const isCurrentAppTakeoverActive = proxyAppId
-    ? takeoverStatus?.[proxyAppId] || false
+  const currentAppUsesProxy = modeAppId !== null;
+  const isCurrentAppTakeoverActive = modeAppId
+    ? takeoverStatus?.[modeAppId] || false
     : false;
   // 远端目标没有本机接管状态：远端应用的生效状态由 RemoteAppRoutingToggle
   // 自己读同一份远端 app 配置展示（见下方 remoteRoutableActiveApp）。
@@ -521,6 +586,12 @@ function App() {
     refetch,
     error: providerLoadError,
   } = useProvidersQuery(activeApp, {
+    enabled:
+      !isRemoteTarget ||
+      (activeApp !== "claude-desktop" &&
+        activeApp !== "agy" &&
+        activeApp !== "kimi" &&
+        (activeApp !== "omp" || ompSupported)),
     isProxyRunning: currentAppUsesProxy && isProxyRunning,
     target: managementTarget,
   });
@@ -543,9 +614,10 @@ function App() {
     providerLoadError,
   ]);
 
-  // Pi 的 live 状态是本机文件；helper 没有对应命令，远端不读本机状态
   const { data: piCurrentState } = usePiCurrentState(
-    activeApp === "pi" && !isRemoteTarget,
+    isPiFamilyApp(activeApp) && (activeApp !== "omp" || ompSupported),
+    activeApp === "omp" ? "omp" : "pi",
+    managementTarget,
   );
   const providers = useMemo(() => data?.providers ?? {}, [data]);
   const currentProviderId = data?.currentProviderId ?? "";
@@ -566,18 +638,22 @@ function App() {
     isProxyRunning && isCurrentAppTakeoverActive,
     managementTarget,
   );
-  const handleEnablePiProvider = async (provider: Provider) => {
+  const handleEnablePiProvider = async (
+    provider: Provider,
+    app: PiFamilyAppId,
+  ) => {
     try {
-      await providersApi.switch(provider.id, "pi");
-      await invalidatePiProviderCaches(queryClient);
-      await providersApi.updateTrayMenu().catch((error) => {
-        console.error(
-          "Failed to update tray menu after enabling Pi provider",
-          error,
-        );
-      });
+      await providersApi.switch(provider.id, app, managementTarget);
+      await invalidatePiProviderCaches(queryClient, app, managementTarget);
+      if (!isRemoteTarget)
+        await providersApi.updateTrayMenu().catch((error) => {
+          console.error(
+            "Failed to update tray menu after enabling Pi provider",
+            error,
+          );
+        });
       toast.success(
-        t("pi.provider.enabled", {
+        t(`${app}.provider.enabled`, {
           defaultValue: "已在 Pi 中启用",
         }),
         { closeButton: true },
@@ -585,7 +661,7 @@ function App() {
     } catch (error) {
       const detail = extractErrorMessage(error);
       toast.error(
-        t("pi.provider.enableFailed", {
+        t(`${app}.provider.enableFailed`, {
           defaultValue: "无法在 Pi 中启用此供应商",
         }),
         {
@@ -595,6 +671,28 @@ function App() {
         },
       );
     }
+  };
+
+  // Kimi「添加」只写进 config.toml、不改默认模型；「切换」走 switchProvider
+  const handleAddKimiProvider = async (provider: Provider) => {
+    if (isRemoteTarget) return;
+    try {
+      await providersApi.addToLiveConfig(provider.id, "kimi");
+    } catch (error) {
+      toast.error(
+        t("notifications.addFailed", {
+          error: extractErrorMessage(error) || t("common.unknown"),
+        }),
+        { closeButton: true },
+      );
+      return;
+    } finally {
+      await queryClient.invalidateQueries({ queryKey: ["providers", "kimi"] });
+    }
+    toast.success(
+      t("notifications.addToConfigSuccess", { defaultValue: "已添加到配置" }),
+      { closeButton: true },
+    );
   };
 
   const disableOmoMutation = useDisableCurrentOmo();
@@ -639,12 +737,30 @@ function App() {
       try {
         const off = await providersApi.onSwitched(
           async (event: ProviderSwitchEvent) => {
-            if (event.appType === activeApp) {
-              await refetch();
-            }
+            // 按前缀失效：故障转移只改路由指针，「路由中」标记读的是
+            // ["providers", app, "mode"]，只 refetch 列表会让它停在旧那家
+            await queryClient.invalidateQueries({
+              queryKey: ["providers", event.appType],
+            });
             if (event.appType === "pi") {
               await invalidatePiProviderCaches(queryClient);
             }
+            if (event.appType === "claude") {
+              // 托盘切卡、应用项目同样可能把默认登录收成新账号
+              await queryClient.invalidateQueries({
+                queryKey: ["managed-auth-status", "claude_official"],
+              });
+            }
+            // 切换会顺带刷新托管 ChatGPT 账号的令牌（托盘切换也一样）：
+            // 重查停在失败上的账号额度，免得主界面一直显示旧的「登录过期」
+            await queryClient.invalidateQueries({
+              predicate: (query) =>
+                query.queryKey[0] === "codex_oauth" &&
+                query.queryKey[1] === "quota" &&
+                (query.state.status === "error" ||
+                  (query.state.data as SubscriptionQuota | undefined)
+                    ?.success === false),
+            });
           },
         );
         if (!active) {
@@ -662,7 +778,7 @@ function App() {
       active = false;
       unsubscribe?.();
     };
-  }, [activeApp, queryClient, refetch]);
+  }, [queryClient]);
 
   useTauriEvent("universal-provider-synced", async () => {
     await queryClient.invalidateQueries({ queryKey: ["providers"] });
@@ -760,6 +876,144 @@ function App() {
   }, [useAppWindowControls, settingsData]);
 
   useEffect(() => {
+    if (!isLinux() || !useAppWindowControls) return;
+
+    const win = getCurrentWindow();
+    let active = true;
+    let revision = 0;
+    let canResize = false;
+    let nativeScale = 1;
+    const unlisteners: (() => void)[] = [];
+    let cursor:
+      | {
+          target: HTMLElement | SVGElement;
+          value: string;
+          priority: string;
+          applied: string;
+        }
+      | undefined;
+    const restoreCursor = () => {
+      if (
+        cursor &&
+        cursor.target.style.cursor === cursor.applied &&
+        cursor.target.style.getPropertyPriority("cursor") === "important"
+      ) {
+        cursor.target.style.setProperty(
+          "cursor",
+          cursor.value,
+          cursor.priority,
+        );
+      }
+      cursor = undefined;
+    };
+    const refresh = async () => {
+      const current = ++revision;
+      canResize = false;
+      restoreCursor();
+      try {
+        const [maximized, fullscreen, resizable, scale] = await Promise.all([
+          win.isMaximized(),
+          win.isFullscreen(),
+          win.isResizable(),
+          win.scaleFactor(),
+        ]);
+        if (active && current === revision) {
+          canResize = resizable && !maximized && !fullscreen;
+          nativeScale = scale;
+        }
+      } catch (error) {
+        console.error("[App] Failed to read window resize state", error);
+      }
+    };
+    const edgeCursor = ({ clientX: x, clientY: y }: MouseEvent) => {
+      if (
+        !canResize ||
+        x < 0 ||
+        y < 0 ||
+        x >= window.innerWidth ||
+        y >= window.innerHeight
+      ) {
+        return "";
+      }
+      // 与 tauri-runtime-wry 的 GTK 边缘宽度（5 × scale，GDK 坐标）对齐，
+      // 再从 GDK 坐标转换为 CSS 像素，兼容显示缩放和 WebView 缩放。
+      const inset = (5 * nativeScale * nativeScale) / window.devicePixelRatio;
+      const horizontal =
+        x < inset ? -1 : x >= window.innerWidth - inset ? 1 : 0;
+      const vertical = y < inset ? -1 : y >= window.innerHeight - inset ? 1 : 0;
+      if (horizontal && vertical) {
+        return horizontal === vertical ? "nwse-resize" : "nesw-resize";
+      }
+      return horizontal ? "ew-resize" : vertical ? "ns-resize" : "";
+    };
+    const onMouseMove = (event: MouseEvent) => {
+      const value = edgeCursor(event);
+      const target = event.target;
+      if (
+        !value ||
+        !(target instanceof HTMLElement || target instanceof SVGElement)
+      ) {
+        restoreCursor();
+        return;
+      }
+      if (cursor?.target !== target) {
+        restoreCursor();
+        cursor = {
+          target,
+          value: target.style.cursor,
+          priority: target.style.getPropertyPriority("cursor"),
+          applied: "",
+        };
+      }
+      if (cursor.applied !== value) {
+        cursor.applied = value;
+        target.style.setProperty("cursor", value, "important");
+      }
+    };
+    const onMouseDown = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const drag = event.target.getAttribute("data-tauri-drag-region");
+      if (
+        event.button === 0 &&
+        drag !== null &&
+        drag !== "false" &&
+        edgeCursor(event)
+      ) {
+        // 保留 GTK 原生缩放，阻止 Tauri 的 document 冒泡监听再发起窗口移动。
+        event.stopPropagation();
+      }
+    };
+
+    document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("mousedown", onMouseDown, true);
+    document.documentElement.addEventListener("mouseleave", restoreCursor);
+    window.addEventListener("blur", restoreCursor);
+    for (const listener of [
+      win.onResized(refresh),
+      win.onScaleChanged(refresh),
+    ]) {
+      void listener
+        .then((unlisten) => {
+          if (active) unlisteners.push(unlisten);
+          else unlisten();
+        })
+        .catch((error) =>
+          console.error("[App] Failed to listen for window resize", error),
+        );
+    }
+    void refresh();
+    return () => {
+      active = false;
+      unlisteners.forEach((unlisten) => unlisten());
+      document.removeEventListener("mousemove", onMouseMove, true);
+      document.removeEventListener("mousedown", onMouseDown, true);
+      document.documentElement.removeEventListener("mouseleave", restoreCursor);
+      window.removeEventListener("blur", restoreCursor);
+      restoreCursor();
+    };
+  }, [useAppWindowControls]);
+
+  useEffect(() => {
     const checkEnvOnStartup = async () => {
       try {
         const allConflicts = await checkAllEnvConflicts();
@@ -832,7 +1086,12 @@ function App() {
   useEffect(() => {
     const checkEnvOnSwitch = async () => {
       try {
-        if (activeApp === "mcode") return;
+        if (
+          activeApp === "mcode" ||
+          activeApp === "kimi" ||
+          activeApp === "agy"
+        )
+          return;
         const conflicts = await checkEnvConflicts(activeApp);
 
         if (conflicts.length > 0) {
@@ -917,14 +1176,18 @@ function App() {
     return true;
   };
 
-  const openSettings = (section: SettingsSection = "general") => {
+  const openSettings = (
+    section: SettingsSection = "general",
+    appConfigTarget?: AppId,
+  ) => {
     if (navigationBusyRef.current) return;
-    if (confirmLeave(() => openSettings(section))) return;
+    if (confirmLeave(() => openSettings(section, appConfigTarget))) return;
     closeProviderPanels();
     if (currentViewRef.current !== "settings") {
       settingsReturnViewRef.current = currentViewRef.current;
     }
     setSettingsSection(section);
+    setAppConfigScrollTarget(appConfigTarget);
     setCurrentView("settings");
   };
 
@@ -947,6 +1210,8 @@ function App() {
       return;
     }
     if (navigationBusyRef.current) return;
+    // 再点当前页不会离开：不弹确认，也不能清掉编辑页的未保存登记
+    if (currentViewRef.current === page) return;
     if (confirmLeave(() => openPage(page))) return;
     closeProviderPanels();
     if (page === "prompts" && currentViewRef.current !== "prompts") {
@@ -982,6 +1247,11 @@ function App() {
 
   // 侧栏、⌘K 进用量统计看全部应用；只有应用页 ⋯ 进来时带应用筛选
   const openPageFromNav = (page: GlobalPage | "settings") => {
+    // 「设置」上的绿点说的是 CC Switch 有新版本，点进去直接到「关于」里的更新按钮
+    if (page === "settings" && hasUpdate) {
+      openSettings("about");
+      return;
+    }
     if (page === "usage") setUsageAppFilter("all");
     openPage(page);
   };
@@ -1051,6 +1321,43 @@ function App() {
     setEditingProvider(null);
   };
 
+  // 累加式应用的「已添加」和「默认」都现读客户端文件，移除前后重读一遍
+  const refreshAdditiveLiveState = async (app: AppId) => {
+    if (isPiFamilyApp(app)) {
+      await invalidatePiProviderCaches(queryClient, app, managementTarget);
+    } else if (app === "opencode") {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["opencodeLiveProviderIds", managementTargetKey],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["opencodeDefaultModel", managementTargetKey],
+        }),
+      ]);
+    } else if (app === "openclaw") {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: openclawKeys.liveProviderIds(managementTargetKey),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: [...openclawKeys.defaultModel, managementTargetKey],
+        }),
+        queryClient.invalidateQueries({ queryKey: openclawKeys.health }),
+      ]);
+    } else if (app === "hermes") {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: hermesKeys.liveProviderIds(managementTargetKey),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: hermesKeys.modelConfig(managementTargetKey),
+        }),
+      ]);
+    } else if (app === "mcode" || app === "kimi") {
+      await queryClient.invalidateQueries({ queryKey: ["providers", app] });
+    }
+  };
+
   const handleConfirmAction = async () => {
     if (!confirmAction) return;
     const { provider, action } = confirmAction;
@@ -1067,45 +1374,23 @@ function App() {
       } catch (error) {
         const detail = extractErrorMessage(error);
         const description =
-          activeApp === "pi"
-            ? translatePiProviderMutationError(detail, t) || detail
-            : detail;
-        if (activeApp === "pi") {
-          void invalidatePiProviderCaches(queryClient).catch(() => undefined);
-        }
+          (isPiFamilyApp(activeApp)
+            ? translatePiProviderMutationError(detail, t)
+            : activeApp === "kimi"
+              ? translateKimiProviderMutationError(detail, t)
+              : "") || detail;
+        // 默认模型可能在客户端里改过、页面还是旧的：失败了也重读，让「默认」和移除按钮跟上
+        void refreshAdditiveLiveState(activeApp).catch(() => undefined);
         toast.error(t("notifications.removeFromConfigFailed"), {
           description: description || t("common.unknown"),
           closeButton: true,
         });
         return;
       }
-      if (activeApp === "pi") {
-        await invalidatePiProviderCaches(queryClient);
-      }
-      // Invalidate queries to refresh the isInConfig state
-      if (activeApp === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["opencodeLiveProviderIds", managementTargetKey],
-        });
-      } else if (activeApp === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.liveProviderIds(managementTargetKey),
-        });
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      } else if (activeApp === "hermes") {
-        await queryClient.invalidateQueries({
-          queryKey: hermesKeys.liveProviderIds(managementTargetKey),
-        });
-      } else if (activeApp === "mcode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["providers", "mcode", managementTargetKey],
-        });
-      }
+      await refreshAdditiveLiveState(activeApp);
       toast.success(
-        activeApp === "pi"
-          ? t("pi.provider.removed", {
+        isPiFamilyApp(activeApp)
+          ? t(`${activeApp}.provider.removed`, {
               defaultValue: "已从 Pi 移除",
             })
           : t("notifications.removeFromConfigSuccess", {
@@ -1190,7 +1475,8 @@ function App() {
       activeApp === "opencode" ||
       activeApp === "openclaw" ||
       activeApp === "hermes" ||
-      activeApp === "pi"
+      activeApp === "pi" ||
+      activeApp === "omp"
     ) {
       let liveProviderIds: string[] = [];
       try {
@@ -1213,13 +1499,20 @@ function App() {
                     queryFn: () =>
                       providersApi.getHermesLiveProviderIds(managementTarget),
                   })
-                : isRemoteTarget
-                  ? // 远端 Pi 没有 live 状态命令：只按已保存的行复制，不读本机状态
-                    []
+                : !piNativeStateSupported
+                  ? []
                   : (
                       await queryClient.ensureQueryData({
-                        queryKey: ["pi", "currentState"],
-                        queryFn: () => piApi.getCurrentState(),
+                        queryKey: [
+                          activeApp,
+                          "currentState",
+                          managementTargetKey,
+                        ],
+                        queryFn: () =>
+                          piApi.getCurrentState(
+                            activeApp === "omp" ? "omp" : "pi",
+                            managementTarget,
+                          ),
                       })
                     ).enabledProviderIds;
       } catch (error) {
@@ -1243,13 +1536,26 @@ function App() {
         existingKeys,
       );
       duplicatedProvider.addToLive = false;
-    } else if (activeApp === "mcode") {
+    } else if (activeApp === "mcode" || activeApp === "kimi") {
       // The MCode list already includes its live custom nodes; the backend
       // rejects a key that MCode itself owns.
       duplicatedProvider.providerKey = generateUniqueProviderCopyKey(
         provider.id,
         Object.keys(providers),
       );
+      if (activeApp === "kimi") {
+        const models = duplicatedProvider.settingsConfig.models ?? {};
+        duplicatedProvider.settingsConfig.models = Object.fromEntries(
+          Object.entries(models).map(([key, value]) => [
+            `${duplicatedProvider.providerKey}/${key.startsWith(`${provider.id}/`) ? key.slice(provider.id.length + 1) : key}`,
+            {
+              ...(value as Record<string, unknown>),
+              provider: duplicatedProvider.providerKey,
+            },
+          ]),
+        );
+        duplicatedProvider.addToLive = false;
+      }
     }
 
     if (provider.sortIndex !== undefined) {
@@ -1299,39 +1605,13 @@ function App() {
             name: confirmAction.provider.name,
           });
     const isPiGlobalDefault =
-      activeApp === "pi" &&
+      isPiFamilyApp(activeApp) &&
       piCurrentState?.defaultProviderId === confirmAction.provider.id;
 
     return isPiGlobalDefault
       ? `${message}\n\n${t("confirm.piDefaultProviderWarning")}`
       : message;
   }, [activeApp, confirmAction, piCurrentState?.defaultProviderId, t]);
-
-  const handleOpenTerminal = async (provider: Provider) => {
-    try {
-      const selectedDir = await settingsApi.pickDirectory();
-      if (!selectedDir) {
-        return;
-      }
-
-      await providersApi.openTerminal(provider.id, activeApp, {
-        cwd: selectedDir,
-      });
-      toast.success(
-        t("provider.terminalOpened", {
-          defaultValue: "终端已打开",
-        }),
-      );
-    } catch (error) {
-      console.error("[App] Failed to open terminal", error);
-      const errorMessage = extractErrorMessage(error);
-      toast.error(
-        t("provider.terminalOpenFailed", {
-          defaultValue: "打开终端失败",
-        }) + (errorMessage ? `: ${errorMessage}` : ""),
-      );
-    }
-  };
 
   const handleImportSuccess = async () => {
     try {
@@ -1361,11 +1641,13 @@ function App() {
     const visibleCount = Object.values(visibleApps).filter(Boolean).length;
     if (visibleCount <= 1) return;
     try {
-      const current = await settingsApi.get();
-      await settingsApi.save({
+      const current = await settingsApi.get(managementTarget);
+      const next = {
         ...current,
         visibleApps: { ...visibleApps, [activeApp]: false },
-      });
+      };
+      await settingsApi.saveForTarget(next, managementTarget);
+      if (isRemoteTarget) setActiveRemoteSettings(next);
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
     } catch (error) {
       toast.error(
@@ -1416,7 +1698,7 @@ function App() {
             {t("appPage.viewUsage")}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onSelect={() => openSettings("appConfig")}>
+        <DropdownMenuItem onSelect={() => openSettings("appConfig", activeApp)}>
           {t("appPage.configDirectory")}
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => openPage("apps")}>
@@ -1440,15 +1722,26 @@ function App() {
         ? t("appPage.openclawConfig")
         : currentView === "hermesMemory"
           ? t("appPage.memory")
-          : t("appPage.providers");
+          : undefined;
 
   const renderAppPageHeader = () => (
     <AppPageHeader
       variant="app"
       icon={<AppGlyph app={activeApp} size={20} badgeClassName="bg-app" />}
       title={APP_DISPLAY_NAME[activeApp]}
+      truncateTitle={currentView === "providers" && Boolean(modeAppId)}
+      titleExtra={
+        currentView === "providers" && modeAppId ? (
+          <div
+            ref={setConnectionStatusSlot}
+            className="ms-2 flex min-w-0 max-w-[280px] items-center"
+          />
+        ) : undefined
+      }
       subtitle={
-        activeApp === "openclaw" || activeApp === "hermes"
+        activeApp === "openclaw" ||
+        activeApp === "hermes" ||
+        (currentView === "providers" && modeAppId)
           ? undefined
           : appPageName
       }
@@ -1457,6 +1750,7 @@ function App() {
           {!isRemoteTarget &&
             currentView === "providers" &&
             activeApp !== "mcode" &&
+            activeApp !== "kimi" &&
             (settingsData?.showProfileSwitcher ?? false) && (
               <ProfileSwitcher activeApp={activeApp} />
             )}
@@ -1470,6 +1764,25 @@ function App() {
               <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
+          {currentView === "providers" &&
+            (settingsData?.showProviderSearch ?? true) && (
+              <HoverTip
+                content={t("provider.searchButtonTip", {
+                  shortcut: isMac() ? "⌘F" : "Ctrl+F",
+                })}
+              >
+                <Button
+                  variant="quiet"
+                  size="icon-compact"
+                  className="h-8 w-8"
+                  aria-label={t("provider.searchAriaLabel")}
+                  aria-pressed={providerSearchOpen}
+                  onClick={() => setProviderSearchOpen((open) => !open)}
+                >
+                  <Search className="h-4 w-4" />
+                </Button>
+              </HoverTip>
+            )}
           {currentView === "providers" && (
             <Button
               variant="solid"
@@ -1538,27 +1851,29 @@ function App() {
     onDuplicate: handleDuplicateProvider,
     onConfigureUsage: setUsageProvider,
     onOpenWebsite: handleOpenWebsite,
-    // 打开终端是本机能力：远端会话的创建命令走「复制恢复命令」
     onOpenTerminal:
-      activeApp === "claude" && !isRemoteTarget
-        ? handleOpenTerminal
+      !isRemoteTarget && (activeApp === "claude" || activeApp === "agy")
+        ? setTerminalProvider
         : undefined,
     onCreate: () => openAddProvider(currentModeView),
+    searchOpen: providerSearchOpen,
+    onSearchOpenChange: setProviderSearchOpen,
   };
 
   const renderProviderList = () => {
     // 模式行（直连 / 路由 / 聚合）本机与远端共用同一套 UI 与逻辑：远端经 helper 的
     // app-mode 命令读写那台主机的模式状态（旧 helper 没有该能力时面板自己给说明）。
     // 本机专属的部分仍然只在 local 传：启动接管失败提示、托盘驱动的「需要路由」请求。
-    if (proxyAppId) {
+    if (modeAppId) {
       const startupFailure = isRemoteTarget
         ? undefined
-        : startupFailures.find((failure) => failure.appType === proxyAppId);
+        : startupFailures.find((failure) => failure.appType === modeAppId);
       return (
         <SwitchModePanel
-          key={proxyAppId}
-          app={proxyAppId}
+          key={modeAppId}
+          app={modeAppId}
           target={managementTarget}
+          statusSlot={connectionStatusSlot}
           providers={providers}
           currentProviderId={currentProviderId}
           isLoading={isLoading}
@@ -1566,7 +1881,7 @@ function App() {
           onSwitch={switchProvider}
           onOpenRoutingSettings={() => openSettings("routing")}
           needsRouteRequest={
-            !isRemoteTarget && trayNeedsRoute?.app === proxyAppId
+            !isRemoteTarget && trayNeedsRoute?.app === modeAppId
               ? trayNeedsRoute
               : undefined
           }
@@ -1578,7 +1893,7 @@ function App() {
               ? undefined
               : () =>
                   setStartupFailures((list) =>
-                    list.filter((failure) => failure.appType !== proxyAppId),
+                    list.filter((failure) => failure.appType !== modeAppId),
                   )
           }
           {...listCallbacks}
@@ -1593,12 +1908,6 @@ function App() {
         className="min-h-0 flex-1 overflow-y-auto scroll-stable overflow-x-hidden px-6 pb-12 pt-4"
       >
         <div className="space-y-4">
-          {activeApp === "claude-desktop" && (
-            <DesktopAccessBar
-              current={providers[currentProviderId]}
-              onOpenRoutingSettings={() => openSettings("routing")}
-            />
-          )}
           <ProviderList
             {...listCallbacks}
             providers={providers}
@@ -1607,18 +1916,20 @@ function App() {
             target={managementTarget}
             isLoading={isLoading}
             onSwitch={(provider) =>
-              // Pi 的「启用」会改本机托盘与 live 状态；远端走与其它应用相同的
-              // target 感知切换。
-              void (activeApp === "pi" && !isRemoteTarget
-                ? handleEnablePiProvider(provider)
-                : switchProvider(provider))
+              void (isPiFamilyApp(activeApp)
+                ? handleEnablePiProvider(provider, activeApp)
+                : activeApp === "kimi"
+                  ? handleAddKimiProvider(provider)
+                  : switchProvider(provider))
             }
             onRemoveFromConfig={
               activeApp === "opencode" ||
               activeApp === "openclaw" ||
               activeApp === "hermes" ||
               activeApp === "pi" ||
-              activeApp === "mcode"
+              activeApp === "mcode" ||
+              activeApp === "kimi" ||
+              activeApp === "omp"
                 ? (provider) => setConfirmAction({ provider, action: "remove" })
                 : undefined
             }
@@ -1629,10 +1940,10 @@ function App() {
               activeApp === "opencode" ? handleDisableOmoSlim : undefined
             }
             onSetAsDefault={
-              activeApp === "openclaw"
+              activeApp === "openclaw" || activeApp === "opencode"
                 ? (provider, modelId) =>
                     void setAsDefaultModel(provider, modelId)
-                : activeApp === "hermes"
+                : activeApp === "hermes" || activeApp === "kimi"
                   ? (provider) => void switchProvider(provider)
                   : undefined
             }
@@ -1820,12 +2131,7 @@ function App() {
           <div id="main-content" className="flex min-h-0 flex-1 flex-col">
             <PromptPanel
               appId={promptsApp}
-              apps={PROMPT_APP_IDS.filter(
-                (app) =>
-                  visibleApps[app] ||
-                  (app === "claude" && visibleApps["claude-desktop"]) ||
-                  app === promptsApp,
-              )}
+              apps={promptApps}
               onAppChange={setPromptsApp}
               onInteractionBlockedChange={setPromptManagementBusy}
               onNavigationBlockedChange={setPromptNavigationBusy}
@@ -1845,7 +2151,13 @@ function App() {
           />
         );
       case "apps":
-        return <AppsPage target={managementTarget} />;
+        return (
+          <AppsPage
+            key={`${managementTargetKey}:${managementConnectionRevision}`}
+            target={managementTarget}
+            onSettingsSaved={handleRemoteSettingsSaved}
+          />
+        );
       default:
         return null;
     }
@@ -1877,6 +2189,7 @@ function App() {
       return (
         <SettingsPage
           section={settingsSection}
+          appConfigScrollTarget={appConfigScrollTarget}
           onImportSuccess={handleImportSuccess}
           onOpenApps={() => setCurrentView("apps")}
           onOpenApp={selectApp}
@@ -1892,13 +2205,17 @@ function App() {
     >
       <div className="flex h-screen overflow-hidden bg-app text-fg-1 selection:bg-action/25">
         <Sidebar
+          target={managementTarget}
           activeApp={activeApp}
           view={currentView}
           visibleApps={visibleApps}
           settingsSection={settingsSection}
           onSelectApp={selectApp}
           onSelectPage={openPageFromNav}
-          onSelectSettingsSection={setSettingsSection}
+          onSelectSettingsSection={(section) => {
+            setAppConfigScrollTarget(undefined);
+            setSettingsSection(section);
+          }}
           onExitSettings={exitSettings}
           onSelectUpdateBadge={() => {
             // 客户端更新徽标：进本机设置的「关于」，即使用户正在管理远端主机
@@ -2002,6 +2319,12 @@ function App() {
           }}
         />
       )}
+
+      <OpenTerminalDialog
+        provider={isRemoteTarget ? null : terminalProvider}
+        appId={activeApp}
+        onClose={() => setTerminalProvider(null)}
+      />
 
       <ConfirmDialog
         isOpen={Boolean(confirmAction)}

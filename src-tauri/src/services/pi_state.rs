@@ -3,13 +3,13 @@
 use crate::error::AppError;
 use crate::pi_config::{read_pi_native_defaults, read_pi_native_providers};
 use crate::store::AppState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const PI_APP: &str = "pi";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct PiCurrentState {
+pub struct PiCurrentState {
     pub enabled_provider_ids: Vec<String>,
     pub default_provider_id: Option<String>,
 }
@@ -17,6 +17,33 @@ pub(crate) struct PiCurrentState {
 pub(crate) struct PiStateService;
 
 impl PiStateService {
+    pub(crate) fn current_for_app(
+        state: &AppState,
+        app: &crate::app_config::AppType,
+    ) -> Result<PiCurrentState, AppError> {
+        match app {
+            crate::app_config::AppType::Pi => Self::current(state),
+            crate::app_config::AppType::Omp => Self::current_omp(state),
+            _ => Err(AppError::InvalidInput(
+                "Only Pi and Oh My Pi expose native provider membership".into(),
+            )),
+        }
+    }
+
+    fn current_omp(state: &AppState) -> Result<PiCurrentState, AppError> {
+        let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app("omp"));
+        let enabled_provider_ids = crate::omp_config::get_providers()?.into_keys().collect();
+        let default_provider_id =
+            crate::omp_config::read_default_provider_id().unwrap_or_else(|error| {
+                log::warn!("Failed to read Oh My Pi default model: {error}");
+                None
+            });
+        Ok(PiCurrentState {
+            enabled_provider_ids,
+            default_provider_id,
+        })
+    }
+
     pub(crate) fn current(state: &AppState) -> Result<PiCurrentState, AppError> {
         let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app(PI_APP));
         let native = read_pi_native_providers()?;

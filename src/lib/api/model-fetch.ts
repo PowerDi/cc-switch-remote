@@ -3,10 +3,16 @@ import type { TFunction } from "i18next";
 import { toast } from "@/lib/toast";
 import { remoteApi, type ManagementTarget } from "./remote";
 import type { AppId } from "./types";
+import { parseHeaderOverrideJson } from "@/lib/requestOverrides";
 
 export interface FetchedModel {
   id: string;
   ownedBy: string | null;
+}
+
+export interface ModelFetchOptions {
+  apiFormat?: string;
+  requestHeaders?: Record<string, string>;
 }
 
 export interface OpenCodeModelRef {
@@ -23,6 +29,22 @@ export async function getOpenCodeModels(
   }
 
   return invoke("get_opencode_models");
+}
+
+/**
+ * 把表单里的本地代理 Header 覆盖 JSON 解析成取模型列表时要携带的请求头。
+ *
+ * 与转发路径共用 parseHeaderOverrideJson 的校验规则；解析失败或覆盖为空时
+ * 静默返回 undefined（回退到不带覆盖头取模型），格式错误由表单字段本身提示。
+ */
+export function modelFetchRequestHeaders(
+  headersJson: string,
+): Record<string, string> | undefined {
+  const { headers, error } = parseHeaderOverrideJson(headersJson);
+  if (error || !headers || Object.keys(headers).length === 0) {
+    return undefined;
+  }
+  return headers;
 }
 
 /**
@@ -44,6 +66,7 @@ export async function fetchModelsForConfig(
   isFullUrl?: boolean,
   modelsUrl?: string,
   customUserAgent?: string,
+  options?: ModelFetchOptions,
 ): Promise<FetchedModel[]> {
   return invoke("fetch_models_for_config", {
     baseUrl,
@@ -51,6 +74,24 @@ export async function fetchModelsForConfig(
     isFullUrl,
     modelsUrl,
     customUserAgent,
+    ...(options?.apiFormat ? { apiFormat: options.apiFormat } : {}),
+    ...(options?.requestHeaders
+      ? { requestHeaders: options.requestHeaders }
+      : {}),
+  });
+}
+
+/**
+ * Models reported by the locally installed Antigravity runtime. With an API key it asks agy's
+ * API-key mode, which only accepts its built-in Gemini models (by display name).
+ */
+export async function getAgyModels(options?: {
+  apiKey?: string;
+  baseUrl?: string;
+}): Promise<FetchedModel[]> {
+  return invoke("get_agy_models", {
+    apiKey: options?.apiKey || null,
+    baseUrl: options?.baseUrl || null,
   });
 }
 
@@ -63,6 +104,8 @@ export interface FetchModelsForProviderConfigOptions {
   isFullUrl?: boolean;
   modelsUrl?: string;
   customUserAgent?: string;
+  apiFormat?: string;
+  requestHeaders?: Record<string, string>;
 }
 
 export function canUseStoredRemoteProviderApiKey(
@@ -81,6 +124,8 @@ export async function fetchModelsForProviderConfig({
   isFullUrl,
   modelsUrl,
   customUserAgent,
+  apiFormat,
+  requestHeaders,
 }: FetchModelsForProviderConfigOptions): Promise<FetchedModel[]> {
   if (target.type === "remote") {
     const remoteProviderId = providerId?.trim();
@@ -96,6 +141,8 @@ export async function fetchModelsForProviderConfig({
         isFullUrl,
         modelsUrl,
         customUserAgent,
+        ...(apiFormat ? { apiFormat } : {}),
+        ...(requestHeaders ? { requestHeaders } : {}),
       },
       target.secret,
     );
@@ -107,6 +154,7 @@ export async function fetchModelsForProviderConfig({
     isFullUrl,
     modelsUrl,
     customUserAgent,
+    { apiFormat, requestHeaders },
   );
 }
 
