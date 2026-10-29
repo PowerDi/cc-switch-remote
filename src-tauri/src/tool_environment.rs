@@ -2,8 +2,6 @@ use indexmap::IndexSet;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
-#[cfg(not(target_os = "windows"))]
-use std::ffi::OsString;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
