@@ -5114,7 +5114,7 @@ pub(crate) fn merge_path_envs(
     preferred: Option<OsString>,
     fallback: Option<OsString>,
 ) -> Option<OsString> {
-    let mut paths = Vec::new();
+    let mut paths = IndexSet::new();
     for value in [preferred, fallback].into_iter().flatten() {
         for path in std::env::split_paths(&value) {
             push_unique_path(&mut paths, path);

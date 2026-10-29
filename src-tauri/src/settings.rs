@@ -1238,6 +1238,19 @@ where
                 "统一 Codex 会话历史开关未生效（live 配置重写失败）: {err}"
             ));
         }
+        if !unify_codex_enabled {
+            // 清除标记与迁移意愿，让重新开启并再次勾选时能补迁
+            // 关闭期间落入 openai 桶的官方会话（上游 commands/settings.rs 的同一分支）。
+            // 事务锁已持有，用 _locked 变体，避免重入死锁。
+            if let Err(err) = mutate_settings_locked(|settings| {
+                if let Some(migrations) = settings.local_migrations.as_mut() {
+                    migrations.codex_official_history_unify_v1 = None;
+                }
+                settings.unify_codex_migrate_existing = None;
+            }) {
+                log::warn!("清除统一会话迁移标记与迁移意愿失败: {err}");
+            }
+        }
     }
     drop(transaction);
     let warning = if unify_codex_changed && unify_codex_enabled {
@@ -1401,14 +1414,6 @@ pub fn mark_codex_official_history_unify_migrated_if_enabled(
     Ok(written)
 }
 
-pub fn clear_codex_official_history_unify_migration() -> Result<(), AppError> {
-    mutate_settings(|settings| {
-        if let Some(migrations) = settings.local_migrations.as_mut() {
-            migrations.codex_official_history_unify_v1 = None;
-        }
-    })
-}
-
 pub fn is_codex_legacy_official_history_bucket_migrated_for_dir(codex_dir: &str) -> bool {
     get_settings()
         .local_migrations
@@ -1430,12 +1435,6 @@ pub fn mark_codex_legacy_official_history_bucket_migrated(
 
 pub fn unify_codex_migrate_existing_requested() -> bool {
     get_settings().unify_codex_migrate_existing.unwrap_or(false)
-}
-
-pub fn clear_codex_unify_migrate_existing() -> Result<(), AppError> {
-    mutate_settings(|settings| {
-        settings.unify_codex_migrate_existing = None;
-    })
 }
 
 /// 记下当前是否处于轻量模式（见 [`AppSettings::lightweight_mode`]），值没变就不写盘。
