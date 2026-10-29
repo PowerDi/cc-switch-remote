@@ -1,0 +1,33 @@
+{
+  "version": "4.1.0",
+  "items": [
+    {
+      "type": "new",
+      "zh": "远程主机也能管理 Oh My Pi 的供应商、MCP、提示词和会话",
+      "zh-TW": "遠端主機也能管理 Oh My Pi 的供應商、MCP、提示詞和工作階段",
+      "en": "Manage Oh My Pi providers, MCP, prompts and sessions on remote hosts too",
+      "ja": "リモートホストでも Oh My Pi のプロバイダー・MCP・プロンプト・セッションを管理"
+    },
+    {
+      "type": "new",
+      "zh": "合入上游 v4.0.21：聚合模式、多个 Claude 官方账号切换等",
+      "zh-TW": "合入上游 v4.0.21：聚合模式、多個 Claude 官方帳號切換等",
+      "en": "Includes upstream v4.0.21: aggregation mode, multiple Claude official accounts and more",
+      "ja": "上流 v4.0.21 を取り込み：集約モード、複数の Claude 公式アカウント切り替えなど"
+    },
+    {
+      "type": "improve",
+      "zh": "远程用量、路由设置和应用排序都作用于选中的主机",
+      "zh-TW": "遠端用量、路由設定和應用排序都作用於選中的主機",
+      "en": "Remote usage, routing settings and app order now act on the selected host",
+      "ja": "リモートの使用量・ルーティング設定・アプリの並び順が選択中のホストに反映"
+    },
+    {
+      "type": "improve",
+      "zh": "更新远程 Helper 后可使用新增的远程功能",
+      "zh-TW": "更新遠端 Helper 後可使用新增的遠端功能",
+      "en": "Update the remote Helper to use the new remote features",
+      "ja": "新しいリモート機能はリモート Helper を更新すると使えます"
+    }
+  ]
+}
