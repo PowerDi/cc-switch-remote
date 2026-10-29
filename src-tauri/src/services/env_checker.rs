@@ -105,11 +105,6 @@ fn check_system_env(keywords: &[EnvKeyword]) -> Result<Vec<EnvConflict>, String>
     Ok(conflicts)
 }
 
-#[cfg(not(target_os = "windows"))]
-fn check_system_env(_keywords: &[EnvKeyword]) -> Result<Vec<EnvConflict>, String> {
-    Ok(Vec::new())
-}
-
 /// Check shell configuration files for environment variable exports (Unix only)
 #[cfg(not(target_os = "windows"))]
 fn check_shell_configs(keywords: &[EnvKeyword]) -> Result<Vec<EnvConflict>, String> {

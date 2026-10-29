@@ -5109,24 +5109,6 @@ pub(crate) fn apply_outbound_proxy_env(
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn merge_path_envs(
-    preferred: Option<OsString>,
-    fallback: Option<OsString>,
-) -> Option<OsString> {
-    let mut paths = IndexSet::new();
-    for value in [preferred, fallback].into_iter().flatten() {
-        for path in std::env::split_paths(&value) {
-            push_unique_path(&mut paths, path);
-        }
-    }
-    if paths.is_empty() {
-        None
-    } else {
-        std::env::join_paths(paths).ok()
-    }
-}
-
 pub(crate) const COMMAND_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 
 pub(crate) fn read_command_pipe_bounded(
@@ -5230,20 +5212,6 @@ mod tests {
             Some("http://127.0.0.1:7890"),
         )
         .expect("lifecycle command should inherit the configured outbound proxy");
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[test]
-    fn merge_path_envs_prefers_login_shell_and_keeps_fallbacks() {
-        let merged = merge_path_envs(
-            Some(std::ffi::OsString::from("/home/me/.nvm/bin:/usr/bin")),
-            Some(std::ffi::OsString::from("/usr/bin:/bin")),
-        )
-        .expect("merged path");
-        let paths: Vec<String> = std::env::split_paths(&merged)
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(paths, vec!["/home/me/.nvm/bin", "/usr/bin", "/bin"]);
     }
 
     #[cfg(not(target_os = "windows"))]
