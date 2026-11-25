@@ -43,6 +43,8 @@ const REMOTE_HELPER_REMOTE_INSTALL_TIMEOUT: std::time::Duration =
 /// 远端下载失败后的本地下载 + SSH 上传兜底上限（23MB 量级，慢链路也要留余量）。
 const REMOTE_HELPER_LOCAL_FALLBACK_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(900);
+/// 连接测试的总上限（status + 一次探针）。远慢于正常值，只用来防止无限等待。
+const REMOTE_CONNECTION_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RemoteHelperLatest {
@@ -212,11 +214,22 @@ pub async fn remote_test_connection(
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<RemoteHealth, String> {
     validate_profile(&profile).map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || {
-        test_remote_connection_blocking(&profile, secret.as_ref()).map_err(|e| e.to_string())
-    })
+    // 最坏情况是两轮 SSH（status + 探针），每轮各自带 ConnectTimeout=10。
+    // 这里再加一道总超时，避免远端 Helper 卡死时界面一直转圈。
+    match tokio::time::timeout(
+        REMOTE_CONNECTION_TEST_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            test_remote_connection_blocking(&profile, secret.as_ref()).map_err(|e| e.to_string())
+        }),
+    )
     .await
-    .map_err(|e| format!("Remote connection test task failed: {e}"))?
+    {
+        Ok(joined) => joined.map_err(|e| format!("Remote connection test task failed: {e}"))?,
+        Err(_) => Err(format!(
+            "远程连接测试超时（{} 秒）：SSH 已发出但远端 Helper 没有响应。请确认目标主机可登录，并在主机上手动运行 Helper 的 status 命令。",
+            REMOTE_CONNECTION_TEST_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 fn test_remote_connection_blocking(

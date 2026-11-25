@@ -730,10 +730,17 @@ pub fn probe_remote_helper_presence(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
 ) -> Result<bool, AppError> {
-    let helper_path = shell_quote_helper_path(&profile.helper_path);
+    // 用 `sh -c` 包一层：ssh 会用目标账号的登录 shell 执行命令，而 fish/csh
+    // 不认 POSIX 的 `if ...; then ...; fi`。包一层后只依赖目标机上一定存在的
+    // POSIX shell，避免把“shell 语法不兼容”误判成 SSH 层连不上。
+    // 路径仍用 `shell_quote_helper_path`：`~` 保持不带引号，才能被外层登录 shell 展开。
+    let script =
+        "test -x \"$0\" && printf cc-switch-helper-present || printf cc-switch-helper-missing";
     let mut args = build_ssh_base_args(profile);
     args.push(format!(
-        "if [ -x {helper_path} ]; then printf cc-switch-helper-present; else printf cc-switch-helper-missing; fi"
+        "sh -c {} {}",
+        shell_quote(script),
+        shell_quote_helper_path(&profile.helper_path)
     ));
 
     let stdout = run_ssh_command(profile, args, secret)?;
@@ -863,6 +870,19 @@ fn resolve_askpass_helper_path() -> Result<std::path::PathBuf, AppError> {
     for candidate in candidates {
         if candidate.is_file() {
             return Ok(candidate);
+        }
+    }
+
+    // `tauri dev` does not always copy external binaries next to the debug
+    // executable; fall back to the path `build.rs` generated, which only exists
+    // for a local checkout and is therefore debug-only.
+    #[cfg(debug_assertions)]
+    {
+        let dev_candidate = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("cc-switch-remote-askpass-{triple}.exe"));
+        if dev_candidate.is_file() {
+            return Ok(dev_candidate);
         }
     }
 
