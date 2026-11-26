@@ -1,26 +1,29 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "repository": "PowerDi/cc-switch-remote",
   "current": {
     "upstreamVersion": "4.0.21",
     "upstreamCommit": "c4db63c60d2a1ddcb4bd9f81152b9c6126413659",
     "remoteRevision": 1,
     "releaseTag": "remote-v4.0.21-r1",
-    "packageVersion": "4.1.0",
+    "packageVersion": "4.0.21-remote.1",
     "status": "unreleased",
     "releaseReady": false,
     "notesFile": "docs/release-notes/remote-v4.0.21-r1-remote-zh.md"
   },
   "migration": {
-    "decision": "manual-portable-migration",
-    "legacyPortableThrough": "4.1.0",
-    "legacyDetailsThrough": "4.1.0",
-    "reason": "Approved transition: legacy portable clients manually download the first new-naming release from the fork release page once. Old hardcoded release-detail links cannot be repaired by a new client. No new bare v* compatibility tag/release is permitted."
+    "decision": "manual-client-reinstall",
+    "approval": "manual-migration-approved",
+    "firstReleaseTag": "remote-v4.0.21-r1",
+    "legacyBoundaryFile": "release-legacy-boundary.json",
+    "evidenceFile": "docs/remote-version-policy.md",
+    "reason": "User approved one manual reinstall for all legacy clients, not only portable, instead of an independent 4.1.1 installer sequence. 4.1.0 will not detect 4.0.21-remote.1 as a semver upgrade. Preserve backups and schema 23; never downgrade the database. No new bare v* compatibility tags."
   },
   "upgradeValidation": {
-    "normalUpdater": "pending",
-    "recoveryUpdater": "pending",
-    "portableMigration": "pending"
+    "manualClientMigration": "manual-migration-approved",
+    "futureUpdaterContract": "contract-reviewed",
+    "installerContract": "pending",
+    "realInstallValidation": "not-performed"
   },
   "history": [
     {

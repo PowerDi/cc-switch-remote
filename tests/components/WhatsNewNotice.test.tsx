@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   getAll: vi.fn(),
   save: vi.fn(),
   openExternal: vi.fn(),
-  version: "4.1.0",
+  version: "4.0.21-remote.1",
   revision: 1,
   settings: undefined as
     | {
@@ -45,6 +45,7 @@ vi.mock("../../release-identity.json", async () => {
         return {
           ...metadata.current,
           remoteRevision: mocks.revision,
+          packageVersion: `4.0.21-remote.${mocks.revision}`,
           releaseTag: `remote-v${metadata.current.upstreamVersion}-r${mocks.revision}`,
         };
       },
@@ -99,7 +100,7 @@ const settle = () =>
 
 describe("WhatsNewNotice fork baseline routing", () => {
   beforeEach(() => {
-    mocks.version = "4.1.0";
+    mocks.version = "4.0.21-remote.1";
     mocks.revision = 1;
     mocks.settings = {
       firstRunNoticeConfirmed: true,
@@ -150,6 +151,7 @@ describe("WhatsNewNotice fork baseline routing", () => {
     async (seen) => {
       mocks.settings!.whatsNewSeenVersion = seen;
       mocks.revision = 2; // Synthetic next Remote revision, not a production history entry.
+      mocks.version = "4.0.21-remote.2";
       renderNotice();
       await settle();
       expect(title()).not.toBeInTheDocument();

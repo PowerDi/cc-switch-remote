@@ -46,6 +46,7 @@ jobs:
               - "index.html"
               - "package.json"
               - "release-identity.json"
+              - "release-legacy-boundary.json"
               - "scripts/**"
               - "src-tauri/Cargo.toml"
               - "src-tauri/Cargo.lock"

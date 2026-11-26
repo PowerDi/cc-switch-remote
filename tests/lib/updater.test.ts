@@ -18,21 +18,23 @@ import { checkForUpdate } from "@/lib/updater";
 import { updateReleasePageUrl } from "@/lib/forkReleases";
 
 const update = () => ({
-  version: "4.2.0",
+  version: "4.0.21-remote.2",
   body: "Actual release body",
   notes: "Not the plugin's notes property",
   date: "2026-01-01",
   rawJson: {
     releaseIdentity: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       ...metadata.current,
-      packageVersion: "4.2.0",
+      remoteRevision: 2,
+      releaseTag: "remote-v4.0.21-r2",
+      packageVersion: "4.0.21-remote.2",
     },
   },
   close: vi.fn().mockResolvedValue(undefined),
 });
 beforeEach(() => {
-  mocks.getVersion.mockReset().mockResolvedValue("4.1.0");
+  mocks.getVersion.mockReset().mockResolvedValue("4.0.21-remote.1");
   mocks.proxy.mockReset().mockResolvedValue(null);
   mocks.check.mockReset();
 });
@@ -50,11 +52,11 @@ describe("updater response adapter", () => {
     expect(response).toMatchObject({
       status: "available",
       info: {
-        currentVersion: "4.1.0",
-        availableVersion: "4.2.0",
+        currentVersion: "4.0.21-remote.1",
+        availableVersion: "4.0.21-remote.2",
         notes: "Actual release body",
         pubDate: "2026-01-01",
-        releaseIdentity: { releaseTag: "remote-v4.0.21-r1" },
+        releaseIdentity: { releaseTag: "remote-v4.0.21-r2" },
       },
     });
     expect(result.close).toHaveBeenCalledOnce();
@@ -68,7 +70,7 @@ describe("updater response adapter", () => {
 
   it("unknown or malformed future identity degrades to safe release-list fallback", async () => {
     const result = update();
-    result.rawJson.releaseIdentity.releaseTag = "v4.2.0";
+    result.rawJson.releaseIdentity.releaseTag = "v4.0.21-remote.2";
     mocks.check.mockResolvedValue(result);
     const response = await checkForUpdate();
     expect(response.status).toBe("available");

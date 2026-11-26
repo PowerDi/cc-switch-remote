@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "repository": "PowerDi/cc-switch-remote",
+  "firstReleaseTag": "remote-v4.0.21-r1",
+  "firstPackageVersion": "4.0.21-remote.1",
+  "inventorySource": "https://api.github.com/repos/PowerDi/cc-switch-remote/releases?per_page=100",
+  "verification": "Read-only release inventory (7 records: six desktop releases plus remote-helper-latest) and git ls-remote --tags origin; no v3 desktop release in this inventory. Tags alone are not proof of publication.",
+  "releases": [
+    { "releaseTag": "v4.0.5", "packageVersion": "4.0.5", "releaseCommit": "e751681e645ea5398d17197b09eee1c3a5b0dcab" },
+    { "releaseTag": "v4.0.6", "packageVersion": "4.0.6", "releaseCommit": "766f27f4cc6d1ba0ac612e5f5e15262fed5d8703" },
+    { "releaseTag": "v4.0.7", "packageVersion": "4.0.7", "releaseCommit": "218135f43d285b140a090ff2c961736c66cdaf85" },
+    { "releaseTag": "v4.0.8", "packageVersion": "4.0.8", "releaseCommit": "85bca82e3a7299dc65dd68018c21d2674db3e0b8" },
+    { "releaseTag": "v4.0.9", "packageVersion": "4.0.9", "releaseCommit": "ec5b6931c4ad845a945fa6dcbe8fab3664259531" },
+    { "releaseTag": "v4.1.0", "packageVersion": "4.1.0", "releaseCommit": "ed4353caf8536d8a7b902e799ff5f59c082178d5" }
+  ]
+}

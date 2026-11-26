@@ -98,7 +98,7 @@ test('publication rechecks actual releases under a cross-tag lock immediately be
     );
     assert.match(
       item.run,
-      /select\(\.draft == false and \.prerelease == false\)/,
+      /select\(\.draft == false\)/,
     );
     assert.match(item.run, /--publish --tag/);
     assert.match(

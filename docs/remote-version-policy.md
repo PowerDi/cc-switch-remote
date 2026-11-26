@@ -1,81 +1,75 @@
-# Remote 版本身份与迁移策略
+# Remote 版本身份、首次迁移与打包契约
 
-## 三个不同的编号
+## 唯一派生版本规则
 
-- **上游正式基线**：例如 `4.0.21`，对应官方已发布 tag 的确切 commit，不是上游当下 `main`。
-- **Remote 公开版本**：`remote-v<上游基线>-r<Remote修订号>`，例如 `remote-v4.0.21-r1`；UI 显示 **4.0.21 · Remote r1**。`r1` 是 fork revision，不是 semver 预发布。
-- **安装版本**：`packageVersion`，只用于 Tauri updater 的 semver 比较、Cargo/package/Tauri 和 MSI 等安装器。在 UI 的安装版本明细展示，不能当作上游版本或推算公开 tag。
+根目录 `release-identity.json` schema 2 是当前身份源：
 
-唯一机器可读源是根目录 `release-identity.json`。`scripts/release-identity.mjs` 核对身份和四份安装版本；前端直接使用同一份元数据。历史映射的 `remoteRevision: null` 表示旧命名，**不追认旧版本为新命名 r1**。
+- 上游正式基线：`4.0.21`，精确 commit `c4db63c60d2a1ddcb4bd9f81152b9c6126413659`。
+- Remote 修订号：`1`。
+- **应用版本固定派生**：`${upstreamVersion}-remote.${remoteRevision}`，即 `4.0.21-remote.1`。`package.json`、Cargo.toml、Cargo.lock 的本包、tauri.conf.json 必须一致，不再独立选择安装数字。
+- 公开 tag：`remote-v4.0.21-r1`；UI：**4.0.21 · Remote r1**。
+- 同基线修复：`4.0.21-remote.2`；将来合入已发布官方 `v4.0.40` 后才可用 `4.0.40-remote.1`。本轮无上游合并。
 
-本次只是能力实现：当前身份为**未发布**的 `remote-v4.0.21-r1`，安装版本暂留 `4.1.0`，`releaseReady=false`。没有发布该 tag，也没有选择下一次安装版本；禁止用已发布过的 `4.1.0` 再发布。
+SemVer 的 `-remote.N` 是 prerelease 语法，但 fork GitHub release 使用 `prerelease:false`，属于稳定发布通道。`+remote.N` 仅是 build metadata、不参与排序，禁止用作修订序列。也不抢占更大的 core 数字或新增裸 `v*` 兼容 tag。
 
-## 已发布版本保持原样
+## 已批准的单次旧方案切换
 
-| 历史 fork tag / 安装版本 | 官方基线 | fork 发布 commit |
+<!-- manual-migration-approved -->
+<!-- manual-client-reinstall -->
+
+用户已明确批准**所有旧客户端一次手动重新安装**，替代原先“安装版本永远大于 4.1.0”与“仅 portable 手动迁移”的旧方案。`4.0.21-remote.1 < 4.1.0` 是真实 SemVer 事实；旧正常 About updater 和数据库恢复 updater 都不会把它认作新版本，不能声称自动升级可行。旧硬编码 `v{安装版本}` 的详情/portable URL 也无法被新客户端追溯修复。手动入口始终是 [本 fork 发布页](https://github.com/PowerDi/cc-switch-remote/releases)。
+
+只读 GitHub releases API 当前返回 7 项：以下六个桌面 stable release，加 `remote-helper-latest`（helper prerelease）。origin 的更早 v3 tags **不是当前公开 release 清单**，不能据此泛化豁免。
+
+| 旧 tag / 原始应用版本 | 精确发布 commit |
+| --- | --- |
+| v4.0.5 / 4.0.5 | e751681e645ea5398d17197b09eee1c3a5b0dcab |
+| v4.0.6 / 4.0.6 | 766f27f4cc6d1ba0ac612e5f5e15262fed5d8703 |
+| v4.0.7 / 4.0.7 | 218135f43d285b140a090ff2c961736c66cdaf85 |
+| v4.0.8 / 4.0.8 | 85bca82e3a7299dc65dd68018c21d2674db3e0b8 |
+| v4.0.9 / 4.0.9 | ec5b6931c4ad845a945fa6dcbe8fab3664259531 |
+| v4.1.0 / 4.1.0 | ed4353caf8536d8a7b902e799ff5f59c082178d5 |
+
+`release-legacy-boundary.json` 保存此精确集合，验证器用 canonical JSON SHA-256 锁定。首次无新方案历史时，只允许 `remote-v4.0.21-r1 / 4.0.21-remote.1` 切换。之后必须归档该首次身份，新方案版本严格递增且同基线 revision 连续；不得重用首次豁免回退新方案历史。
+
+正式 publication 每次（包括上传前持跨 tag 锁时）重新读取**全部非 draft** release inventory。未知 `v3`、`v99`、未知 Remote tag 或未记录 prerelease 一律阻断；已知历史必须仍存在、tag peeled SHA 不可移动且 commit 为候选祖先。仅 helper 专用 tag 被明确排除。schema 1 快照只能维护其中显式列出的历史身份，不允许新的构建/发布，也不能从任意 `v*` 猜测版本。
+
+## 升级 / 安装契约审查
+
+<!-- contract-reviewed -->
+<!-- real-install-not-performed -->
+
+这是源码、配置与定向测试的 **contract-reviewed**，不是“已实机 verified”。`manualClientMigration=manual-migration-approved`、`futureUpdaterContract=contract-reviewed`；当前 `installerContract=pending`、`realInstallValidation=not-performed`、`releaseReady=false`，保留 Linux 原生打包查询等未完成门槛。主代理可在 review 后仅分支构建验证，不得因为构建绿就写已实机安装。将来实际完成安装验证时允许改为 `verified-with-evidence`，但必须提供当前 tag/应用版本对应的证据文档与验证标记；本次仍为 `not-performed`。
+
+### 已安装数据与恢复路径逐项核对
+
+- identifier 仍 `com.ccswitch.remote`；release 数据仍 `~/.cc-switch-remote`，debug 仍 `~/.cc-switch-remote-dev`。未改 schema 23、数据目录默认值、updater endpoint 或 key id `E490AF071AC1237F`。
+- 手动替换前退出旧/开发应用，备份完整 fork 数据目录、数据库及配套文件、备份目录、Tauri store `app_paths.json` 与实际 override 目录。不改官方 `~/.cc-switch`，不删除/降级数据库来适配版本号。
+- Windows MSI 为现有 per-user 模板。卸载/重新安装应用不等于授权删除用户数据；如旧安装器阻止替换，先备份，再只卸载程序。portable 必须完整保留 askpass sidecar。
+- macOS 为 `.app` 替换；Linux AppImage 为文件替换，deb/rpm 由用户明确手动接受版本降低。无系统安装或包数据库写入在本轮执行。
+- 新旧本批程序均支持 schema 23；存储版本 >23 时不能通过重新安装本版恢复。恢复页 updater 命令保持 state-free，但旧 4.1.0 的版本比较仍挡住本次迁移，必须手动发布页路径。正常/恢复/restart 的真实迁移尚未执行。
+- 新方案 future updater 继续比较完整 SemVer，r1→r2、r9→r10、4.0.21-remote.99→4.0.40-remote.1 有定向排序测试；旧 4.1.0→首次新方案明确为 downgrade。新客户端使用 updater `rawJson.releaseIdentity` schema 2 校验派生关系；不明身份只回退 fork releases 页。
+
+### 发布锁定工具链与平台映射
+
+真实 `pnpm-lock.yaml` 锁定 **@tauri-apps/cli 2.10.1**；只读获取其 crates.io 源码 Cargo.lock 确认 **tauri-bundler 2.8.1**。本工作区现有依赖 junction 的 CLI 2.8.1 是旧缓存，**不能作为发布打包证据**，CI 使用 frozen lock 安装 2.10.1。未修改其他 worktree 依赖。下述源码审查以 2.10.1/2.8.1 为准。只读来源为 crates.io `tauri-cli/2.10.1` 的 Cargo.lock（bundler checksum `f0406e4f78c2caa61e312c2f98d4f9e97f11d0e3de55ced8f10cb3e34517c249`）与 `tauri-bundler/2.8.1` 的 `windows/msi/mod.rs`、`macos/app.rs`、`linux/debian.rs`、`linux/rpm.rs`。
+
+| 平台/路径 | 审查结论与配置 | 未验证部分 |
 | --- | --- | --- |
-| v4.0.5 / 4.0.5 | v4.0.4 (`a29a4f38`) | `e751681e` |
-| v4.0.6 / 4.0.6 | v4.0.4 | `766f27f4` |
-| v4.0.7 / 4.0.7 | v4.0.4 | `218135f4` |
-| v4.0.8 / 4.0.8 | v4.0.4 | `85bca82e` |
-| v4.0.9 / 4.0.9 | v4.0.4 | `ec5b6931` |
-| v4.1.0 / 4.1.0 | v4.0.21 (`c4db63c6`) | `ed4353ca` |
+| Tauri updater 2.10.0 | 默认 `release.version > current_version`，使用 Rust SemVer；不依赖 GitHub prerelease 标志 | 正常/恢复 UI 的真实下载、重启与签名安装 |
+| Windows WiX | bundler `convert_version` 拒绝非数字 `remote.1`；显式 `bundle.windows.wix.version=4.0.21` 避开自动转换。系统 ProductVersion 与上游主数字相同，应用 SemVer 仍带 suffix。现模板 allow_downgrades 默认分支允许旧安装数值回退，另一分支 `AllowSameVersionUpgrades=yes`，支持同 core r2 覆盖契约 | MSI 实际安装/同数字覆盖未实机执行；不是新的独立安装序列 |
+| macOS | bundler 默认 CFBundleVersion/ShortVersion 写完整 app version，因此设置 `macOS.bundleVersion=4.0.21`，现有 Info.plist 覆盖 ShortVersion 为 4.0.21。Tauri runtime/updater 的版本仍来自应用配置而非这两个 OS 显示字段 | 实际签名、公证、替换与启动；同 core revision 不依靠 Apple 数字字段排序 |
+| Debian | bundler 原样写 `Version: 4.0.21-remote.1`；dpkg 按最后的连字符分 upstream/debian revision | 构建后 `dpkg-deb -f` 与 native compare gate 必须通过 |
+| RPM | bundler 2.8.1 原样传 app version 给 rpm 0.16 crate；config 只有 release/epoch、没有独立 Version override。源码可构造 header 不代表 native RPM 接受语义 | **pending**：构建后查询实际 NAME/VERSION/RELEASE/ARCH，native rpm.vercmp；不得先承诺兼容，失败应阻断并另行设计同主数字映射 |
 
-所有既有 tag、release、资产名、下载 URL 均不移动、不重命名。更早旧 `vX` 的维护仍直接从**指定历史 tag**取安装版本；未确认的上游基线不猜测。维护新命名 release 时，使用它随资产上传的 `release-identity.json` 快照，不能拿当前源码版本重生成旧 `latest.json`。
+`scripts/verify-linux-package-versions.mjs` 作为 Linux 构建后必经 gate：读取唯一 deb/rpm、要求实际 Version 与派生应用版本相同、调用 native rpm/dpkg 比较 r1→r2/新基线以及 legacy downgrade，输出日志证据。不安装、不修改系统数据库。Windows/macOS 数字包壳是格式适配，绝非恢复独立 `4.1.1` 序列。新 Remote revision 修改时，四份 app version 需随之派生；数字包壳仅随 upstreamVersion 改变。
 
-## 如何递增
+## 发布与维护门槛
 
-仅 Remote 修复：保持上游版本/commit，下一次公开版本为同基线 `r2`。合入官方正式 `v4.0.40` 后，才改成 `remote-v4.0.40-r1`。本轮没有合入 v4.0.40，也没有接受发布后 upstream main 的提交。
-
-安装版本必须独立选择、严格高于所有已发布安装版本，并符合 MSI 数值范围。已安装 `4.1.0` 不能降成 `4.0.21` 或 `4.0.40`。将发布后的身份与确切 fork commit 归档到 `history`，再开始下一身份；不得改变历史映射来绕过递增检查。
-
-发布校验要求：公开 tag 精确匹配元数据、commit 在 `origin/main` 内且包含记录的官方基线/历史 fork release、官方 API 确认该基线 tag 已正式发布且不是预发布、隔离 ref 中的官方 tag peeled SHA 与 `upstreamCommit` 精确相等、四份安装版本一致、比历史和实际 GitHub stable release 清单严格更新、Remote revision 连续、fork 专属 notes 标明两个版本以及便携版迁移、升级路径记录已验证。`releaseReady` 和 `upgradeValidation` 是人为审核状态，不是构建通过便自动置真的值。
-
-`status: unreleased` 表示源代码准备身份时 GitHub release 尚未发布；发布所用构建通过全部门槛后嵌入 `releaseReady=true`，UI 按正式候选身份显示并使用真实 tag，不依赖发布后改写已打包 JSON。只有 `status: unreleased` **且** `releaseReady=false` 的开发脚手架显示“未发布”并回退发布列表。
-
-## 分支与 tag refs 隔离（操作示例，未在本轮执行）
-
-`main` 是 Remote 产品/发布分支；`upstream-main` 只追踪官方代码，不放 Remote 改动。`xiaoY233/cc-switch-remote` 只是历史起点，不再维护同步分支。
-
-```bash
-# 不把官方 tag 混入本 fork 的 refs/tags；目标 ref 明确隔离。
-git fetch --no-tags upstream refs/tags/v4.0.40:refs/remotes/upstream/tags/v4.0.40
-git rev-parse 'refs/remotes/upstream/tags/v4.0.40^{}'
-# 在纯官方跟踪分支上按正式 release 快进；Remote main 的合并另行审核。
-git switch upstream-main
-git merge --ff-only 'refs/remotes/upstream/tags/v4.0.40^{}'
-```
-
-已有官方 v4.0.21 位于 `refs/remotes/upstream/tags/v4.0.21`；旧 v4.0.4 位于 `refs/remotes/upstream/releases/v4.0.4`，均属于隔离 refs，保留旧 ref 不动。新增示例统一使用 `refs/remotes/upstream/tags/<官方tag>`。不要执行会把全部 upstream tags 引入 `refs/tags` 的 fetch。
-
-## 已批准的一次便携版手动迁移
-
-<!-- manual-portable-migration -->
-
-旧 v4.1.0（及使用相同构造器的更早客户端）把 portable 下载地址写死为：
-
-```text
-/releases/download/v{安装版本}/CC-Switch-Remote-v{安装版本}-Windows[-arm64]-Portable.zip
-```
-
-旧关于页详情链接也写死为 `/releases/tag/v{安装版本}`。仅修改新客户端，无法修复已经安装的这些旧客户端。GitHub 下这两个 URL 不能靠另加索引自然重定向；不假定所有用户先装桥接版。
-
-**用户已接受方案 A**：首次新命名版本发布后，旧便携版用户从 [本 fork 发布页](https://github.com/PowerDi/cc-switch-remote/releases) 手动选对应架构的 Portable.zip，退出旧应用并按原便携版方式替换程序一次；保留数据并先备份。旧版本的详情链接可能失效，请直接访问上述发布页。**不创建新的裸 `v*` 兼容 tag/release**，不改任何历史发布。
-
-正常安装版的旧 Tauri updater 按 `latest.json.version` 比较安装版本、按每个平台的明确 URL 下载；机制上不依赖公开 tag 等于 `v{version}`。endpoint、公钥、产品名、数据目录全部保持不变。但是**尚未实机验证旧安装版 → 新命名版本的正常/数据库恢复更新和一次 portable 迁移**，元数据中的三条 `upgradeValidation` 仍为 `pending`；不能把机制推演称为升级验证通过。
-
-新客户端关于页读取 updater 的 `rawJson.releaseIdentity`，校验安装版本和新命名字段匹配后打开真实 tag。portable 入口打开真实 release 页，让用户明确选择架构；不调用旧 Rust 的安装版本 URL 构造器。身份缺失、无效或未知时回退 fork releases 页，绝不拼出猜测的 `v{packageVersion}`。未发布开发身份也只链接发布列表。
-
-恢复页保留无强制 `AppState` 的 Rust 检查/安装命令，不新增依赖数据库的查询。现有检查只返回安装 semver：已知历史身份按映射显示；未知未来身份明确显示“公开版本身份未知”和安装版本明细，发布页回退仍是本 fork。安装动作继续走 state-free updater。
-
-WhatsNew 的条目是**上游摘要**，只筛到实际基线；不再用安装版本 `4.1.0` 纳入未来上游内容。新 seen 值使用 `upstream:<基线>`；已确认的旧 fork 安装版本 seen 明确映射到其基线，不重写为猜测的 upstream 编号。未知旧 stamp 不能证明已看范围，仅按当前已知基线处理。
-
-## 工作流边界
-
-- `release.yml` 仅新命名 tag 自动发布；人工 dispatch 永远只校验/构建。未 ready 时 tag 在构建 fan-out 前阻断。
-- 创建 release 前收齐资产，生成 `latest.json`（安装版本 + 实际 tag URL + 公开身份）并核对各签名 **key id**。key id 匹配**不等于密码学签名验证完成**。
-- `release-maintenance.yml` 只维护指定既有 release，保留原 publication date/notes；旧命名与新命名分别解析，不重建其他平台资产。
-- `sync-release-notes.yml` 只编辑既有 release，且文件必须是该 tag 的 `*-remote-zh.md`；上游说明不得覆盖 fork release。
-- `helper-artifacts.yml` 未改：它会独立构建/更新 `remote-helper-latest`，不是新的桌面 app release。推送本实现将来可能触发 helper 构建（其路径规则覆盖 Rust/build 文件时）或 notes sync，但本轮没有推送或启动任何 workflow。
-
-发布前仍须获得相应授权、递增安装版本、补充新身份路径的聚焦回归覆盖并完成安装用户真实升级路径审核。本说明不是发布授权。
+- 验证派生 packageVersion、四份版本、Windows/macOS 数字映射及 schema 2 迁移边界；不能只开 `releaseReady` 绕过证据。
+- 官方 baseline 必须来自 `farion1231/cc-switch` 已发布 stable tag，隔离 `refs/remotes/upstream/tags/v4.0.21` peeled SHA 精确一致且是候选祖先。
+- 新 tag 与事件 commit/HEAD 一致，候选属于 `origin/main`；历史 tag 不动。并发旧构建在持锁上传前再次盘点 inventory，不能覆盖更新 release。
+- `release.yml` 只有 push 新 Remote tag 才发布，manual dispatch 仅构建验证；Linux native gate 也适用于正式构建。产物齐全、签名 key id/URL/identity snapshot 核对后才创建 release。
+- `release-maintenance.yml` 只维护指定已有发布，使用它的 identity 快照/日期/notes，不重复构建其他平台。`sync-release-notes.yml` 只修改 tag 对应 fork notes。
+- `helper-artifacts.yml` 会独立更新 `remote-helper-latest`，不是第二桌面发布；本次 Rust/Cargo 改动可触发 helper fan-out，需要主代理发布前解释和管理。
+- 不改上游官方版本规则、不合入 v4.0.40、不建新的裸 v* tag、不移动/改名任何旧 release。上游 tags 仍隔离在 remote namespace，不从 upstream 批量导入本 fork `refs/tags`。

@@ -60,7 +60,7 @@ jobs:
               "refs/tags/$UPSTREAM_TAG:refs/remotes/upstream/tags/$UPSTREAM_TAG"
             git fetch --no-tags origin main
             gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
-              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' > published-tags.txt
+              --jq '.[] | select(.draft == false) | .tag_name' > published-tags.txt
             node scripts/release-identity.mjs --publish --tag "$GITHUB_REF_NAME" \
               --published-tags-file published-tags.txt --upstream-release-file upstream-release.json \
               --github-output "$GITHUB_OUTPUT"
@@ -358,6 +358,10 @@ jobs:
       - name: Build Tauri App (Linux)
         if: runner.os == 'Linux'
         run: pnpm tauri build --bundles appimage,deb,rpm
+
+      - name: Validate native Linux package versions (no installation)
+        if: runner.os == 'Linux'
+        run: node scripts/verify-linux-package-versions.mjs --bundle-dir src-tauri/target/release/bundle
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
@@ -782,7 +786,7 @@ jobs:
           git fetch --no-tags https://github.com/farion1231/cc-switch.git \
             "refs/tags/$UPSTREAM_TAG:refs/remotes/upstream/tags/$UPSTREAM_TAG"
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
-            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' > published-tags.txt
+            --jq '.[] | select(.draft == false) | .tag_name' > published-tags.txt
           node scripts/release-identity.mjs --publish --tag "$RELEASE_TAG" \
             --published-tags-file published-tags.txt --upstream-release-file upstream-release.json
 

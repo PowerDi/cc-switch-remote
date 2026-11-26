@@ -10,7 +10,7 @@ vi.mock("../../release-identity.json", async () => ({
 import { releaseT } from "../helpers/releaseTranslations";
 
 const mocks = vi.hoisted(() => ({
-  version: "4.1.0",
+  version: "4.0.21-remote.1",
   info: null as UpdateInfo | null,
   openExternal: vi.fn(),
   portableLegacy: vi.fn(),
@@ -62,7 +62,7 @@ import { AboutSection } from "@/components/settings/AboutSection";
 const releases = "https://github.com/PowerDi/cc-switch-remote/releases";
 
 beforeEach(() => {
-  mocks.version = "4.1.0";
+  mocks.version = "4.0.21-remote.1";
   mocks.info = null;
   mocks.openExternal.mockReset().mockResolvedValue(true);
   mocks.portableLegacy.mockReset();
@@ -73,9 +73,14 @@ beforeEach(() => {
   localStorage.removeItem("ccswitch:about:starPromptDismissed");
 });
 const available = (): UpdateInfo => ({
-  currentVersion: "4.1.0",
-  availableVersion: "4.2.0",
-  releaseIdentity: { ...metadata.current, packageVersion: "4.2.0" },
+  currentVersion: "4.0.21-remote.1",
+  availableVersion: "4.0.21-remote.2",
+  releaseIdentity: {
+    ...metadata.current,
+    remoteRevision: 2,
+    releaseTag: "remote-v4.0.21-r2",
+    packageVersion: "4.0.21-remote.2",
+  },
 });
 async function loaded() {
   await screen.findByText("Installation version: " + mocks.version);
@@ -108,18 +113,20 @@ describe("About release identity and portable download routing", () => {
     mocks.info = available();
     render(<AboutSection isPortable />);
     await loaded();
-    expect(screen.getByText("Installation version: 4.2.0")).toBeInTheDocument();
+    expect(
+      screen.getByText("Installation version: 4.0.21-remote.2"),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(releaseT("settings.portableUpdateHint")),
     ).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", {
-        name: releaseT("settings.updateTo", { version: "4.0.21 · Remote r1" }),
+        name: releaseT("settings.updateTo", { version: "4.0.21 · Remote r2" }),
       }),
     );
     await waitFor(() =>
       expect(mocks.openExternal).toHaveBeenCalledWith(
-        `${releases}/tag/remote-v4.0.21-r1`,
+        `${releases}/tag/remote-v4.0.21-r2`,
       ),
     );
     expect(mocks.portableLegacy).not.toHaveBeenCalled();
@@ -130,7 +137,9 @@ describe("About release identity and portable download routing", () => {
     mocks.info = { ...available(), releaseIdentity: null };
     render(<AboutSection isPortable />);
     await loaded();
-    expect(screen.getByText("Installation version: 4.2.0")).toBeInTheDocument();
+    expect(
+      screen.getByText("Installation version: 4.0.21-remote.2"),
+    ).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", {
         name: releaseT("settings.updateTo", {
@@ -207,7 +216,7 @@ describe("About release identity and portable download routing", () => {
     await loaded();
     fireEvent.click(
       screen.getByRole("button", {
-        name: releaseT("settings.updateTo", { version: "4.0.21 · Remote r1" }),
+        name: releaseT("settings.updateTo", { version: "4.0.21 · Remote r2" }),
       }),
     );
     await waitFor(() => expect(mocks.install).toHaveBeenCalledOnce());

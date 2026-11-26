@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   getAll: vi.fn(),
   save: vi.fn(),
   openExternal: vi.fn(),
-  version: "4.1.0",
+  version: "4.0.21-remote.1",
   settings: undefined as
     | {
         firstRunNoticeConfirmed?: boolean;
@@ -50,7 +50,7 @@ function renderDialog() {
 
 describe("NewLayoutDialog", () => {
   beforeEach(() => {
-    mocks.version = "4.1.0";
+    mocks.version = "4.0.21-remote.1";
     mocks.settings = { firstRunNoticeConfirmed: true };
     mocks.save.mockReset().mockResolvedValue(true);
     mocks.openExternal.mockReset().mockResolvedValue(undefined);

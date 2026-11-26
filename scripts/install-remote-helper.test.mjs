@@ -182,6 +182,18 @@ test("post-commit acknowledgement failure is not a precommit-preservation diagno
   assert.doesNotMatch(result.stderr, /CC_SWITCH_INSTALL_ERROR:/);
 });
 
+test("derived Remote prerelease version is accepted by strict helper metadata validation", (t) => {
+  const f = setup(t);
+  const candidate = binary({
+    ...metadata,
+    data: { ...metadata.data, version: "4.0.21-remote.1" },
+  });
+  const result = f.run(candidate);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).data.version, "4.0.21-remote.1");
+  assert.equal(readFileSync(f.target, "utf8"), candidate);
+});
+
 test("an existing lock is never stolen or treated as network failure", (t) => {
   const f = setup(t);
   mkdirSync(`${f.target}.install-lock`);

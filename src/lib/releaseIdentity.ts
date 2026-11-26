@@ -37,11 +37,11 @@ export function parseUpdateIdentity(
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
   if (
-    record.schemaVersion !== 1 ||
+    record.schemaVersion !== 2 ||
     record.packageVersion !== packageVersion ||
     typeof record.upstreamVersion !== "string" ||
     !STABLE_VERSION.test(record.upstreamVersion) ||
-    !STABLE_VERSION.test(packageVersion) ||
+    packageVersion !== `${record.upstreamVersion}-remote.${record.remoteRevision}` ||
     typeof record.upstreamCommit !== "string" ||
     !/^[a-f0-9]{40}$/.test(record.upstreamCommit) ||
     !Number.isSafeInteger(record.remoteRevision) ||

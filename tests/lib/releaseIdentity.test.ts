@@ -32,9 +32,11 @@ import {
 import { entriesUpTo, markBuildSeen, type WhatsNewEntry } from "@/lib/whatsNew";
 
 const candidate = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   ...fixture.source.current,
-  packageVersion: "4.2.0",
+  packageVersion: "4.0.21-remote.2",
+  remoteRevision: 2,
+  releaseTag: "remote-v4.0.21-r2",
 });
 beforeEach(() =>
   Object.assign(fixture.metadata, structuredClone(fixture.source)),
@@ -42,7 +44,7 @@ beforeEach(() =>
 
 describe("release identity and safe links", () => {
   it("uses current identity only for the exact build and legacy identity only from explicit history", () => {
-    expect(identityVersion(getBuildIdentity("4.1.0")!)).toBe(
+    expect(identityVersion(getBuildIdentity("4.0.21-remote.1")!)).toBe(
       "4.0.21 · Remote r1",
     );
     expect(identityVersion(getBuildIdentity("4.0.9")!)).toBe("Remote v4.0.9");
@@ -55,15 +57,15 @@ describe("release identity and safe links", () => {
   });
 
   it("valid updater identity displays upstream+Remote revision while URLs use its explicit tag", () => {
-    const identity = parseUpdateIdentity(candidate(), "4.2.0");
+    const identity = parseUpdateIdentity(candidate(), "4.0.21-remote.2");
     expect(identity).toMatchObject({
-      packageVersion: "4.2.0",
+      packageVersion: "4.0.21-remote.2",
       upstreamVersion: "4.0.21",
-      remoteRevision: 1,
+      remoteRevision: 2,
     });
-    expect(identityVersion(identity!)).toBe("4.0.21 · Remote r1");
-    expect(updateReleasePageUrl("4.2.0", identity)).toBe(
-      `${FORK_RELEASES_URL}/tag/remote-v4.0.21-r1`,
+    expect(identityVersion(identity!)).toBe("4.0.21 · Remote r2");
+    expect(updateReleasePageUrl("4.0.21-remote.2", identity)).toBe(
+      `${FORK_RELEASES_URL}/tag/remote-v4.0.21-r2`,
     );
   });
 
@@ -71,15 +73,15 @@ describe("release identity and safe links", () => {
     undefined,
     null,
     {},
-    { schemaVersion: 2 },
+    { schemaVersion: 1 },
     { packageVersion: "4.3.0" },
-    { releaseTag: "v4.2.0" },
-    { releaseTag: "remote-v4.0.21-r2" },
+    { releaseTag: "v4.0.21-remote.2" },
+    { releaseTag: "remote-v4.0.21-r3" },
     { upstreamCommit: "bad" },
     { upstreamCommit: "G".repeat(40) },
     { upstreamVersion: "4.0.21-beta.1" },
     { remoteRevision: 0 },
-    { remoteRevision: 1.5 },
+    { remoteRevision: 2.5 },
     { remoteRevision: "1" },
     { upstreamCommit: undefined },
   ])(
@@ -91,10 +93,14 @@ describe("release identity and safe links", () => {
         Object.keys(change).length === 0
           ? change
           : { ...candidate(), ...change };
-      const identity = parseUpdateIdentity(raw, "4.2.0");
+      const identity = parseUpdateIdentity(raw, "4.0.21-remote.2");
       expect(identity).toBeNull();
-      expect(updateReleasePageUrl("4.2.0", identity)).toBe(FORK_RELEASES_URL);
-      expect(updateReleasePageUrl("4.2.0", identity)).not.toContain("v4.2.0");
+      expect(updateReleasePageUrl("4.0.21-remote.2", identity)).toBe(
+        FORK_RELEASES_URL,
+      );
+      expect(updateReleasePageUrl("4.0.21-remote.2", identity)).not.toContain(
+        "v4.0.21-remote.2",
+      );
     },
   );
 
@@ -107,18 +113,18 @@ describe("release identity and safe links", () => {
     );
     expect(updateReleasePageUrl("99.0.0")).toBe(FORK_RELEASES_URL);
     expect(currentReleasePageUrl("99.0.0")).toBe(FORK_RELEASES_URL);
-    expect(currentReleasePageUrl("4.1.0")).toBe(FORK_RELEASES_URL);
+    expect(currentReleasePageUrl("4.0.21-remote.1")).toBe(FORK_RELEASES_URL);
     expect(currentReleasePageUrl("4.0.9")).toBe(
       `${FORK_RELEASES_URL}/tag/v4.0.9`,
     );
   });
 
   it("ready release artifacts do not permanently show unpublished despite embedded unreleased status", () => {
-    expect(isUnreleasedBuild("4.1.0")).toBe(true);
+    expect(isUnreleasedBuild("4.0.21-remote.1")).toBe(true);
     fixture.metadata.current.releaseReady = true; // in-memory synthetic candidate, not actual release readiness
     expect(fixture.metadata.current.status).toBe("unreleased");
-    expect(isUnreleasedBuild("4.1.0")).toBe(false);
-    expect(currentReleasePageUrl("4.1.0")).toBe(
+    expect(isUnreleasedBuild("4.0.21-remote.1")).toBe(false);
+    expect(currentReleasePageUrl("4.0.21-remote.1")).toBe(
       `${FORK_RELEASES_URL}/tag/remote-v4.0.21-r1`,
     );
     expect(isUnreleasedBuild("99.0.0")).toBe(false);
@@ -138,9 +144,10 @@ describe("upstream seen migration", () => {
     expect(markBuildSeen("4.0.9", "99.0.0")).toBe("4.0.9");
   });
 
-  it("installer 4.1.x cannot expose future unmerged upstream 4.0.x entries", () => {
-    fixture.metadata.current.packageVersion = "4.1.1";
+  it("a higher Remote revision cannot expose future unmerged upstream 4.0.x entries", () => {
+    fixture.metadata.current.packageVersion = "4.0.21-remote.2";
     fixture.metadata.current.remoteRevision = 2;
+    fixture.metadata.current.releaseTag = "remote-v4.0.21-r2";
     const item = {
       type: "fix" as const,
       zh: "summary",
@@ -152,11 +159,13 @@ describe("upstream seen migration", () => {
       { version: "4.0.40", items: [item] },
       { version: "4.0.21", items: [item] },
     ];
-    const baseline = currentUpstreamVersion("4.1.1")!;
+    const baseline = currentUpstreamVersion("4.0.21-remote.2")!;
     expect(baseline).toBe("4.0.21");
     expect(
       entriesUpTo(entries, baseline).map((entry) => entry.version),
     ).toEqual(["4.0.21"]);
-    expect(markBuildSeen("upstream:4.0.21", "4.1.1")).toBe("upstream:4.0.21");
+    expect(markBuildSeen("upstream:4.0.21", "4.0.21-remote.2")).toBe(
+      "upstream:4.0.21",
+    );
   });
 });

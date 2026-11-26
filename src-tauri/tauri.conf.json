@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CC Switch Remote",
-  "version": "4.1.0",
+  "version": "4.0.21-remote.1",
   "identifier": "com.ccswitch.remote",
   "build": {
     "frontendDist": "../dist",
@@ -48,10 +48,13 @@
     ],
     "windows": {
       "wix": {
+        "version": "4.0.21",
         "template": "wix/per-user-main.wxs"
       }
     },
     "macOS": {
+      "bundleVersion": "4.0.21",
+      "infoPlist": "Info.plist",
       "minimumSystemVersion": "12.0"
     }
   },
