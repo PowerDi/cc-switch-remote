@@ -128,6 +128,36 @@ function newAssets(extra = {}) {
   };
 }
 
+test('new release default requires only Windows and two Linux updater platforms', () => {
+  const options = newAssets(Object.fromEntries(['x86_64', 'arm64'].flatMap(arch => [
+    ['CC-Switch-Remote-' + newTag + '-Linux-' + arch + '.AppImage', 'binary'],
+    ['CC-Switch-Remote-' + newTag + '-Linux-' + arch + '.AppImage.sig', 'signature'],
+  ])));
+  delete options.requiredPlatforms;
+  assert.deepEqual(Object.keys(assembleLatestJson(options).platforms).sort(), ['linux-aarch64', 'linux-x86_64', 'windows-x86_64']);
+});
+
+test('new-scheme releases reject unexpected macOS assets even with signatures', () => {
+  const options = newAssets({
+    ['CC-Switch-Remote-' + newTag + '-macOS.tar.gz']: 'unexpected mac',
+    ['CC-Switch-Remote-' + newTag + '-macOS.tar.gz.sig']: 'signature',
+  });
+  assert.throws(() => assembleLatestJson(options), /macOS artifacts are not permitted/);
+  const existingLatestJson = writeJson(path.join(options.assetsDir, 'existing.json'), { version: '4.0.21-remote.1', platforms: { 'windows-x86_64': {} } });
+  assert.throws(() => assembleLatestJson({ ...options, existingLatestJson }), /absent historical platform/);
+});
+
+test('maintenance cannot silently remove an existing historical macOS platform', () => {
+  const options = newAssets();
+  const existingLatestJson = writeJson(path.join(options.assetsDir, 'existing.json'), { version: '4.0.21-remote.1', platforms: { 'windows-x86_64': {}, 'darwin-aarch64': {}, 'darwin-x86_64': {} } });
+  assert.throws(() => assembleLatestJson({ ...options, existingLatestJson }), /missing required platforms: darwin/);
+  fs.writeFileSync(path.join(options.assetsDir, 'CC-Switch-Remote-' + newTag + '-macOS.tar.gz'), 'legacy mac');
+  fs.writeFileSync(path.join(options.assetsDir, 'CC-Switch-Remote-' + newTag + '-macOS.tar.gz.sig'), 'legacy sig');
+  const latest = assembleLatestJson({ ...options, existingLatestJson });
+  assert.equal(latest.platforms['darwin-aarch64'].signature, 'legacy sig');
+  assert.equal(latest.platforms['darwin-x86_64'].signature, 'legacy sig');
+});
+
 test('new tag metadata uses explicit installer semver and actual tag URLs', () => {
   const options = newAssets();
   const latest = assembleLatestJson(options);
@@ -226,8 +256,9 @@ test('duplicate updater platform and unsigned new-naming artifact are rejected',
     ['CC-Switch-Remote-' + newTag + '-macOS-extra.tar.gz']: 'duplicate',
     ['CC-Switch-Remote-' + newTag + '-macOS-extra.tar.gz.sig']: 'sig',
   });
+  const existingLatestJson = writeJson(path.join(options.assetsDir, 'existing.json'), { version: '4.0.21-remote.1', platforms: { 'windows-x86_64': {}, 'darwin-aarch64': {}, 'darwin-x86_64': {} } });
   assert.throws(
-    () => assembleLatestJson(options),
+    () => assembleLatestJson({ ...options, existingLatestJson }),
     /Multiple updater artifacts for darwin/,
   );
   const unsigned = newAssets();

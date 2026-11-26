@@ -1,0 +1,115 @@
+name: Recover Remote r1 Artifacts
+
+# One-off aggregation of reviewed successful jobs. No build, tests or retagging
+# of the desktop release. Older cancelled runs contain valid Linux/Windows jobs.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Aggregate existing desktop/helper artifacts only
+        type: choice
+        options: [desktop, helper, all]
+        default: all
+        required: true
+      tag:
+        description: Fixed approved desktop tag (must not move)
+        type: string
+        default: remote-v4.0.21-r1
+        required: true
+      source_sha:
+        description: Fixed original release source commit
+        type: string
+        default: c0b701e44bf89fb1d264236949a3af2745af1989
+        required: true
+      desktop_original:
+        description: Reviewed original desktop run (successful Windows/Linux jobs)
+        type: string
+        default: "45752512886"
+        required: true
+      helper_original:
+        description: Reviewed original helper run (successful Linux jobs)
+        type: string
+        default: "45752621175"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover:
+    name: Recover ${{ matrix.operation }} (no rebuild)
+    if: github.repository == 'PowerDi/cc-switch-remote' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/remote-v4.0.21-r1')
+    runs-on: ubuntu-22.04
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        operation: ${{ fromJSON(inputs.operation == 'desktop' && '["desktop"]' || inputs.operation == 'helper' && '["helper"]' || '["desktop","helper"]') }}
+    # Desktop shares the normal publication lock. Helper has a distinct rolling
+    # channel lock. A failed desktop job must not cancel a helper rollback.
+    concurrency:
+      group: ${{ matrix.operation == 'desktop' && 'remote-app-publication' || 'remote-helper-publication' }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      INPUT_TAG: ${{ inputs.tag }}
+      INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+      INPUT_DESKTOP_ORIGINAL: ${{ inputs.desktop_original }}
+      INPUT_HELPER_ORIGINAL: ${{ inputs.helper_original }}
+    steps:
+      - name: Checkout reviewed recovery tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: maintenance
+      - name: Checkout immutable original release source
+        uses: actions/checkout@v6
+        with:
+          ref: c0b701e44bf89fb1d264236949a3af2745af1989
+          fetch-depth: 0
+          path: release-source
+      - name: Setup Node for original tag identity/assembler scripts
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Install signature verification library (not application packages)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-cryptography
+      - name: Validate provenance and prepare artifacts without mutation
+        run: >-
+          /usr/bin/python3 maintenance/scripts/recover-r1-artifacts.py prepare ${{ matrix.operation }}
+          --source release-source --work recovery
+      - name: Preserve evidence and helper rollback bytes before any mutation
+        id: backup
+        uses: actions/upload-artifact@v7
+        with:
+          name: remote-r1-${{ matrix.operation }}-recovery-${{ github.run_id }}
+          path: |
+            recovery/plan.json
+            recovery/evidence/**
+            recovery/backup/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Apply verified release transaction
+        env:
+          RECOVERY_BACKUP_ARTIFACT_ID: ${{ steps.backup.outputs.artifact-id }}
+          RECOVERY_BACKUP_ARTIFACT_DIGEST: ${{ steps.backup.outputs.artifact-digest }}
+        run: >-
+          /usr/bin/python3 maintenance/scripts/recover-r1-artifacts.py apply ${{ matrix.operation }}
+          --source release-source --work recovery
+      - name: Preserve outcome and final validation even after failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: remote-r1-${{ matrix.operation }}-outcome-${{ github.run_id }}
+          path: |
+            recovery/plan.json
+            recovery/result.json
+            recovery/evidence/**
+          if-no-files-found: warn
+          retention-days: 30

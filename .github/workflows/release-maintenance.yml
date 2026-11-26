@@ -64,6 +64,16 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > asset-names.txt
           cat asset-names.txt
 
+      - name: Preserve existing updater platform set
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p existing
+          # Old releases may contain macOS; never silently trim historical metadata.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir existing --pattern latest.json
+
       - name: Download updater signatures
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -180,6 +190,7 @@ jobs:
             --notes-file requested-notes.md \
             --assets-dir dl \
             --asset-names-file asset-names.txt \
+            --existing-latest-json existing/latest.json \
             --repo "$GITHUB_REPOSITORY" \
             --tag "$TAG" \
             --pub-date "$PUB_DATE" \

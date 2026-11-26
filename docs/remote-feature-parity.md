@@ -2,6 +2,10 @@
 
 This document tracks how remote management maps to the local CC Switch feature set. Remote features must stay target-aware: local state is not the source of truth for a remote host, and unsupported local-only features should be hidden, disabled, or documented instead of exposed as broken controls.
 
+## Distribution scope
+
+Starting with `remote-v4.0.21-r1`, the user-approved distribution is Windows x64 and Linux x86_64/arm64 desktop packages, with Linux x86_64/arm64 Helper packages only. Current and future macOS packages are discontinued; historical desktop assets and existing remote macOS SSH/service code are retained. Feature parity below describes behavior, not a promise of a macOS release artifact.
+
 ## Status Terms
 
 - `parity`: remote uses the same user workflow and shared target-aware logic as local.

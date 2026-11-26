@@ -4,6 +4,7 @@
 - 应用 / Cargo / Tauri / updater 版本：`4.0.21-remote.1`
 - 上游正式基线：`v4.0.21`，commit `c4db63c60d2a1ddcb4bd9f81152b9c6126413659`
 - 本轮没有合并新的上游版本，数据库 schema 继续为 **23**。
+- **发行范围已按用户最新决定收缩：本版及后续不再构建或发布 macOS 桌面包或 macOS Helper；仅发布 Windows x64、Linux x86_64/arm64 桌面包，以及 Linux x86_64/arm64 Helper。** 已完成的 macOS 工件不上架，历史桌面 macOS 资产保留。原 tag/源码与 identity 快照不改。
 
 ## 版本规则与一次手动重新安装
 
@@ -16,7 +17,7 @@
 **旧客户端需要一次手动重新安装，不仅是便携版。** 已安装的 `4.1.0` 按正常 SemVer 比较不会把 `4.0.21-remote.1` 当作更新；旧“关于”页和数据库恢复页的自动检查均不能完成这次版本序列切换。请直接使用 [本 fork 发布页](https://github.com/PowerDi/cc-switch-remote/releases)，不要反复点更新或修改 updater 公钥/endpoint。
 
 1. 退出旧客户端及正在运行的开发版本。先备份完整 `~/.cc-switch-remote`、其数据库/备份文件、应用 `app_paths.json` 或自定义配置目录；若设置过覆盖目录，也备份该目录。Windows 用实际用户目录，不用 Git Bash 的另一个 HOME。
-2. 下载下方对应平台包。Windows 安装版重新运行 MSI；若系统不允许直接替换，卸载旧**应用程序**后安装新 MSI，保留已备份的数据。便携版解压到新目录并完整保留 askpass 组件。macOS 退出后替换 `.app`；Linux 按使用的 AppImage / deb / rpm 方式手动替换，发行版包管理器可能需要明确确认版本降低。不要复制覆盖官方 CC Switch 数据目录。
+2. 下载下方对应平台包。Windows 安装版重新运行 MSI；若系统不允许直接替换，卸载旧**应用程序**后安装新 MSI，保留已备份的数据。便携版解压到新目录并完整保留 askpass 组件。Linux 按使用的 AppImage / deb / rpm 方式手动替换，发行版包管理器可能需要明确确认版本降低。不要复制覆盖官方 CC Switch 数据目录。
 3. 本版仍支持 schema 23，**不要降低或删除数据库版本来迁就版本号**。若数据库比 23 更新，保留原文件并停止；仅重新安装程序并不能降级数据库。开发数据目录仍隔离在 `~/.cc-switch-remote-dev`。
 4. 首次打开后核对 **4.0.21 · Remote r1 / 4.0.21-remote.1**、连接配置和实际数据目录。新方案以后由完整 SemVer 排序，r1 → r2 和新基线 → r1 的比较契约已有定向测试；并不代表这些真实安装路径已经实机验证。
 
@@ -38,11 +39,10 @@
 | 平台 | 文件后缀 |
 | --- | --- |
 | Windows x64 | `Windows.msi`、`Windows-Portable.zip` |
-| macOS universal（Intel / Apple Silicon） | `macOS.dmg`、`macOS.zip`、updater 用 `macOS.tar.gz` |
 | Linux x86_64 | `Linux-x86_64.AppImage`、`.deb`、`.rpm` |
 | Linux arm64 | `Linux-arm64.AppImage`、`.deb`、`.rpm` |
 
-本轮工作流**不提供 Windows ARM64 原生包**。Updater 工件同时附带 `.sig`；`latest.json` 只使用本 fork 实际 URL 与签名链。MSI/macOS 系统包壳要求的数字版本为 `4.0.21`，不改变应用内部 `4.0.21-remote.1`。
+本轮工作流**不提供 Windows ARM64 原生包**。Updater 工件同时附带 `.sig`；`latest.json` 只使用本 fork 实际 URL 与签名链。MSI 系统包壳要求的数字版本为 `4.0.21`，不改变应用内部 `4.0.21-remote.1`。
 
 Helper 由独立工作流更新 `remote-helper-latest`；它不是第二个桌面 release。Helper 安装仍需用户明确触发，不会因打开页面自动重装。
 
@@ -50,6 +50,8 @@ Helper 由独立工作流更新 `remote-helper-latest`；它不是第二个桌�
 
 连接、事务安装、跨目标异步、metadata 无 DB 写入、版本派生/排序和发布边界已有临时夹具定向回归。[Linux x64 构建运行 45749983081](https://github.com/PowerDi/cc-switch-remote/actions/runs/45749983081) 已成功：准备 commit `78435710fa68b1f76898d916fed26051f73de16b` 的实际 RPM/DEB 均报告 `4.0.21-remote.1`，`rpm -qp` / `rpm.vercmp`、`dpkg-deb` / `dpkg --compare-versions` 查询及四组原生排序检查通过，**未执行系统安装**，该运行的 publish job 已跳过。
 
-Windows/macOS 目前为锁定工具链契约审查，其实际产物、签名/公证及最终跨平台发布链仍由正式流程核对；该 Linux x64 结果不代表 arm64 或最终 tag 产物已验证。Windows 密码 SSH、实际远端安装、MSI/macOS/Linux 安装及旧客户端手动迁移仍未实机验证。没有本轮数据库 schema 迁移。
+原 tag 同源的 Windows、Linux x86_64/arm64 工件已构建成功，汇总发布仅复用这些产物，验证三份 updater 文件及 trusted-comment 签名，生成仅含 Windows/Linux 三个平台的 latest.json。桌面共 13 个资产，Helper 新发行共 4 个 Linux 资产；旧 Helper macOS 资产只在完整备份及新 Linux 工件验证后移除。Windows 密码 SSH、实际远端安装、Windows/Linux 安装及旧客户端手动迁移仍未实机验证。没有本轮数据库 schema 迁移。
+
+此次发行范围是 tag 创建后的用户明确决定；独立维护证据见 [r1 工件恢复说明](../release-r1-artifact-recovery.md)，不篡改原 tag 源码或其 release-identity.json。
 
 发布候选审核与构建证据见 [Remote 版本策略](../remote-version-policy.md)。候选 `releaseReady=true` 不等于实际安装已验证；`realInstallValidation` 仍为 `not-performed`，旧客户端一次手动重新安装与备份要求不变。

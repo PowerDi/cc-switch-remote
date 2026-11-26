@@ -153,6 +153,8 @@ test('maintenance uses the requested release snapshot, publication date and note
   );
   const generate = step(job, 'Generate latest.json').run;
   assert.match(generate, /--identity-file requested-identity\.json/);
+  assert.match(generate, /--existing-latest-json existing\/latest\.json/);
+  assert.match(step(job, 'Preserve existing updater platform set').run, /gh release download.*--pattern latest\.json/);
   assert.match(generate, /--notes-file requested-notes\.md/);
   assert.match(generate, /PUB_DATE=\$\(<published-at\.txt\)/);
   assert.match(generate, /--tag "\$TAG"/);

@@ -16,7 +16,7 @@ function evaluate(
   expression,
   {
     event = "workflow_dispatch",
-    platform = "macos",
+    platform = "linux-x64",
     source = "",
     ref = "refs/heads/repair",
   } = {},
@@ -75,7 +75,7 @@ function gitFixture(t) {
     release.jobs.identity,
     "Resolve and validate source commit",
   ).run;
-  const run = (sourceRef) => {
+  const run = (sourceRef, platform = "linux-x64") => {
     const output = path.join(root, "source-output.txt");
     if (fs.existsSync(output)) fs.unlinkSync(output);
     const stdout = execFileSync("bash", ["-c", resolve], {
@@ -85,6 +85,7 @@ function gitFixture(t) {
       env: {
         ...process.env,
         SOURCE_REF: sourceRef,
+        BUILD_PLATFORM: platform,
         GITHUB_SHA: workflowSha,
         GITHUB_OUTPUT: "source-output.txt",
       },
@@ -94,26 +95,21 @@ function gitFixture(t) {
   return { root, git, tag, sourceSha, workflowSha, run };
 }
 
-test("mac-only repair selects macos-15 without scheduling existing Windows/Linux artifacts", () => {
+test("current and future matrices contain only Windows/Linux, with targeted repairs", () => {
   for (const [flow, job, count] of [
-    [release, release.jobs.release, 4],
-    [helper, helper.jobs["build-helper"], 3],
+    [release, release.jobs.release, 3],
+    [helper, helper.jobs["build-helper"], 2],
   ]) {
     const expression = job.strategy.matrix.include;
-    assert.equal(typeof expression, "string");
-    assert.deepEqual(
-      evaluate(expression).map((row) => row.os),
-      ["macos-15"],
-    );
     assert.equal(evaluate(expression, { platform: "all" }).length, count);
-    assert.equal(
-      evaluate(expression, { event: "push", platform: "macos" }).length,
-      count,
+    assert.equal(evaluate(expression, { event: "push" }).length, count);
+    assert.ok(
+      evaluate(expression, { platform: "all" }).every((row) =>
+        /^(ubuntu|windows)-/.test(row.os),
+      ),
     );
     assert.ok(
-      evaluate(expression, { platform: "all" }).every(
-        (row) => row.os !== "macos-14",
-      ),
+      !flow.on.workflow_dispatch.inputs.platform.options.includes("macos"),
     );
     for (const platform of ["linux-x64", "linux-arm64"]) {
       const rows = evaluate(expression, { platform });
@@ -121,7 +117,6 @@ test("mac-only repair selects macos-15 without scheduling existing Windows/Linux
       assert.match(rows[0].os, /^ubuntu-/);
     }
     assert.equal(flow.concurrency["cancel-in-progress"], false);
-    assert.match(flow.concurrency.group, /platform/);
     assert.equal(flow.on.workflow_dispatch.inputs.source_ref.type, "string");
   }
   assert.deepEqual(
@@ -188,8 +183,14 @@ test("source resolution peels the requested release tag instead of using the wor
   const f = gitFixture(t);
   assert.notEqual(f.sourceSha, f.workflowSha);
   assert.equal(
-    step(release.jobs.identity, "Resolve and validate source commit").run,
-    step(helper.jobs.source, "Resolve and validate source commit").run,
+    step(
+      release.jobs.identity,
+      "Resolve and validate source commit",
+    ).run.replace(/case "\$BUILD_PLATFORM"[^\n]*\n/, ""),
+    step(helper.jobs.source, "Resolve and validate source commit").run.replace(
+      /case "\$BUILD_PLATFORM"[^\n]*\n/,
+      "",
+    ),
   );
   for (const ref of [f.tag, `refs/tags/${f.tag}`, f.sourceSha]) {
     const result = f.run(ref);
@@ -216,6 +217,7 @@ test("source resolution fails on moving branches, wrong commits, tag identity dr
     assert.equal(fs.existsSync(path.join(f.root, "source-output.txt")), false);
   }
   assert.equal(fs.existsSync(path.join(f.root, "injected")), false);
+  assert.throws(() => f.run(f.tag, "macos"), /Unsupported publishing platform/);
 });
 
 test("every Cargo/Tauri build stamps actual source SHA using a process-local override", () => {
@@ -223,7 +225,7 @@ test("every Cargo/Tauri build stamps actual source SHA using a process-local ove
     ...release.jobs.release.steps,
     ...helper.jobs["build-helper"].steps,
   ].filter((item) => /cargo build|pnpm tauri build/.test(item.run ?? ""));
-  assert.equal(builds.length, 5);
+  assert.equal(builds.length, 3);
   for (const item of builds) {
     const assignment =
       item.shell === "pwsh"
@@ -299,28 +301,16 @@ test("helper single-platform/source-ref repairs cannot publish or delete existin
   );
 });
 
-test("macOS universal targets and signing/notarization verification stay in the original pipeline", () => {
-  const job = release.jobs.release;
-  assert.match(
-    step(job, "Add macOS targets").run,
-    /aarch64-apple-darwin x86_64-apple-darwin/,
-  );
-  assert.match(
-    step(job, "Build Tauri App (macOS)").run,
-    /--target universal-apple-darwin/,
-  );
-  assert.match(
-    step(job, "Verify macOS code signing and notarization").run,
-    /codesign --verify/,
-  );
-  assert.match(
-    step(job, "Verify macOS code signing and notarization").run,
-    /spctl -a/,
-  );
-  assert.match(step(job, "Notarize macOS DMG").run, /xcrun notarytool submit/);
-  assert.match(step(job, "Clean up Apple signing keychain").if, /always\(\)/);
-  assert.match(
-    step(helper.jobs["build-helper"], "Build remote helper CLI").run,
-    /lipo -create/,
-  );
+test("macOS build/signing/notarization steps are removed, not merely hidden", () => {
+  for (const flow of [release, helper]) {
+    for (const job of Object.values(flow.jobs)) {
+      for (const item of job.steps) {
+        assert.doesNotMatch(item.name ?? "", /macOS|Apple|Notarize/);
+        assert.doesNotMatch(
+          item.run ?? "",
+          /apple-darwin|notarytool|stapler|lipo -create|create-dmg/,
+        );
+      }
+    }
+  }
 });

@@ -5,8 +5,6 @@ import { pathToFileURL } from 'node:url';
 import { readReleaseMetadata, resolveReleaseIdentity, updaterReleaseIdentity } from './release-identity.mjs';
 
 const DEFAULT_REQUIRED_PLATFORMS = [
-  'darwin-aarch64',
-  'darwin-x86_64',
   'linux-x86_64',
   'linux-aarch64',
   'windows-x86_64',
@@ -36,6 +34,7 @@ function parseArgs(argv) {
     else if (arg === '--notes-file') args.notesFile = next();
     else if (arg === '--output') args.output = next();
     else if (arg === '--asset-names-file') args.assetNamesFile = next();
+    else if (arg === '--existing-latest-json') args.existingLatestJson = next();
     else if (arg === '--pub-date') args.pubDate = next();
     else if (arg === '--notes') args.notes = next();
     else if (arg === '--required-platforms') {
@@ -61,6 +60,7 @@ Options:
   --notes-file <file>             Read release notes without shell interpolation
   --assets-dir <dir>              Release assets directory, default: dl
   --asset-names-file <file>       Optional release asset names, JSON or newline text
+  --existing-latest-json <file>   Maintenance: preserve every existing platform key
   --output <file>                 Output file, default: latest.json
   --pub-date <iso-date>           Publication date, default: current UTC time
   --notes <text>                  Release notes, default: Release <tag>
@@ -119,6 +119,7 @@ export function assembleLatestJson({
   tag,
   identityFile,
   assetNamesFile,
+  existingLatestJson,
   pubDate = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
   notes = `Release ${tag}`,
   requiredPlatforms = DEFAULT_REQUIRED_PLATFORMS,
@@ -130,6 +131,12 @@ export function assembleLatestJson({
   const identity = resolveReleaseIdentity(tag, { metadata });
   if (repo !== metadata.repository) throw new Error('Release repository does not match the fork identity');
   const version = identity.packageVersion;
+  if (existingLatestJson) {
+    const existing = JSON.parse(fs.readFileSync(existingLatestJson, 'utf8'));
+    if (existing.version !== version || !existing.platforms || !Object.keys(existing.platforms).length)
+      throw new Error('Historical manifest version/platform set is invalid');
+    requiredPlatforms = Object.keys(existing.platforms); // Preserve this release, not today's distribution targets.
+  }
   const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
   const { entries, signatures } = readAssetMap(assetsDir, assetNamesFile);
   const platforms = {};
@@ -149,6 +156,10 @@ export function assembleLatestJson({
       // Older fork releases predate Remote asset branding; maintenance preserves those names.
       || (identity.remoteRevision == null && name.startsWith(`CC-Switch-${tag}-`));
     if (!belongsToRelease) throw new Error(`Artifact does not belong to requested release ${tag}: ${name}`);
+    if (identity.remoteRevision != null && platformKeys.some((key) => key.startsWith('darwin-')) &&
+        (!existingLatestJson || platformKeys.some((key) => !requiredPlatforms.includes(key)))) {
+      throw new Error(`macOS artifacts are not permitted for a new release or absent historical platform: ${name}`);
+    }
 
     updaterArtifacts.push(name);
     const signature = signatures.get(name);
@@ -204,6 +215,7 @@ function main() {
     tag: args.tag,
     identityFile: args.identityFile,
     assetNamesFile: args.assetNamesFile,
+    existingLatestJson: args.existingLatestJson,
     pubDate: args.pubDate,
     notes: args.notesFile ? fs.readFileSync(args.notesFile, 'utf8') : args.notes,
     requiredPlatforms: args.requiredPlatforms,

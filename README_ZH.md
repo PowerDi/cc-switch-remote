@@ -7,7 +7,7 @@
 ### Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw 和 Hermes Agent 的全方位管理工具
 
 [![Version](https://img.shields.io/github/v/release/PowerDi/cc-switch-remote?color=blue&label=version)](https://github.com/PowerDi/cc-switch-remote/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/PowerDi/cc-switch-remote/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/PowerDi/cc-switch-remote/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 [![Downloads](https://img.shields.io/github/downloads/PowerDi/cc-switch-remote/total)](https://github.com/PowerDi/cc-switch-remote/releases/latest)
 
@@ -211,7 +211,7 @@ TeamoRouter 还提供企业级功能，包括集中账单、团队管理、BYOK�
 - **统一 MCP, SKILLS 管理** — 一个面板管理 Claude、Codex、Gemini、Grok Build、OpenCode 和 Hermes 的 MCP, SKILLS, 支持双向同步
 - **系统托盘快速切换** — 从托盘菜单即时切换供应商，无需打开完整应用
 - **云同步** — 通过 Dropbox、OneDrive、iCloud 或 WebDAV 服务器在不同设备之间同步供应商数据
-- **跨平台** — 基于 Tauri 2 构建的原生桌面应用，支持 Windows、macOS 和 Linux
+- **发行平台** — 当前及后续仅发布 Windows x64、Linux x86_64/arm64 桌面包；Helper 仅发布 Linux x86_64/arm64。停止 macOS 包发行不删除远端 macOS SSH 管理代码。
 - **小工具** - 内置了多种小工具来解决首次安装登录确认、禁止签名、插件拓展同步等多种功能
 
 ## 界面预览
@@ -282,7 +282,7 @@ CC Switch Remote 使用“通用配置片段”功能，在不同的供应商之
 <details>
 <summary><strong>macOS 安装</strong></summary>
 
-CC Switch Remote macOS 版本已通过 Apple 代码签名和公证，可直接下载安装，无需额外操作。推荐使用 `.dmg` 安装包。
+从 `remote-v4.0.21-r1` 起，本版及后续不再构建或发布 macOS 桌面包和 macOS Helper。历史桌面 release 的 macOS 资产保留，不将已有包视为新版本。
 
 </details>
 
@@ -352,35 +352,16 @@ CC_SWITCH_GDK_BACKEND=wayland ./CC-Switch-*.AppImage
 
 ## 下载安装
 
+**本版及后续仅提供 Windows x64、Linux x86_64/arm64 桌面包和 Linux Helper；不提供 macOS 包。** 发行范围变更由用户在原 tag 创建后明确确认，历史桌面 macOS 资产不删除。
+
 ### 系统要求
 
 - **Windows**：Windows 10 及以上
-- **macOS**：macOS 12 (Monterey) 及以上
 - **Linux**：Ubuntu 22.04+ / Debian 11+ / Fedora 34+ 等主流发行版
 
 ### Windows 用户
 
-从 [Releases](../../releases) 页面下载最新版本的 `CC-Switch-v{版本号}-Windows.msi` 安装包或 `CC-Switch-v{版本号}-Windows-Portable.zip` 绿色版。
-
-### macOS 用户
-
-**方式一：通过 Homebrew 安装（推荐）**
-
-```bash
-brew install --cask cc-switch
-```
-
-更新：
-
-```bash
-brew upgrade --cask cc-switch
-```
-
-**方式二：手动下载**
-
-从 [Releases](../../releases) 页面下载 `CC-Switch-v{版本号}-macOS.dmg`（推荐）或 `.zip`。
-
-> **注意**：CC Switch Remote macOS 版本已通过 Apple 代码签名和公证，可直接安装打开。
+从 [Releases](https://github.com/PowerDi/cc-switch-remote/releases) 页面下载 `CC-Switch-Remote-remote-v4.0.21-r1-Windows.msi` 安装包或 `CC-Switch-Remote-remote-v4.0.21-r1-Windows-Portable.zip` 绿色版（仅 x64）。
 
 ### Arch Linux 用户
 
@@ -394,9 +375,9 @@ paru -S cc-switch-bin
 
 从 [Releases](../../releases) 页面下载最新版本的 Linux 安装包：
 
-- `CC-Switch-v{版本号}-Linux.deb`（Debian/Ubuntu）
-- `CC-Switch-v{版本号}-Linux.rpm`（Fedora/RHEL/openSUSE）
-- `CC-Switch-v{版本号}-Linux.AppImage`（通用）
+- `CC-Switch-Remote-remote-v4.0.21-r1-Linux-{x86_64|arm64}.deb`（Debian/Ubuntu）
+- `CC-Switch-Remote-remote-v4.0.21-r1-Linux-{x86_64|arm64}.rpm`（Fedora/RHEL/openSUSE）
+- `CC-Switch-Remote-remote-v4.0.21-r1-Linux-{x86_64|arm64}.AppImage`（通用）
 
 > **Flatpak**：官方 Release 不包含 Flatpak 包。如需使用，可从 `.deb` 自行构建 — 参见 [`flatpak/README.md`](flatpak/README.md)。
 
