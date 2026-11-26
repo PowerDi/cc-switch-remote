@@ -110,6 +110,30 @@ describe("useManagedAuth connection generation", () => {
     await waitFor(() => expect(result.current.canTargetedReauth).toBe(false));
   });
 
+  it("reports structured SSH failure as status error, not unsupported capability", async () => {
+    vi.mocked(remoteApi.checkHealth).mockResolvedValue({
+      reachable: false,
+      sshReachable: false,
+      helperInstalled: false,
+      capabilities: [],
+      failureCode: "ssh-auth",
+      lastError: "fixture auth failure",
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const { result } = renderHook(
+      () =>
+        useManagedAuth("codex_oauth", undefined, target("host-a", "secret-a")),
+      { wrapper: wrapper(queryClient) },
+    );
+    await waitFor(() => expect(result.current.isStatusError).toBe(true));
+    expect(result.current.isAuthSupported).toBe(false);
+    expect(result.current.error).toContain("fixture auth failure");
+    expect(authApi.authGetStatus).not.toHaveBeenCalled();
+    expect(remoteApi.checkHealth).toHaveBeenCalledTimes(1);
+  });
+
   it("does not call remote auth commands when the helper lacks auth capability", async () => {
     vi.spyOn(remoteApi, "checkHealth").mockResolvedValue(
       remoteHealth(["providers"]),

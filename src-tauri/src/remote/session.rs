@@ -260,11 +260,39 @@ impl RemoteSessionManager {
     }
 
     pub async fn close(&self, profile_id: &str) -> bool {
+        self.close_matching(profile_id, None).await
+    }
+
+    /// A completed install for an old host/credential must not close a newer
+    /// management session that happens to reuse the same saved profile ID.
+    pub async fn close_for_identity(
+        &self,
+        profile: &RemoteHostProfile,
+        secret: Option<&RemoteConnectionSecret>,
+    ) -> bool {
+        self.close_matching(
+            &profile.id,
+            Some(RemoteSessionIdentity::new(profile, secret)),
+        )
+        .await
+    }
+
+    async fn close_matching(
+        &self,
+        profile_id: &str,
+        expected: Option<RemoteSessionIdentity>,
+    ) -> bool {
         let session = {
             let mut sessions = self.sessions.lock().await;
             let Some(session) = sessions.get_mut(profile_id) else {
                 return false;
             };
+            if expected
+                .as_ref()
+                .is_some_and(|identity| session.identity.as_ref() != Some(identity))
+            {
+                return false;
+            }
             let existed = session.identity.is_some() || session.executor.is_some();
             session.generation = session.generation.saturating_add(1);
             session.identity = None;
@@ -1186,6 +1214,38 @@ mod tests {
         );
 
         assert!(manager.close("prod").await);
+        assert!(executor.closed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn install_completion_for_old_identity_preserves_new_session() {
+        let manager = RemoteSessionManager::default();
+        let executor = Arc::new(FakeExecutor::new(Value::Null));
+        let original = profile();
+        let mut current = original.clone();
+        current.host = "new-host.example.com".into();
+        manager.sessions.lock().await.insert(
+            current.id.clone(),
+            ManagedRemoteSession {
+                identity: Some(RemoteSessionIdentity::new(&current, None)),
+                generation: 1,
+                status: RemoteSessionStatus {
+                    profile_id: current.id.clone(),
+                    state: RemoteSessionState::Ready,
+                    last_error: None,
+                    active_request_id: None,
+                },
+                executor: Some(executor.clone()),
+                pending: None,
+            },
+        );
+        assert!(!manager.close_for_identity(&original, None).await);
+        assert!(!executor.closed.load(Ordering::SeqCst));
+        assert_eq!(
+            manager.status(&current.id).await.state,
+            RemoteSessionState::Ready
+        );
+        assert!(manager.close_for_identity(&current, None).await);
         assert!(executor.closed.load(Ordering::SeqCst));
     }
 

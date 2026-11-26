@@ -8,8 +8,8 @@ use crate::proxy::types::{
 };
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::remote::{
-    build_helper_install_args, build_ssh_args, classify_remote_failure_message, delete_profile,
-    delete_profile_secret, detect_helper_asset_target, install_helper_json, load_profiles,
+    build_helper_install_args, build_ssh_args, delete_profile, delete_profile_secret,
+    detect_helper_asset_target, install_helper_json, load_profiles, probe_helper_status,
     probe_remote_helper_presence, remote_session_manager, run_helper_json, save_profile_secret,
     upload_helper_bytes_and_verify_json, upsert_profile, validate_profile, RemoteAuthMethod,
     RemoteCapability, RemoteConnectionSecret, RemoteConnectionStage, RemoteHealth,
@@ -34,16 +34,10 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
 
+use crate::remote::execution::RemoteOperationError;
+
 const GITHUB_API_USER_AGENT: &str = "cc-switch-remote";
 
-/// 远端侧下载（依赖目标主机到 GitHub 的链路）的等待上限；脚本内部已经给
-/// curl/wget 加了连接与低速超时，这里是最后一道防线，保证界面不会无限转圈。
-const REMOTE_HELPER_REMOTE_INSTALL_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(300);
-/// 远端下载失败后的本地下载 + SSH 上传兜底上限（23MB 量级，慢链路也要留余量）。
-const REMOTE_HELPER_LOCAL_FALLBACK_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(900);
-/// 连接测试的总上限（status + 一次探针）。远慢于正常值，只用来防止无限等待。
 const REMOTE_CONNECTION_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,88 +180,90 @@ pub async fn remote_check_health(
     include_latest: Option<bool>,
 ) -> Result<RemoteHealth, String> {
     validate_profile(&profile).map_err(|e| e.to_string())?;
-    let status: serde_json::Value = tokio::task::spawn_blocking(move || {
-        run_helper_json(&profile, &["status".to_string()], secret.as_ref())
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("Remote health task failed: {e}"))??;
-
-    // Capability gates only need the installed binary's SSH status. Do not make
-    // them wait for (or depend on) the desktop's connection to GitHub.
-    let latest = if include_latest.unwrap_or(true) {
-        fetch_remote_helper_latest(&status).await
-    } else {
-        Ok(None)
-    };
-    Ok(remote_health_from_status_with_latest_result(status, latest))
+    let mut health = test_remote_connection(&profile, secret.as_ref()).await;
+    if include_latest.unwrap_or(true) && health.reachable {
+        let status = json!({ "platform": health.platform, "arch": health.helper_arch });
+        match fetch_remote_helper_latest(&status).await {
+            Ok(Some(latest)) => {
+                health.helper_update_available = is_helper_update_available(
+                    health.helper_version.as_deref(),
+                    health.helper_build.as_deref(),
+                    Some(&latest),
+                );
+                health.helper_latest_version = Some(latest.version);
+                health.helper_latest_build = latest.build;
+                health.helper_latest_asset = latest.asset_name;
+            }
+            Err(error) => health.helper_update_error = Some(error),
+            _ => {}
+        }
+    }
+    Ok(health)
 }
 
-/// 显式的「连接」动作：分层报告 SSH 与 Helper 状态。
-///
-/// 与 `remote_check_health` 的区别是它不会因为 SSH 失败而返回裸错误：
-/// 界面需要区分「SSH 没连上」和「SSH 连上了但 Helper 没装」，
-/// 这两种情况用户的下一步操作完全不同，也不能把后者标成「未连接」。
+/// A test is not a persistent management session. Never closes an existing one.
 #[tauri::command]
 pub async fn remote_test_connection(
     profile: RemoteHostProfile,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<RemoteHealth, String> {
     validate_profile(&profile).map_err(|e| e.to_string())?;
-    // 最坏情况是两轮 SSH（status + 探针），每轮各自带 ConnectTimeout=10。
-    // 这里再加一道总超时，避免远端 Helper 卡死时界面一直转圈。
-    match tokio::time::timeout(
-        REMOTE_CONNECTION_TEST_TIMEOUT,
-        tokio::task::spawn_blocking(move || {
-            test_remote_connection_blocking(&profile, secret.as_ref()).map_err(|e| e.to_string())
-        }),
-    )
-    .await
-    {
-        Ok(joined) => joined.map_err(|e| format!("Remote connection test task failed: {e}"))?,
-        Err(_) => Err(format!(
-            "远程连接测试超时（{} 秒）：SSH 已发出但远端 Helper 没有响应。请确认目标主机可登录，并在主机上手动运行 Helper 的 status 命令。",
-            REMOTE_CONNECTION_TEST_TIMEOUT.as_secs()
-        )),
-    }
+    Ok(test_remote_connection(&profile, secret.as_ref()).await)
 }
 
-fn test_remote_connection_blocking(
+async fn test_remote_connection(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
-) -> Result<RemoteHealth, crate::error::AppError> {
-    match run_helper_json::<serde_json::Value>(profile, &["status".to_string()], secret) {
-        Ok(status) => Ok(remote_health_from_status_with_latest(status, None)),
-        Err(helper_error) => {
-            let helper_message = helper_error.to_string();
-            // 只有一次额外的 SSH 探针，且仅在本查询已经失败时才会发出：
-            // 探针同时确认 SSH 层可用，以及 Helper 文件是否真的存在。
-            match probe_remote_helper_presence(profile, secret) {
-                Ok(true) => Ok(remote_connection_failure_health(
-                    true,
-                    true,
-                    RemoteConnectionStage::HelperError,
-                    helper_message,
-                )),
-                Ok(false) => Ok(remote_connection_failure_health(
-                    true,
-                    false,
-                    RemoteConnectionStage::HelperMissing,
-                    helper_message,
-                )),
-                Err(ssh_error) => {
-                    let ssh_message = ssh_error.to_string();
-                    let stage = classify_remote_failure_message(&ssh_message)
-                        .unwrap_or(RemoteConnectionStage::SshTransport);
-                    Ok(remote_connection_failure_health(
-                        false,
-                        false,
-                        stage,
-                        ssh_message,
-                    ))
-                }
-            }
-        }
+) -> RemoteHealth {
+    let deadline = tokio::time::Instant::now() + REMOTE_CONNECTION_TEST_TIMEOUT;
+    let failure = |ssh, installed, stage, code: &str, message: String| {
+        let mut health = remote_connection_failure_health(ssh, installed, stage, message);
+        health.failure_code = Some(code.into());
+        health
+    };
+    match probe_remote_helper_presence(profile, secret, deadline).await {
+        Err(error) if error.code == "probe-protocol" => failure(
+            true,
+            false,
+            RemoteConnectionStage::HelperError,
+            &error.code,
+            error.message,
+        ),
+        Err(error) => failure(
+            false,
+            false,
+            if error.code == "ssh-auth" || error.code == "ssh-auth-setup" {
+                RemoteConnectionStage::SshAuth
+            } else {
+                RemoteConnectionStage::SshTransport
+            },
+            &error.code,
+            error.message,
+        ),
+        Ok("missing") => failure(
+            true,
+            false,
+            RemoteConnectionStage::HelperMissing,
+            "helper-missing",
+            String::new(),
+        ),
+        Ok("not-executable") => failure(
+            true,
+            true,
+            RemoteConnectionStage::HelperError,
+            "helper-not-executable",
+            String::new(),
+        ),
+        Ok(_) => match probe_helper_status(profile, secret, deadline).await {
+            Ok(status) => remote_health_from_status_with_latest_result(status, Ok(None)),
+            Err(error) => failure(
+                true,
+                true,
+                RemoteConnectionStage::HelperError,
+                &error.code,
+                error.message,
+            ),
+        },
     }
 }
 
@@ -275,56 +271,20 @@ fn test_remote_connection_blocking(
 pub async fn remote_install_helper(
     profile: RemoteHostProfile,
     secret: Option<RemoteConnectionSecret>,
-) -> Result<RemoteHealth, String> {
-    validate_profile(&profile).map_err(|e| e.to_string())?;
-    let profile_id = profile.id.clone();
-    let install_profile = profile.clone();
-    let install_secret = secret.clone();
-    let install_result = match tokio::time::timeout(
-        REMOTE_HELPER_REMOTE_INSTALL_TIMEOUT,
-        tokio::task::spawn_blocking(move || {
-            install_helper_json(&install_profile, install_secret.as_ref())
-                .map_err(|e| e.to_string())
-        }),
-    )
-    .await
-    {
-        Ok(joined) => joined.map_err(|e| format!("Remote helper install task failed: {e}"))?,
-        // 旧实现里远端下载没有任何超时，主机慢/不通时会一直转圈且不给原因。
-        Err(_) => Err(format!(
-            "远程下载 Helper 超时（{} 秒）：请检查目标主机能否访问 GitHub（或在主机上配置出站代理）后重试。",
-            REMOTE_HELPER_REMOTE_INSTALL_TIMEOUT.as_secs()
-        )),
-    };
-
-    let status: serde_json::Value = match install_result {
+) -> Result<RemoteHealth, RemoteOperationError> {
+    validate_profile(&profile).map_err(|e| RemoteOperationError::new("invalid-profile", e))?;
+    let status: serde_json::Value = match install_helper_json(&profile, secret.as_ref()).await {
         Ok(status) => status,
-        Err(remote_error) if should_try_local_helper_install_fallback(&remote_error) => {
-            let fallback_message = remote_error.clone();
-            match tokio::time::timeout(
-                REMOTE_HELPER_LOCAL_FALLBACK_TIMEOUT,
-                install_helper_from_local_download(profile.clone(), secret.clone(), remote_error),
-            )
-            .await
-            {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Err(format!(
-                        "{fallback_message}\n本机下载 Helper 后上传超时（{} 秒）。",
-                        REMOTE_HELPER_LOCAL_FALLBACK_TIMEOUT.as_secs()
-                    ))
-                }
-            }
+        Err(error) if should_try_local_helper_install_fallback(&error) => {
+            install_helper_from_local_download(profile.clone(), secret.clone(), error).await?
         }
-        Err(remote_error) => return Err(remote_error),
+        Err(error) => return Err(error),
     };
-
-    // The install command verifies the newly downloaded binary through a
-    // one-shot SSH command. Any existing persistent session still runs the old
-    // helper process, so close it only after a successful install. The next
-    // remote command will start a fresh session with the updated helper.
-    remote_session_manager().close(&profile_id).await;
-
+    // Only a confirmed commit closes the OLD session. A timeout is uncertain,
+    // not a download failure, and must not start another installation.
+    remote_session_manager()
+        .close_for_identity(&profile, secret.as_ref())
+        .await;
     let latest = fetch_remote_helper_latest(&status).await;
     Ok(remote_health_from_status_with_latest_result(status, latest))
 }
@@ -1446,6 +1406,7 @@ fn remote_health_from_status_with_latest(
             })
             .unwrap_or_default(),
         failure_stage: None,
+        failure_code: None,
         last_error: None,
     }
 }
@@ -1473,6 +1434,7 @@ fn remote_connection_failure_health(
         platform: None,
         capabilities: Vec::new(),
         failure_stage: Some(stage),
+        failure_code: None,
         last_error: Some(message),
     }
 }
@@ -1502,57 +1464,36 @@ async fn fetch_remote_helper_latest(
 async fn install_helper_from_local_download(
     profile: RemoteHostProfile,
     secret: Option<RemoteConnectionSecret>,
-    remote_error: String,
-) -> Result<serde_json::Value, String> {
-    let target_profile = profile.clone();
-    let target_secret = secret.clone();
-    let target = tokio::task::spawn_blocking(move || {
-        detect_helper_asset_target(&target_profile, target_secret.as_ref())
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("Remote helper target detect task failed: {e}"))??;
-
+    _remote_error: RemoteOperationError,
+) -> Result<serde_json::Value, RemoteOperationError> {
+    let target = detect_helper_asset_target(&profile, secret.as_ref()).await?;
     let source = RemoteHelperInstallSource::from_env();
     let release = fetch_github_helper_release(&source)
         .await
-        .map_err(|e| format!("{remote_error}\nLocal helper download fallback failed: {e}"))?;
+        .map_err(|e| RemoteOperationError::new("local-download", e))?;
     let asset = select_remote_helper_download_asset(&release.assets, &target).ok_or_else(|| {
-        format!(
-            "{remote_error}\nLocal helper download fallback failed: no compatible asset for {}/{} on {}.",
-            target.asset_os, target.asset_arch, source.release_tag
+        RemoteOperationError::new(
+            "unsupported-platform",
+            format!("{}/{}", target.asset_os, target.asset_arch),
         )
     })?;
-
     let helper_bytes = crate::proxy::http_client::get()
         .get(&asset.browser_download_url)
         .header(reqwest::header::USER_AGENT, GITHUB_API_USER_AGENT)
+        .timeout(std::time::Duration::from_secs(600))
         .send()
         .await
-        .map_err(|e| format!("{remote_error}\nLocal helper download fallback failed: {e}"))?
+        .map_err(|e| RemoteOperationError::new("local-download", e))?
         .error_for_status()
-        .map_err(|e| format!("{remote_error}\nLocal helper download fallback failed: {e}"))?
+        .map_err(|e| RemoteOperationError::new("local-download", e))?
         .bytes()
         .await
-        .map_err(|e| format!("{remote_error}\nLocal helper download fallback failed: {e}"))?;
-
-    let upload_profile = profile;
-    let upload_secret = secret;
-    tokio::task::spawn_blocking(move || {
-        upload_helper_bytes_and_verify_json(&upload_profile, upload_secret.as_ref(), &helper_bytes)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("Remote helper local upload task failed: {e}"))?
-    .map_err(|e| format!("{remote_error}\nLocal helper download fallback failed: {e}"))
+        .map_err(|e| RemoteOperationError::new("local-download", e))?;
+    upload_helper_bytes_and_verify_json(&profile, secret.as_ref(), &helper_bytes).await
 }
 
-fn should_try_local_helper_install_fallback(error: &str) -> bool {
-    error.contains("Remote server cannot download helper")
-        || error.contains("Remote server failed to query GitHub helper release")
-        || error.contains("Remote server failed to download the compatible helper asset")
-        || error.contains("No compatible cc-switch-remote helper release asset found")
-        || error.contains("Remote-side helper install failed before verification")
+fn should_try_local_helper_install_fallback(error: &RemoteOperationError) -> bool {
+    error.code == "download-failed" && error.local_process_reaped && !error.remote_state_uncertain
 }
 
 async fn fetch_github_helper_release(
@@ -4667,23 +4608,14 @@ mod tests {
         let args = remote_build_helper_install_command(valid_profile()).unwrap();
         let command = args.last().expect("remote command");
 
-        assert!(command.contains(
-            "https://api.github.com/repos/PowerDi/cc-switch-remote/releases/tags/remote-helper-latest"
-        ));
-        assert!(command.contains("cc-switch-remote-helper"));
-        assert!(command.contains("cc-switch-cli"));
-        assert!(command.contains("Downloaded remote helper is not compatible with this server"));
-        assert!(command.contains("No compatible cc-switch-remote helper release asset found"));
-        assert!(command.contains("\"$helper_path\" --json status"));
-        assert!(command.contains("'\"providers\"'"));
-        assert!(!command.contains("'\"settings\"'"));
-        assert!(!command.contains("'\"plugin\"'"));
-        assert!(!command.contains("'\"session\"'"));
-        assert!(!command.contains("'\"usage\"'"));
-        assert!(!command.contains("'\"auth\"'"));
-        assert!(command.contains(&REMOTE_HELPER_REQUIRED_CAPABILITIES.join(", ")));
-        assert!(!command.contains("rustup.rs"));
-        assert!(!command.contains("cargo install --git"));
+        assert!(command.contains("CC_SWITCH_REMOTE_HELPER_RELEASE_REPO=PowerDi/cc-switch-remote"));
+        assert!(command.contains("remote-helper-latest"));
+        assert!(command.contains("install-lock"));
+        assert!(command.contains("env -i"));
+        assert!(command.contains("CC_SWITCH_TEST_HOME"));
+        assert!(command.contains(&REMOTE_HELPER_REQUIRED_CAPABILITIES.join(" ")));
+        assert!(!command.contains("routing-config global-outbound"));
+        assert!(command.find("--json status").unwrap() < command.find("mv -f").unwrap());
     }
 
     #[test]
@@ -4800,6 +4732,29 @@ mod tests {
             Err(remote_helper_upgrade_required("auth-targeted-relogin"))
         );
         assert_eq!(settle_remote_auth_cancel_login(Err(unsupported)), Ok(false));
+    }
+
+    #[test]
+    fn local_fallback_requires_confirmed_download_failure_not_uncertain_transport() {
+        for code in [
+            "ssh-deadline",
+            "ssh-auth",
+            "ssh-host-key",
+            "unsupported-platform",
+            "helper-validation",
+            "install-permission",
+            "install-locked",
+        ] {
+            let mut error = RemoteOperationError::new(code, "fixture");
+            error.local_process_reaped = true;
+            assert!(!should_try_local_helper_install_fallback(&error));
+        }
+        let mut error = RemoteOperationError::new("download-failed", "fixture");
+        assert!(!should_try_local_helper_install_fallback(&error));
+        error.local_process_reaped = true;
+        assert!(should_try_local_helper_install_fallback(&error));
+        error.remote_state_uncertain = true;
+        assert!(!should_try_local_helper_install_fallback(&error));
     }
 
     #[test]

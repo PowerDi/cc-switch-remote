@@ -1,5 +1,74 @@
 import type { TFunction } from "i18next";
 import type { RemoteConnectionStage, RemoteHealth } from "@/lib/api";
+import { extractErrorMessage } from "@/utils/errorUtils";
+
+const OPERATION_ERROR_KEYS: Record<string, string> = {
+  "ssh-deadline": "deadline",
+  "ssh-auth": "auth",
+  "ssh-auth-setup": "auth",
+  "ssh-host-key": "hostKey",
+  "ssh-transport": "transport",
+  "ssh-spawn": "transport",
+  "ssh-io": "deadline",
+  "probe-protocol": "protocol",
+  "helper-protocol": "protocol",
+  "helper-execution": "execution",
+  "helper-validation": "validation",
+  "helper-not-executable": "permission",
+  "helper-capabilities": "capabilities",
+  "helper-missing": "missing",
+  "download-failed": "download",
+  "local-download": "download",
+  "unsupported-platform": "platform",
+  "install-locked": "locked",
+  "install-permission": "installPermission",
+  "install-path": "installPermission",
+  "install-commit": "commit",
+  "upload-failed": "upload",
+};
+
+export function formatRemoteOperationError(error: unknown, t: TFunction) {
+  const detail =
+    error && typeof error === "object"
+      ? (error as {
+          code?: string;
+          message?: string;
+          remoteStateUncertain?: boolean;
+        })
+      : null;
+  const key = detail?.remoteStateUncertain
+    ? "uncertain"
+    : detail?.code && OPERATION_ERROR_KEYS[detail.code];
+  const raw = detail?.message ?? extractErrorMessage(error);
+  return key
+    ? `${t(`remote.operationErrors.${key}`)}${raw ? ` (${raw})` : ""}`
+    : raw;
+}
+
+export function remoteConnectionBadge(
+  health: RemoteHealth | null,
+  t: TFunction,
+) {
+  const state = describeRemoteConnection(health);
+  const key = !health
+    ? "notChecked"
+    : state.helper === "ok"
+      ? "metadataReady"
+      : state.helper === "missing"
+        ? "sshReadyHelperMissing"
+        : state.helper === "error"
+          ? "helperErrorBadge"
+          : state.ssh === "failed"
+            ? "failedConnection"
+            : "failed";
+  const variant =
+    state.ssh === "failed" || state.helper === "error"
+      ? "destructive"
+      : state.helper === "ok"
+        ? "default"
+        : "outline";
+  return { label: t(`remote.health.${key}`), variant } as const;
+}
 
 export const EXPECTED_REMOTE_CAPABILITIES = [
   { id: "omp", labelKey: "remote.capabilities.omp", defaultLabel: "Oh My Pi" },
@@ -209,7 +278,11 @@ export function describeRemoteConnection(
     return { ssh: "ok", helper: "missing", stage };
   }
   if (stage === "helper-error") {
-    return { ssh: "ok", helper: "error", stage };
+    return {
+      ssh: "ok",
+      helper: health.helperInstalled ? "error" : "unknown",
+      stage: health.helperInstalled ? stage : null,
+    };
   }
 
   // 没有分层信息（旧后端或诊断本身失败）时不猜层次，只展示原始报错。

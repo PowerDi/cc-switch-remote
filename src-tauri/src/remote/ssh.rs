@@ -1,3 +1,4 @@
+use super::execution::{execute, RemoteOperationError};
 use crate::error::AppError;
 use crate::remote::types::{
     RemoteAuthMethod, RemoteCommandError, RemoteCommandResponse, RemoteConnectionSecret,
@@ -5,9 +6,7 @@ use crate::remote::types::{
 };
 use crate::remote_capabilities::REMOTE_HELPER_REQUIRED_CAPABILITIES;
 use serde::de::DeserializeOwned;
-use std::io::Write;
-use std::process::Command;
-use std::process::Stdio;
+use tokio::time::{Duration, Instant};
 
 const HELPER_RELEASE_REPO: &str = "PowerDi/cc-switch-remote";
 const HELPER_RELEASE_TAG: &str = "remote-helper-latest";
@@ -85,23 +84,7 @@ fn build_ssh_base_args(profile: &RemoteHostProfile) -> Vec<String> {
     args
 }
 
-/// 统一的 ssh 进程构造。
-///
-/// Windows 上 GUI 进程 spawn 控制台程序会新建控制台窗口，所以必须带
-/// `CREATE_NO_WINDOW`，否则每发一条远程命令都会闪一个 cmd 黑窗。
-pub(crate) fn ssh_command() -> Command {
-    #[allow(unused_mut)]
-    let mut command = Command::new("ssh");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    command
-}
-
-/// 同上，但给长连接会话用（session.rs 走 tokio 的异步进程）。
+/// One-shot and persistent SSH share Windows no-console process flags.
 pub(crate) fn ssh_tokio_command() -> tokio::process::Command {
     #[allow(unused_mut)]
     let mut command = tokio::process::Command::new("ssh");
@@ -143,171 +126,95 @@ pub fn build_helper_install_args_with_source(
     profile: &RemoteHostProfile,
     source: &RemoteHelperInstallSource,
 ) -> Vec<String> {
+    build_install_args(profile, source, false)
+}
+
+fn build_install_args(
+    profile: &RemoteHostProfile,
+    source: &RemoteHelperInstallSource,
+    upload: bool,
+) -> Vec<String> {
     let mut args = build_ssh_base_args(profile);
-    let helper_path = shell_quote_helper_path(&profile.helper_path);
-    let release_repo = shell_quote(&source.release_repo);
-    let release_tag = shell_quote(&source.release_tag);
-    let required_capability_checks = REMOTE_HELPER_REQUIRED_CAPABILITIES
-        .iter()
-        .map(|capability| format!("printf '%s\\n' \"$status_json\" | grep -q '\"{capability}\"'"))
-        .collect::<Vec<_>>()
-        .join(" && ");
-    let required_capabilities = REMOTE_HELPER_REQUIRED_CAPABILITIES.join(", ");
-    let command = format!(
-        concat!(
-            "set -e; ",
-            "helper_path={helper_path}; ",
-            "helper_dir=$(dirname \"$helper_path\"); ",
-            "mkdir -p \"$helper_dir\" ~/.local/bin; ",
-            "fetch_url_to_stdout() {{ ",
-            "if command -v curl >/dev/null 2>&1; then ",
-            "if curl -fsSL --connect-timeout 15 --max-time 900 --speed-limit 4096 --speed-time 30 \"$1\" 2>/dev/null; then return 0; fi; ",
-            "fi; ",
-            "if command -v wget >/dev/null 2>&1; then ",
-            "if wget -q -T 20 -t 2 -O - \"$1\" 2>/dev/null; then return 0; fi; ",
-            "fi; ",
-            "return 1; ",
-            "}}; ",
-            "fetch_url_to_file() {{ ",
-            "if command -v curl >/dev/null 2>&1; then ",
-            "if curl -fsSL --connect-timeout 15 --max-time 900 --speed-limit 4096 --speed-time 30 \"$1\" -o \"$2\" 2>/dev/null; then return 0; fi; ",
-            "fi; ",
-            "if command -v wget >/dev/null 2>&1; then ",
-            "if wget -q -T 20 -t 2 -O \"$2\" \"$1\" 2>/dev/null; then return 0; fi; ",
-            "fi; ",
-            "return 1; ",
-            "}}; ",
-            "load_existing_helper_outbound_proxy() {{ ",
-            "if [ ! -x \"$helper_path\" ]; then return 0; fi; ",
-            "outbound_json=$(\"$helper_path\" --json routing-config global-outbound 2>/dev/null || true); ",
-            "outbound_proxy=$(printf '%s\\n' \"$outbound_json\" | sed -nE 's/.*\"data\":\"([^\"]+)\".*/\\1/p' | head -1); ",
-            "if [ -z \"$outbound_proxy\" ]; then return 0; fi; ",
-            "export http_proxy=\"$outbound_proxy\"; ",
-            "export https_proxy=\"$outbound_proxy\"; ",
-            "export all_proxy=\"$outbound_proxy\"; ",
-            "export HTTP_PROXY=\"$outbound_proxy\"; ",
-            "export HTTPS_PROXY=\"$outbound_proxy\"; ",
-            "export ALL_PROXY=\"$outbound_proxy\"; ",
-            "}}; ",
-            "verify_helper_status() {{ ",
-            "status_output=$(\"$helper_path\" --json status 2>&1) || {{ ",
-            "case \"$status_output\" in ",
-            "*libgdk-3.so.0*|*libgtk-3.so.0*|*libwebkit2gtk*|*libayatana-appindicator*) ",
-            "echo 'Downloaded remote helper is not compatible with this server: it depends on desktop GTK/WebKit libraries. Reinstall after the latest helper release is published.' >&2 ;; ",
-            "*) echo \"Remote helper downloaded but failed to start: $status_output\" >&2 ;; ",
-            "esac; ",
-            "return 65; ",
-            "}}; ",
-            "status_json=$status_output; ",
-            "printf '%s\\n' \"$status_json\"; ",
-            "{required_capability_checks} && return 0; ",
-            "echo 'cc-switch-remote helper is missing required capabilities; install a helper build that includes {required_capabilities}' >&2; ",
-            "return 64; ",
-            "}}; ",
-            "try_release_asset_install() {{ ",
-            "if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then ",
-            "echo 'Remote server cannot download helper: curl or wget is required for remote-side download.' >&2; ",
-            "return 1; ",
-            "fi; ",
-            "asset_os=$(uname -s); ",
-            "case \"$asset_os\" in Linux) asset_os=Linux ;; Darwin) asset_os=macOS ;; *) asset_os= ;; esac; ",
-            "asset_arch=$(uname -m); ",
-            "case \"$asset_arch\" in x86_64|amd64) asset_arch=x86_64 ;; arm64|aarch64) asset_arch=arm64 ;; *) asset_arch= ;; esac; ",
-            "if [ -z \"$asset_os\" ] || [ -z \"$asset_arch\" ]; then ",
-            "echo \"Remote helper is not available for this server platform: $(uname -s)/$(uname -m).\" >&2; ",
-            "return 1; ",
-            "fi; ",
-            "download_base=https://github.com/{release_repo}/releases/download/{release_tag}; ",
-            "for asset_name in cc-switch-remote-helper-latest-${{asset_os}}-${{asset_arch}} cc-switch-remote-helper-{release_tag}-${{asset_os}}-${{asset_arch}} cc-switch-remote-helper-latest-${{asset_os}}-universal cc-switch-remote-helper-{release_tag}-${{asset_os}}-universal cc-switch-cli-latest-${{asset_os}}-${{asset_arch}} cc-switch-cli-{release_tag}-${{asset_os}}-${{asset_arch}} cc-switch-cli-latest-${{asset_os}}-universal cc-switch-cli-{release_tag}-${{asset_os}}-universal; do ",
-            "helper_tmp=$(mktemp); ",
-            "if fetch_url_to_file \"$download_base/$asset_name\" \"$helper_tmp\" 1>&2; then ",
-            "chmod +x \"$helper_tmp\"; ",
-            "mv \"$helper_tmp\" \"$helper_path\"; ",
-            "return 0; ",
-            "fi; ",
-            "rm -f \"$helper_tmp\"; ",
-            "done; ",
-            "api_url=https://api.github.com/repos/{release_repo}/releases/tags/{release_tag}; ",
-            "asset_pattern=\"(cc-switch-remote-helper|cc-switch-cli)-.*-${{asset_os}}-${{asset_arch}}$\"; ",
-            "release_json=$(fetch_url_to_stdout \"$api_url\") || {{ ",
-            "echo 'Remote server failed to query GitHub helper release. The desktop app will try local download fallback when available.' >&2; ",
-            "return 1; ",
-            "}}; ",
-            "download_url=$(printf '%s\\n' \"$release_json\" | grep -E '\"browser_download_url\":' | sed -E 's/.*\"browser_download_url\": \"([^\"]+)\".*/\\1/' | grep -E \"$asset_pattern\" | tail -1 || true); ",
-            "if [ -z \"$download_url\" ]; then ",
-            "echo 'No compatible cc-switch-remote helper release asset found on GitHub release {release_tag}' >&2; ",
-            "return 1; ",
-            "fi; ",
-            "helper_tmp=$(mktemp); ",
-            "fetch_url_to_file \"$download_url\" \"$helper_tmp\" 1>&2 || {{ ",
-            "rm -f \"$helper_tmp\"; ",
-            "echo 'Remote server failed to download the compatible helper asset from GitHub. The desktop app will try local download fallback when available.' >&2; ",
-            "return 1; ",
-            "}}; ",
-            "chmod +x \"$helper_tmp\"; ",
-            "mv \"$helper_tmp\" \"$helper_path\"; ",
-            "return 0; ",
-            "}}; ",
-            "load_existing_helper_outbound_proxy; ",
-            "if try_release_asset_install; then ",
-            "verify_helper_status; ",
-            "exit 0; ",
-            "fi; ",
-            "echo 'Remote-side helper install failed before verification.' >&2; ",
-            "exit 1"
-        ),
-        helper_path = helper_path,
-        release_repo = release_repo,
-        release_tag = release_tag,
-        required_capability_checks = required_capability_checks,
-        required_capabilities = required_capabilities,
-    );
-    args.push(command);
+    args.push(format!("env CC_SWITCH_HELPER_PATH={} CC_SWITCH_REMOTE_HELPER_RELEASE_REPO={} CC_SWITCH_INSTALL_MODE={} CC_SWITCH_REQUIRED_CAPABILITIES={} sh -c {} -- {}",
+        shell_quote(&profile.helper_path), shell_quote(&source.release_repo),
+        if upload { "upload" } else { "download" },
+        shell_quote(&REMOTE_HELPER_REQUIRED_CAPABILITIES.join(" ")),
+        shell_quote(include_str!("../../../scripts/install-remote-helper.sh")), shell_quote(&source.release_tag)));
     args
 }
 
-pub fn detect_helper_asset_target(
+pub async fn detect_helper_asset_target(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
-) -> Result<RemoteHelperAssetTarget, AppError> {
+) -> Result<RemoteHelperAssetTarget, RemoteOperationError> {
     let mut args = build_ssh_base_args(profile);
-    args.push("printf '%s %s\\n' \"$(uname -s)\" \"$(uname -m)\"".to_string());
-
-    let stdout = run_ssh_command(profile, args, secret)?;
+    args.push("uname -s; uname -m".to_string());
+    let stdout = run_ssh(
+        profile,
+        args,
+        secret,
+        &[],
+        Instant::now() + Duration::from_secs(30),
+    )
+    .await?;
     let mut parts = stdout.split_whitespace();
     let os = parts.next().unwrap_or_default();
     let arch = parts.next().unwrap_or_default();
-    helper_asset_target_from_uname(os, arch).ok_or_else(|| {
-        AppError::Message(format!(
-            "Remote helper is not available for this server platform: {os}/{arch}."
-        ))
-    })
+    helper_asset_target_from_uname(os, arch)
+        .ok_or_else(|| RemoteOperationError::new("unsupported-platform", format!("{os}/{arch}")))
 }
 
-pub fn upload_helper_bytes_and_verify_json<T: DeserializeOwned>(
+pub async fn upload_helper_bytes_and_verify_json<T: DeserializeOwned>(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
     helper_bytes: &[u8],
-) -> Result<T, AppError> {
-    let mut args = build_ssh_base_args(profile);
-    let helper_path = shell_quote_helper_path(&profile.helper_path);
-    args.push(format!(
-        concat!(
-            "set -e; ",
-            "helper_path={helper_path}; ",
-            "helper_dir=$(dirname \"$helper_path\"); ",
-            "mkdir -p \"$helper_dir\" ~/.local/bin; ",
-            "helper_tmp=$(mktemp); ",
-            "cat > \"$helper_tmp\"; ",
-            "chmod +x \"$helper_tmp\"; ",
-            "mv \"$helper_tmp\" \"$helper_path\"; ",
-            "\"$helper_path\" --json status"
-        ),
-        helper_path = helper_path
-    ));
+) -> Result<T, RemoteOperationError> {
+    let args = build_install_args(profile, &RemoteHelperInstallSource::from_env(), true);
+    let stdout = run_ssh(
+        profile,
+        args,
+        secret,
+        helper_bytes,
+        Instant::now() + Duration::from_secs(300),
+    )
+    .await
+    .map_err(classify_install_uncertainty)?;
+    parse_install_ack(&stdout)
+}
 
-    let stdout = run_ssh_command_with_stdin(profile, args, secret, helper_bytes)?;
-    parse_helper_json(&stdout)
+fn classify_install_uncertainty(mut error: RemoteOperationError) -> RemoteOperationError {
+    // Unknown exits (including failed ack/cleanup after rename) cannot promise
+    // preservation. Only reserved PRE-COMMIT failures have that guarantee.
+    if matches!(
+        error.code.as_str(),
+        "helper-execution" | "helper-protocol" | "ssh-io"
+    ) {
+        error.remote_state_uncertain = true;
+    }
+    error
+}
+
+fn parse_metadata(stdout: &str) -> Result<serde_json::Value, RemoteOperationError> {
+    let envelope: RemoteCommandResponse<crate::cli::commands::StatusPayload> =
+        serde_json::from_str(stdout)
+            .map_err(|e| RemoteOperationError::new("helper-protocol", e))?;
+    let status = envelope.data.filter(|_| envelope.ok).ok_or_else(|| {
+        RemoteOperationError::new("helper-protocol", "Missing successful metadata")
+    })?;
+    serde_json::to_value(status).map_err(|e| RemoteOperationError::new("helper-protocol", e))
+}
+
+fn parse_install_ack<T: DeserializeOwned>(stdout: &str) -> Result<T, RemoteOperationError> {
+    parse_metadata(stdout)
+        .and_then(|value| {
+            serde_json::from_value(value)
+                .map_err(|e| RemoteOperationError::new("helper-protocol", e))
+        })
+        .map_err(|mut error| {
+            error.remote_state_uncertain = true;
+            error.local_process_reaped = true;
+            error
+        })
 }
 
 fn helper_asset_target_from_uname(os: &str, arch: &str) -> Option<RemoteHelperAssetTarget> {
@@ -341,85 +248,117 @@ pub fn run_helper_json<T: DeserializeOwned>(
     parse_helper_json(&stdout)
 }
 
-pub fn install_helper_json<T: DeserializeOwned>(
+pub async fn install_helper_json<T: DeserializeOwned>(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
-) -> Result<T, AppError> {
-    let stdout = run_ssh_command(
+) -> Result<T, RemoteOperationError> {
+    let stdout = run_ssh(
         profile,
-        build_helper_install_args_with_source(profile, &RemoteHelperInstallSource::from_env()),
+        build_helper_install_args(profile),
         secret,
-    )?;
-    parse_helper_json(&stdout)
+        &[],
+        Instant::now() + Duration::from_secs(300),
+    )
+    .await
+    .map_err(classify_install_uncertainty)?;
+    parse_install_ack(&stdout)
 }
 
+// Compatibility for existing blocking one-shot business callers. All execution
+// still uses the same bounded, concurrently drained, kill-and-reap implementation.
 fn run_ssh_command(
     profile: &RemoteHostProfile,
     args: Vec<String>,
     secret: Option<&RemoteConnectionSecret>,
 ) -> Result<String, AppError> {
-    let mut command = ssh_command();
-    command.args(args);
-
-    let _askpass = configure_password_auth(profile, secret, &mut command)?;
-    let output = command
-        .output()
-        .map_err(|e| AppError::Message(format!("Failed to execute ssh: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(AppError::Message(if stderr.is_empty() {
-            format!("Remote ssh command failed with status {}", output.status)
-        } else {
-            normalize_remote_stderr(profile, &stderr)
-        }));
-    }
-
-    String::from_utf8(output.stdout)
-        .map_err(|e| AppError::Message(format!("Remote helper returned invalid UTF-8: {e}")))
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AppError::Message(e.to_string()))?
+        .block_on(run_ssh(
+            profile,
+            args,
+            secret,
+            &[],
+            Instant::now() + Duration::from_secs(900),
+        ))
+        .map_err(|e| {
+            let message = if e.code.starts_with("ssh-")
+                || is_helper_missing_error(profile, &e.message)
+                || e.message.contains("libgdk-3.so.0")
+                || e.message.contains("libgtk-3.so.0")
+                || e.message.contains("libwebkit2gtk")
+                || e.message.contains("libayatana-appindicator")
+            {
+                normalize_remote_stderr(profile, &e.message)
+            } else {
+                e.to_string()
+            };
+            AppError::Message(message)
+        })
 }
 
-fn run_ssh_command_with_stdin(
+async fn run_ssh(
     profile: &RemoteHostProfile,
     args: Vec<String>,
     secret: Option<&RemoteConnectionSecret>,
-    stdin_bytes: &[u8],
-) -> Result<String, AppError> {
-    let mut command = ssh_command();
+    input: &[u8],
+    deadline: Instant,
+) -> Result<String, RemoteOperationError> {
+    let mut command = ssh_tokio_command();
     command.args(args);
-    command.stdin(Stdio::piped());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-
-    let _askpass = configure_password_auth(profile, secret, &mut command)?;
-    let mut child = command
-        .spawn()
-        .map_err(|e| AppError::Message(format!("Failed to execute ssh: {e}")))?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| AppError::Message("Failed to open ssh stdin".to_string()))?;
-    stdin
-        .write_all(stdin_bytes)
-        .map_err(|e| AppError::Message(format!("Failed to write helper to ssh stdin: {e}")))?;
-    drop(stdin);
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| AppError::Message(format!("Failed to wait for ssh: {e}")))?;
-
+    let _askpass = configure_password_auth_for_tokio(profile, secret, &mut command)
+        .map_err(|e| RemoteOperationError::new("ssh-auth-setup", e))?;
+    let output = execute(command, input, deadline).await?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(AppError::Message(if stderr.is_empty() {
-            format!("Remote ssh command failed with status {}", output.status)
-        } else {
-            normalize_remote_stderr(profile, &stderr)
-        }));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let code = classify_process_failure(output.status.code(), &stderr);
+        let mut error = RemoteOperationError::new(code, stderr.trim());
+        error.local_process_reaped = true;
+        error.remote_state_uncertain =
+            output.status.code() == Some(255) && !matches!(code, "ssh-auth" | "ssh-host-key");
+        return Err(error);
     }
+    String::from_utf8(output.stdout).map_err(|e| {
+        let mut error = RemoteOperationError::new("helper-protocol", e);
+        error.local_process_reaped = true;
+        error
+    })
+}
 
-    String::from_utf8(output.stdout)
-        .map_err(|e| AppError::Message(format!("Remote helper returned invalid UTF-8: {e}")))
+fn classify_process_failure(exit: Option<i32>, stderr: &str) -> &str {
+    if exit == Some(255) {
+        return if is_changed_host_key_error(stderr) {
+            "ssh-host-key"
+        } else if is_ssh_auth_error(stderr) {
+            "ssh-auth"
+        } else {
+            "ssh-transport"
+        };
+    }
+    // The final marker and matching reserved exit code belong to the installer,
+    // not arbitrary stderr from curl or a failing candidate helper.
+    let marker = stderr
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("CC_SWITCH_INSTALL_ERROR:"));
+    match (exit, marker) {
+        (Some(69), Some("download-failed")) => "download-failed",
+        (Some(66), Some("unsupported-platform")) => "unsupported-platform",
+        (Some(75), Some("install-locked")) => "install-locked",
+        (Some(74), Some("upload-failed")) => "upload-failed",
+        (
+            Some(65),
+            Some(
+                code @ ("helper-validation"
+                | "helper-protocol"
+                | "helper-capabilities"
+                | "helper-not-executable"),
+            ),
+        ) => code,
+        (Some(73), Some(code @ ("install-permission" | "install-path" | "install-commit"))) => code,
+        _ => "helper-execution",
+    }
 }
 
 pub(crate) fn normalize_remote_stderr(profile: &RemoteHostProfile, stderr: &str) -> String {
@@ -722,29 +661,45 @@ pub fn classify_remote_failure_message(message: &str) -> Option<RemoteConnection
     None
 }
 
-/// 一次轻量 SSH 探针：确认 SSH 层（含认证）可用，并判断远端 Helper 文件是否存在。
-///
-/// SSH 层失败时返回 `Err`，消息与其它远程命令保持一致；成功时返回
-/// `Ok(true)` 表示 Helper 可执行，`Ok(false)` 表示未安装或路径不正确。
-pub fn probe_remote_helper_presence(
-    profile: &RemoteHostProfile,
-    secret: Option<&RemoteConnectionSecret>,
-) -> Result<bool, AppError> {
-    // 用 `sh -c` 包一层：ssh 会用目标账号的登录 shell 执行命令，而 fish/csh
-    // 不认 POSIX 的 `if ...; then ...; fi`。包一层后只依赖目标机上一定存在的
-    // POSIX shell，避免把“shell 语法不兼容”误判成 SSH 层连不上。
-    // 路径仍用 `shell_quote_helper_path`：`~` 保持不带引号，才能被外层登录 shell 展开。
-    let script =
-        "test -x \"$0\" && printf cc-switch-helper-present || printf cc-switch-helper-missing";
+fn build_probe_args(profile: &RemoteHostProfile, mode: &str) -> Vec<String> {
     let mut args = build_ssh_base_args(profile);
     args.push(format!(
-        "sh -c {} {}",
-        shell_quote(script),
-        shell_quote_helper_path(&profile.helper_path)
+        "sh -c {} -- {} {}",
+        shell_quote(include_str!("../../../scripts/probe-remote-helper.sh")),
+        shell_quote(mode),
+        shell_quote(&profile.helper_path)
     ));
+    args
+}
 
-    let stdout = run_ssh_command(profile, args, secret)?;
-    Ok(stdout.contains("cc-switch-helper-present"))
+/// Probe SSH/authentication before invoking the helper. Presence is not executability.
+pub async fn probe_remote_helper_presence(
+    profile: &RemoteHostProfile,
+    secret: Option<&RemoteConnectionSecret>,
+    deadline: Instant,
+) -> Result<&'static str, RemoteOperationError> {
+    let args = build_probe_args(profile, "presence");
+    let stdout = run_ssh(profile, args, secret, &[], deadline).await?;
+    match stdout.trim() {
+        "missing" => Ok("missing"),
+        "not-executable" => Ok("not-executable"),
+        "executable" => Ok("executable"),
+        _ => Err(RemoteOperationError::new(
+            "probe-protocol",
+            "Unexpected SSH probe response",
+        )),
+    }
+}
+
+/// Metadata probes must also isolate OLD helpers whose status initializes a DB.
+pub async fn probe_helper_status(
+    profile: &RemoteHostProfile,
+    secret: Option<&RemoteConnectionSecret>,
+    deadline: Instant,
+) -> Result<serde_json::Value, RemoteOperationError> {
+    let args = build_probe_args(profile, "status");
+    let stdout = run_ssh(profile, args, secret, &[], deadline).await?;
+    parse_metadata(&stdout)
 }
 
 #[cfg(any(unix, windows))]
@@ -779,23 +734,6 @@ fn password_for_profile(
 }
 
 #[cfg(unix)]
-fn configure_password_auth(
-    profile: &RemoteHostProfile,
-    secret: Option<&RemoteConnectionSecret>,
-    command: &mut Command,
-) -> Result<Option<tempfile::TempPath>, AppError> {
-    let Some(password) = password_for_profile(profile, secret)? else {
-        return Ok(None);
-    };
-    let askpass_path = create_askpass_script()?;
-    command.env("SSH_ASKPASS", &askpass_path);
-    command.env("SSH_ASKPASS_REQUIRE", "force");
-    command.env("DISPLAY", "cc-switch");
-    command.env("CC_SWITCH_REMOTE_SSH_PASSWORD", password);
-    Ok(Some(askpass_path))
-}
-
-#[cfg(unix)]
 pub fn configure_password_auth_for_tokio(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
@@ -810,22 +748,6 @@ pub fn configure_password_auth_for_tokio(
     command.env("DISPLAY", "cc-switch");
     command.env("CC_SWITCH_REMOTE_SSH_PASSWORD", password);
     Ok(Some(askpass_path))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn configure_password_auth(
-    profile: &RemoteHostProfile,
-    _secret: Option<&RemoteConnectionSecret>,
-    _command: &mut Command,
-) -> Result<Option<()>, AppError> {
-    if matches!(profile.auth_method, RemoteAuthMethod::Password) {
-        return Err(AppError::localized(
-            "remote.ssh.password_unsupported_platform",
-            "当前平台不支持 SSH 密码认证，请改用密钥文件或 SSH Agent。",
-            "SSH password authentication is not supported on this platform; use a key file or SSH Agent instead.",
-        ));
-    }
-    Ok(None)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -894,22 +816,6 @@ fn resolve_askpass_helper_path() -> Result<std::path::PathBuf, AppError> {
 }
 
 #[cfg(windows)]
-fn configure_password_auth(
-    profile: &RemoteHostProfile,
-    secret: Option<&RemoteConnectionSecret>,
-    command: &mut Command,
-) -> Result<Option<std::path::PathBuf>, AppError> {
-    let Some(password) = password_for_profile(profile, secret)? else {
-        return Ok(None);
-    };
-    let askpass_path = resolve_askpass_helper_path()?;
-    command.env("SSH_ASKPASS", &askpass_path);
-    command.env("SSH_ASKPASS_REQUIRE", "force");
-    command.env("CC_SWITCH_REMOTE_SSH_PASSWORD", password);
-    Ok(Some(askpass_path))
-}
-
-#[cfg(windows)]
 pub fn configure_password_auth_for_tokio(
     profile: &RemoteHostProfile,
     secret: Option<&RemoteConnectionSecret>,
@@ -926,6 +832,9 @@ pub fn configure_password_auth_for_tokio(
 }
 
 fn shell_quote_helper_path(value: &str) -> String {
+    if let Some(relative) = value.strip_prefix("~/") {
+        return format!("~/{}", shell_quote(relative));
+    }
     if is_safe_unquoted_helper_path(value) {
         return value.to_string();
     }
@@ -966,6 +875,52 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn post_commit_errors_and_invalid_acks_are_uncertain_and_never_claim_preservation() {
+        let error = classify_install_uncertainty(RemoteOperationError::new(
+            "helper-execution",
+            "ack write failed",
+        ));
+        assert!(error.remote_state_uncertain);
+        let invalid = r#"{"ok":true,"ok":true,"data":{"version":"test","platform":"linux","arch":"x86_64","capabilities":["session"]}}"#;
+        let error = parse_install_ack::<serde_json::Value>(invalid).unwrap_err();
+        assert!(error.remote_state_uncertain);
+        assert!(error.local_process_reaped);
+        assert!(
+            parse_install_ack::<serde_json::Value>("")
+                .unwrap_err()
+                .remote_state_uncertain
+        );
+        assert!(
+            !classify_install_uncertainty(RemoteOperationError::new(
+                "helper-validation",
+                "precommit"
+            ))
+            .remote_state_uncertain
+        );
+    }
+
+    #[test]
+    fn structured_failures_do_not_confuse_helper_permissions_or_spoofed_markers_with_ssh() {
+        assert_eq!(
+            classify_process_failure(Some(65), "Permission denied"),
+            "helper-execution"
+        );
+        assert_eq!(
+            classify_process_failure(Some(255), "Permission denied (publickey)."),
+            "ssh-auth"
+        );
+        assert_eq!(classify_process_failure(Some(65), "CC_SWITCH_INSTALL_ERROR:download-failed\nCC_SWITCH_INSTALL_ERROR:helper-validation"), "helper-validation");
+        assert_eq!(
+            classify_process_failure(Some(65), "CC_SWITCH_INSTALL_ERROR:download-failed"),
+            "helper-execution"
+        );
+        assert_eq!(
+            classify_process_failure(Some(69), "CC_SWITCH_INSTALL_ERROR:download-failed"),
+            "download-failed"
+        );
     }
 
     #[test]

@@ -5148,6 +5148,25 @@
     }
   },
   "remote": {
+    "operationErrors": {
+      "uncertain": "安装结果未确认：远端可能已替换 Helper。本机不会自动重试或关闭旧会话；请检查远端安装锁/阶段和实际版本后再操作，勿直接删除锁。",
+      "deadline": "SSH 执行超时，已请求终止；本机进程回收与远端操作结果可能仍待确认。请检查远端安装锁/阶段与实际版本后再操作，勿直接删除锁。",
+      "auth": "SSH 认证未通过，请检查账号、凭据与 askpass 组件。",
+      "hostKey": "SSH 主机密钥校验失败；请核实主机指纹，勿绕过校验。",
+      "transport": "SSH 连接未建立，请检查网络、地址与端口。",
+      "protocol": "远端返回了无效协议数据。",
+      "execution": "SSH 已验证，但 Helper 执行失败。",
+      "validation": "新 Helper 验证失败；旧安装未替换。",
+      "permission": "Helper 文件存在但不可执行，请检查权限。",
+      "capabilities": "Helper 缺少必需能力，请选择兼容版本。",
+      "missing": "SSH 已验证，Helper 未安装或路径不正确。",
+      "download": "Helper 下载失败，请检查远端或本机出站网络/代理。",
+      "platform": "远端操作系统或架构没有兼容的 Helper。",
+      "locked": "安装锁已存在，可能仍有安装运行；请核实远端阶段，勿自动删除锁。",
+      "installPermission": "目标路径不可写、为链接或不是普通文件；旧安装未替换。",
+      "commit": "原子替换失败；旧安装保留。",
+      "upload": "上传失败；旧安装保留。"
+    },
     "title": "远程服务器",
     "subtitle": "只保存连接信息；管理操作在现有页面按目标执行。",
     "targetSelector": "管理目标",
@@ -5175,9 +5194,9 @@
       "description": "{{name}} 使用密码登录。密码会保存到本机数据库，用于后续连接。"
     },
     "sessionStatus": {
-      "idle": "未连接",
+      "idle": "管理会话未建立",
       "connecting": "连接中",
-      "ready": "已连接",
+      "ready": "管理会话已连接",
       "busy": "执行中",
       "reconnecting": "重连中",
       "failed": "连接失败",
@@ -5271,6 +5290,9 @@
       "unknown": "未知错误"
     },
     "health": {
+      "metadataReady": "SSH 已验证 · Helper 元信息可读取",
+      "sshReadyHelperMissing": "SSH 已验证 · 待安装 Helper",
+      "metadataOnly": "测试仅验证 SSH 与 Helper 元信息，不建立管理会话；管理操作按需建立会话。",
       "title": "健康检查",
       "ok": "可连接",
       "failed": "失败",

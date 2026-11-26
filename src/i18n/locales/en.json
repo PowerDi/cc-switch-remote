@@ -5149,6 +5149,25 @@
     }
   },
   "remote": {
+    "operationErrors": {
+      "uncertain": "Installation outcome is unconfirmed: the remote helper may already have been replaced. No automatic retry or old-session shutdown occurs. Inspect the remote lock/phase and actual version before proceeding; do not blindly delete the lock.",
+      "deadline": "SSH execution timed out and termination was requested. Local process reaping and remote completion may still need confirmation. Inspect the remote install lock/phase and actual version before proceeding; do not blindly delete the lock.",
+      "auth": "SSH authentication failed. Check the account, credentials and askpass component.",
+      "hostKey": "SSH host-key verification failed. Verify the fingerprint; do not bypass the check.",
+      "transport": "SSH could not connect. Check the network, address and port.",
+      "protocol": "The remote response has an invalid protocol.",
+      "execution": "SSH was verified, but the helper failed to execute.",
+      "validation": "New helper validation failed; the old installation was not replaced.",
+      "permission": "The helper exists but is not executable. Check permissions.",
+      "capabilities": "The helper lacks required capabilities. Use a compatible build.",
+      "missing": "SSH was verified; the helper is missing or its path is incorrect.",
+      "download": "Helper download failed. Check remote or desktop outbound networking/proxy.",
+      "platform": "No helper is available for the remote OS/architecture.",
+      "locked": "An installation lock exists; work may still be running. Inspect the remote phase; do not automatically remove the lock.",
+      "installPermission": "The destination is unwritable, a symlink or not a regular file; the old installation was not replaced.",
+      "commit": "Atomic replacement failed; the old installation is preserved.",
+      "upload": "Upload failed; the old installation is preserved."
+    },
     "title": "Remote Servers",
     "subtitle": "Only connection profiles are stored locally; management runs on the selected target through the existing pages.",
     "targetSelector": "Management target",
@@ -5176,9 +5195,9 @@
       "description": "{{name}} uses password authentication. The password will be stored in the local database for future connections."
     },
     "sessionStatus": {
-      "idle": "Not connected",
+      "idle": "Management session not established",
       "connecting": "Connecting",
-      "ready": "Connected",
+      "ready": "Management session ready",
       "busy": "Running",
       "reconnecting": "Reconnecting",
       "failed": "Failed",
@@ -5272,6 +5291,9 @@
       "unknown": "Unknown error"
     },
     "health": {
+      "metadataReady": "SSH verified · Helper metadata readable",
+      "sshReadyHelperMissing": "SSH verified · Helper missing",
+      "metadataOnly": "Tests verify SSH and helper metadata only, not a management session. Management operations open sessions on demand.",
       "title": "Health Check",
       "ok": "Reachable",
       "failed": "Failed",

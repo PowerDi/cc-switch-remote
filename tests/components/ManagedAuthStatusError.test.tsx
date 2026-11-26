@@ -6,6 +6,7 @@ import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSect
 const authMocks = vi.hoisted(() => ({
   refetchCodex: vi.fn(),
   refetchCopilot: vi.fn(),
+  remoteHealthFailed: false,
 }));
 
 const failedStatus = (refetchStatus: () => void) => ({
@@ -17,7 +18,8 @@ const failedStatus = (refetchStatus: () => void) => ({
   hasAnyAccount: false,
   pollingState: "idle" as const,
   deviceCode: null,
-  error: null,
+  error: authMocks.remoteHealthFailed ? "SSH authentication fixture" : null,
+  isAuthSupported: !authMocks.remoteHealthFailed,
   isPolling: false,
   isAddingAccount: false,
   isRemovingAccount: false,
@@ -45,9 +47,22 @@ vi.mock("@/components/providers/forms/hooks/useManagedAccountUsers", () => ({
 
 describe("managed auth status failures", () => {
   beforeEach(() => {
+    authMocks.remoteHealthFailed = false;
     authMocks.refetchCodex.mockResolvedValue(undefined);
     authMocks.refetchCopilot.mockResolvedValue(undefined);
   });
+
+  for (const Component of [CodexOAuthSection, CopilotAuthSection]) {
+    it("keeps failed remote health distinct from unsupported auth in management UI", () => {
+      authMocks.remoteHealthFailed = true;
+      render(<Component mode="manage" />);
+      expect(
+        screen.getByText("SSH authentication fixture"),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/不支持认证管理/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "重试" })).toBeEnabled();
+    });
+  }
 
   it("shows a retryable error instead of an empty Codex account selector", () => {
     const onAccountSelect = vi.fn();

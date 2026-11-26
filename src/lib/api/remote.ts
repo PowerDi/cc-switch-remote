@@ -137,6 +137,7 @@ export interface RemoteHealth {
   platform?: "linux" | "macos" | "unknown";
   capabilities: string[];
   failureStage?: RemoteConnectionStage | null;
+  failureCode?: string;
   lastError?: string;
 }
 
@@ -2741,27 +2742,12 @@ export const remoteApi = {
   },
 };
 
-/**
- * 把一次失败的远程检查转成有层次的结果。
- *
- * 「SSH 没通」与「Helper 没装」必须是两个不同结论：直接调用更早的
- * `checkHealth` 时两者都只是一个裸错误，界面无法区分。连接测试本身也失败时
- * 归到 SSH 传输层，并把原始报错原文交给界面展示。
- */
-export async function diagnoseRemoteConnection(
-  profile: RemoteHostProfile,
-  secret?: RemoteConnectionSecret,
-  fallbackError?: unknown,
-): Promise<RemoteHealth> {
-  try {
-    return await remoteApi.testConnection(profile, secret);
-  } catch (error) {
-    // 诊断命令本身失败时不能编造失败层次，保留原始报错让用户判断。
-    return {
-      reachable: false,
-      helperInstalled: false,
-      capabilities: [],
-      lastError: extractErrorMessage(fallbackError ?? error),
-    };
-  }
+/** A failed request is never implicitly retried. Unknown layers stay unknown. */
+export function remoteConnectionFailure(error: unknown): RemoteHealth {
+  return {
+    reachable: false,
+    helperInstalled: false,
+    capabilities: [],
+    lastError: extractErrorMessage(error),
+  };
 }

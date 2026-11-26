@@ -1,3 +1,4 @@
+pub mod execution;
 pub mod session;
 pub mod ssh;
 pub mod store;
@@ -10,8 +11,9 @@ pub use session::{
 pub use ssh::{
     build_helper_install_args, build_helper_install_args_with_source, build_ssh_args,
     build_ssh_serve_args, classify_remote_failure_message, configure_password_auth_for_tokio,
-    detect_helper_asset_target, install_helper_json, probe_remote_helper_presence, run_helper_json,
-    upload_helper_bytes_and_verify_json, RemoteHelperAssetTarget, RemoteHelperInstallSource,
+    detect_helper_asset_target, install_helper_json, probe_helper_status,
+    probe_remote_helper_presence, run_helper_json, upload_helper_bytes_and_verify_json,
+    RemoteHelperAssetTarget, RemoteHelperInstallSource,
 };
 pub use store::{
     delete_profile, delete_profile_secret, load_profile_secret, load_profiles,

@@ -87,6 +87,8 @@ pub struct RemoteHealth {
     pub capabilities: Vec<RemoteCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_stage: Option<RemoteConnectionStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
     pub last_error: Option<String>,
 }
 

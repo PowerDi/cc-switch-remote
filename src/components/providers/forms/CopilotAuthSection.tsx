@@ -262,11 +262,24 @@ export const CopilotAuthSection: React.FC<CopilotAuthSectionProps> = ({
     return (
       <div className={`space-y-2 ${className || ""}`} role="status">
         <p className="text-sm text-fg-2">
-          {t("remote.settings.auth.unsupported", {
-            defaultValue:
-              "当前远程 Helper 不支持认证管理。请更新到包含 auth capability 的新版 Helper。",
-          })}
+          {isStatusError
+            ? error ||
+              t("remote.health.failedConnection", { defaultValue: "连接失败" })
+            : t("remote.settings.auth.unsupported", {
+                defaultValue:
+                  "当前远程 Helper 不支持认证管理。请更新到包含 auth capability 的新版 Helper。",
+              })}
         </p>
+        {isStatusError && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void refetchStatus()}
+          >
+            {t("common.retry", { defaultValue: "重试" })}
+          </Button>
+        )}
       </div>
     );
   }

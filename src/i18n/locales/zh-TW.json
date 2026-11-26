@@ -5149,6 +5149,25 @@
     }
   },
   "remote": {
+    "operationErrors": {
+      "uncertain": "安裝結果未確認：遠端可能已替換 Helper。本機不會自動重試或關閉舊工作階段；請檢查遠端安裝鎖／階段與實際版本後再操作，勿直接刪除鎖。",
+      "deadline": "SSH 執行逾時，已請求終止；本機程序回收與遠端操作結果可能仍待確認。請檢查遠端安裝鎖／階段與實際版本後再操作，勿直接刪除鎖。",
+      "auth": "SSH 驗證未通過，請檢查帳號、憑證與 askpass 元件。",
+      "hostKey": "SSH 主機金鑰驗證失敗；請核實指紋，勿略過驗證。",
+      "transport": "SSH 連線未建立，請檢查網路、位址與連接埠。",
+      "protocol": "遠端回傳無效協定資料。",
+      "execution": "SSH 已驗證，但 Helper 執行失敗。",
+      "validation": "新 Helper 驗證失敗；舊安裝未被取代。",
+      "permission": "Helper 檔案存在但不可執行，請檢查權限。",
+      "capabilities": "Helper 缺少必要能力，請使用相容版本。",
+      "missing": "SSH 已驗證，Helper 未安裝或路徑不正確。",
+      "download": "Helper 下載失敗，請檢查遠端或本機對外網路／代理。",
+      "platform": "遠端作業系統或架構沒有相容的 Helper。",
+      "locked": "安裝鎖已存在，可能仍在安裝；請核實遠端階段，勿自動刪除鎖。",
+      "installPermission": "目標路徑不可寫、為連結或非一般檔案；舊安裝未被取代。",
+      "commit": "原子替換失敗；舊安裝保留。",
+      "upload": "上傳失敗；舊安裝保留。"
+    },
     "title": "遠端伺服器",
     "subtitle": "只儲存連線資訊；管理操作會在既有頁面依目標執行。",
     "targetSelector": "管理目標",
@@ -5176,9 +5195,9 @@
       "description": "{{name}} 使用密碼登入。密碼會儲存在本機資料庫，用於後續連線。"
     },
     "sessionStatus": {
-      "idle": "未連線",
+      "idle": "管理工作階段未建立",
       "connecting": "連線中",
-      "ready": "已連線",
+      "ready": "管理工作階段已連線",
       "busy": "執行中",
       "reconnecting": "重新連線中",
       "failed": "連線失敗",
@@ -5272,6 +5291,9 @@
       "unknown": "未知錯誤"
     },
     "health": {
+      "metadataReady": "SSH 已驗證 · Helper 中繼資料可讀取",
+      "sshReadyHelperMissing": "SSH 已驗證 · 待安裝 Helper",
+      "metadataOnly": "測試僅驗證 SSH 與 Helper 中繼資料，不建立管理工作階段；管理操作按需建立工作階段。",
       "title": "健康檢查",
       "ok": "可連線",
       "failed": "失敗",

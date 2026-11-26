@@ -43,12 +43,14 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useRemoteSettings } from "@/hooks/useRemoteSettings";
 import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
 import { remoteApi } from "@/lib/api";
-import { diagnoseRemoteConnection } from "@/lib/api/remote";
+import { remoteConnectionFailure } from "@/lib/api/remote";
 import { getManagementTargetKey } from "@/lib/managementTarget";
 import type { AppId } from "@/lib/api/types";
 import type { ManagementTarget, RemoteHealth } from "@/lib/api";
 import {
   describeRemoteConnection,
+  remoteConnectionBadge,
+  formatRemoteOperationError,
   describeRemoteFailureHint,
   formatRemoteCapabilitySummary,
   formatRemoteHelperBuild,
@@ -58,7 +60,6 @@ import {
   formatRemoteHelperVersion,
   formatRemotePlatform,
 } from "@/lib/remoteHealth";
-import { extractErrorMessage } from "@/utils/errorUtils";
 import type { Settings } from "@/types";
 import { shouldConfirmRemoteFailoverToggle } from "@/components/settings/remoteRoutingGuards";
 
@@ -191,15 +192,7 @@ export function RemoteSettingsPage({
     } catch (error) {
       if (!isCurrent(generation)) return null;
       console.error("[RemoteSettingsPage] Failed to check health", error);
-      // 检查失败时再诊断一次，让界面能区分「SSH 没通」与「Helper 没装」，
-      // 而不是把两种情况都显示成一个不可用徽标。
-      const diagnosis = await diagnoseRemoteConnection(
-        target.profile,
-        target.secret,
-        error,
-      );
-      if (!isCurrent(generation)) return null;
-      setHealth(diagnosis);
+      setHealth(remoteConnectionFailure(error));
       return null;
     } finally {
       if (isCurrent(generation)) {
@@ -271,18 +264,11 @@ export function RemoteSettingsPage({
     } catch (error) {
       if (!isCurrent(generation)) return;
       console.error("[RemoteSettingsPage] Failed to install helper", error);
-      // 安装失败也可能只是 SSH 层不可用；同样给出分层结论。
-      const diagnosis = await diagnoseRemoteConnection(
-        target.profile,
-        target.secret,
-        error,
-      );
-      if (!isCurrent(generation)) return;
-      setHealth(diagnosis);
+      // Preserve the previous health and session; do not implicitly reconnect.
       toast.error(
         t("remote.health.installFailed", {
           defaultValue: "安装远程 Helper 失败: {{error}}",
-          error: extractErrorMessage(error),
+          error: formatRemoteOperationError(error, t),
         }),
       );
     } finally {
@@ -1021,7 +1007,7 @@ function RemoteHealthSection({
   onInstallHelper,
 }: RemoteHealthSectionProps) {
   const { t } = useTranslation();
-  const helperReady = Boolean(health?.reachable && health.helperInstalled);
+  const connectionBadge = remoteConnectionBadge(health, t);
   const connection = describeRemoteConnection(health);
   const connectionHint = health
     ? describeRemoteFailureHint(connection, t)
@@ -1053,14 +1039,8 @@ function RemoteHealthSection({
               {profileName}
             </p>
           </div>
-          <Badge variant={helperReady ? "default" : "destructive"}>
-            {helperReady
-              ? t("remote.status.connected", { defaultValue: "已连接" })
-              : connection.ssh === "failed"
-                ? t("remote.health.failedConnection", {
-                    defaultValue: "连接失败",
-                  })
-                : t("remote.status.unavailable", { defaultValue: "不可用" })}
+          <Badge variant={connectionBadge.variant}>
+            {connectionBadge.label}
           </Badge>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -1094,6 +1074,9 @@ function RemoteHealthSection({
           </Button>
         </div>
       </div>
+      <p className="text-xs text-muted-foreground">
+        {t("remote.health.metadataOnly")}
+      </p>
       <div className="overflow-hidden rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 shadow-sm">
         <div className="grid gap-px bg-border/50 sm:grid-cols-2 lg:grid-cols-4">
           <InfoCell
@@ -1160,9 +1143,12 @@ function RemoteHealthSection({
             {formatRemoteHelperUpdateError(health.helperUpdateError, t)}
           </div>
         ) : null}
-        {health?.lastError ? (
+        {health?.lastError || health?.failureCode ? (
           <div className="border-t border-border/50 px-4 py-3 text-sm text-destructive">
-            {health.lastError}
+            {formatRemoteOperationError(
+              { code: health.failureCode, message: health.lastError },
+              t,
+            )}
           </div>
         ) : null}
         {connectionHint ? (

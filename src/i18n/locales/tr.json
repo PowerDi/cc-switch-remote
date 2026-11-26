@@ -1,4 +1,35 @@
 {
+  "remote": {
+    "operationErrors": {
+      "uncertain": "Kurulum sonucu doğrulanmadı; uzak Helper zaten değiştirilmiş olabilir. Otomatik yeniden deneme veya eski oturumu kapatma yapılmaz. Devam etmeden önce uzak kilidi/aşamayı ve gerçek sürümü kontrol edin; kilidi körlemesine silmeyin.",
+      "deadline": "SSH yürütmesi zaman aşımına uğradı ve sonlandırma istendi. Yerel işlemin toplanması ve uzak işlemin tamamlanması hâlâ doğrulama gerektirebilir. Devam etmeden önce uzak kilidi/aşamayı ve gerçek sürümü kontrol edin; kilidi körlemesine silmeyin.",
+      "auth": "SSH kimlik doğrulaması başarısız. Hesabı, kimlik bilgilerini ve askpass bileşenini kontrol edin.",
+      "hostKey": "SSH ana bilgisayar anahtarı doğrulanamadı. Parmak izini kontrol edin; doğrulamayı atlamayın.",
+      "transport": "SSH bağlantısı kurulamadı. Ağı, adresi ve portu kontrol edin.",
+      "protocol": "Uzak yanıtın protokolü geçersiz.",
+      "execution": "SSH doğrulandı ancak Helper çalıştırılamadı.",
+      "validation": "Yeni Helper doğrulanamadı; eski kurulum değiştirilmedi.",
+      "permission": "Helper mevcut ancak çalıştırılabilir değil. İzinleri kontrol edin.",
+      "capabilities": "Helper gerekli yeteneklerden yoksun. Uyumlu bir sürüm kullanın.",
+      "missing": "SSH doğrulandı; Helper eksik veya yolu yanlış.",
+      "download": "Helper indirilemedi. Uzak veya yerel giden ağı/proxy ayarını kontrol edin.",
+      "platform": "Uzak işletim sistemi/mimari için uyumlu Helper yok.",
+      "locked": "Kurulum kilidi mevcut; işlem devam ediyor olabilir. Uzak aşamayı kontrol edin; kilidi otomatik silmeyin.",
+      "installPermission": "Hedef yazılamıyor, sembolik bağlantı veya normal dosya değil; eski kurulum değiştirilmedi.",
+      "commit": "Atomik değiştirme başarısız; eski kurulum korundu.",
+      "upload": "Yükleme başarısız; eski kurulum korundu."
+    },
+    "health": {
+      "metadataReady": "SSH doğrulandı · Helper meta verileri okunabilir",
+      "sshReadyHelperMissing": "SSH doğrulandı · Helper eksik",
+      "metadataOnly": "Testler yalnızca SSH ve Helper meta verilerini doğrular. Yönetim oturumları gerektiğinde açılır.",
+      "connect": "Bağlantıyı test et"
+    },
+    "sessionStatus": {
+      "idle": "Yönetim oturumu kurulmadı",
+      "ready": "Yönetim oturumu hazır"
+    }
+  },
   "app": {
     "title": "CC Switch Remote",
     "description": "Claude Code, Codex ve Gemini CLI için Hepsi Bir Arada Asistan"

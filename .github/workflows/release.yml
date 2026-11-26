@@ -621,7 +621,7 @@ jobs:
               Copy-Item $askpass.FullName (Join-Path $portableDir 'cc-switch-remote-askpass.exe')
               Write-Host "Portable askpass sidecar copied: $($askpass.Name)"
             } else {
-              Write-Warning 'SSH askpass sidecar not found; the portable build will not support SSH password auth'
+              throw 'Required cc-switch-remote-askpass.exe sidecar is missing; refusing to publish a portable package without SSH password authentication'
             }
             $portableIniPath = Join-Path $portableDir 'portable.ini'
             $portableContent = @(

@@ -55,6 +55,30 @@ beforeEach(() => {
 });
 
 describe("remote preview profile store", () => {
+  it("routes tests, health and installs only through the selected remote adapter", async () => {
+    const selected = profile();
+    const secret = { password: "test-only-secret" };
+    invokeMock.mockResolvedValue({
+      reachable: false,
+      sshReachable: true,
+      helperInstalled: false,
+      failureStage: "helper-missing",
+      capabilities: [],
+    });
+    await remoteApi.testConnection(selected, secret);
+    await remoteApi.checkHealth(selected, secret, false);
+    await remoteApi.installHelper(selected, secret);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "remote_test_connection",
+      "remote_check_health",
+      "remote_install_helper",
+    ]);
+    for (const [, payload] of invokeMock.mock.calls) {
+      expect(payload.profile).toEqual(selected);
+      expect(payload.secret).toEqual(secret);
+    }
+    expect(invokeMock.mock.calls[1][1].includeLatest).toBe(false);
+  });
   it("saves updates and deletes remote profiles without requiring Tauri invoke", () => {
     const storage = new MemoryStorage();
     const saved = savePreviewRemoteProfile(profile(), storage);

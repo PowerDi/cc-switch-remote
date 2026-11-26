@@ -16,6 +16,7 @@ import type {
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
 } from "@/lib/api";
+import { formatRemoteOperationError } from "@/lib/remoteHealth";
 import { useTargetQueryIdentityReset } from "@/hooks/useTargetQueryIdentityReset";
 
 type PollingState = "idle" | "polling" | "success" | "error";
@@ -83,9 +84,24 @@ export function useManagedAuth(
     retry: false,
     staleTime: 30_000,
   });
+  const remoteUnavailable =
+    target.type === "remote" &&
+    (remoteHealthQuery.isError ||
+      remoteHealthQuery.data?.reachable === false ||
+      remoteHealthQuery.data?.helperInstalled === false);
+  const remoteHealthError = remoteUnavailable
+    ? formatRemoteOperationError(
+        remoteHealthQuery.error ?? {
+          code: remoteHealthQuery.data?.failureCode,
+          message: remoteHealthQuery.data?.lastError,
+        },
+        t,
+      )
+    : null;
   const isAuthSupported =
     target.type === "local" ||
-    (["github_copilot", "codex_oauth", "xai_oauth"].includes(authProvider) &&
+    (!remoteUnavailable &&
+      ["github_copilot", "codex_oauth", "xai_oauth"].includes(authProvider) &&
       remoteHealthQuery.data?.capabilities.includes("auth") === true);
   const canTargetedReauth =
     isAuthSupported &&
@@ -115,7 +131,12 @@ export function useManagedAuth(
   const refetchManagedAuthStatus = useCallback(async () => {
     if (target.type === "remote") {
       const health = await remoteHealthQuery.refetch();
-      if (health.data?.capabilities.includes("auth") !== true) return health;
+      if (
+        health.data?.reachable === false ||
+        health.data?.helperInstalled === false ||
+        health.data?.capabilities.includes("auth") !== true
+      )
+        return health;
     }
     return refetchStatus();
   }, [refetchStatus, remoteHealthQuery, target.type]);
@@ -550,7 +571,7 @@ export function useManagedAuth(
       isAuthStatusLoading ||
       (target.type === "remote" && remoteHealthQuery.isLoading),
     isStatusSuccess: isAuthSupported && isAuthStatusSuccess,
-    isStatusError: remoteHealthQuery.isError || isAuthStatusError,
+    isStatusError: remoteUnavailable || isAuthStatusError,
     accounts,
     hasAnyAccount: accounts.length > 0,
     isAuthenticated: authStatus?.authenticated ?? false,
@@ -558,7 +579,7 @@ export function useManagedAuth(
     migrationError: authStatus?.migration_error ?? null,
     pollingState,
     deviceCode,
-    error,
+    error: error ?? remoteHealthError,
     isPolling: pollingState === "polling",
     isAddingAccount: startLoginMutation.isPending || pollingState === "polling",
     isLoggingOut: logoutMutation.isPending,

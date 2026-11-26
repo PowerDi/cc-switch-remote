@@ -89,8 +89,8 @@ pub fn init_global_outbound_proxy_from_db() -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StatusPayload {
     pub version: String,
     pub build: Option<String>,

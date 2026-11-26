@@ -1399,12 +1399,70 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn status_metadata_skips_all_initialization_and_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
+        for args in [
+            vec!["status".into()],
+            vec!["--json".into(), "status".into()],
+        ] {
+            let result = run_entry_with_hooks(
+                &args,
+                || panic!("metadata must not retry migrations"),
+                || panic!("metadata must not serve"),
+            );
+            match result {
+                CliRunResult::Json(value) => {
+                    assert_eq!(value["ok"], true);
+                    assert!(value["data"]["version"].is_string());
+                }
+                _ => panic!("expected metadata"),
+            }
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn status_metadata_does_not_touch_newer_schema_database_or_store_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
+        let config = dir.path().join(if cfg!(debug_assertions) {
+            ".cc-switch-remote-dev"
+        } else {
+            ".cc-switch-remote"
+        });
+        std::fs::create_dir_all(&config).unwrap();
+        let db_path = config.join("cc-switch.db");
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .pragma_update(None, "user_version", 9999)
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('unchanged');",
+            )
+            .unwrap();
+        drop(connection);
+        let original = std::fs::read(&db_path).unwrap();
+        let override_path = config.join("app_paths.json");
+        let store = r#"{"app_config_dir_override":"do-not-follow-this-test-override"}"#;
+        std::fs::write(&override_path, store).unwrap();
+        let result = run_entry(&["--json".into(), "status".into()]);
+        assert!(matches!(result, CliRunResult::Json(ref value) if value["ok"] == true));
+        assert_eq!(std::fs::read(&db_path).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&override_path).unwrap(), store);
+        assert_eq!(std::fs::read_dir(&config).unwrap().count(), 2);
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn one_shot_and_serve_run_the_shared_pending_migration_retry_at_startup() {
         let dir = tempfile::tempdir().expect("temp test home");
         let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
         let one_shot_attempts = std::sync::atomic::AtomicUsize::new(0);
         let one_shot = run_entry_with_hooks(
-            &["status".to_string()],
+            &["unsupported-test-command".to_string()],
             || {
                 one_shot_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
@@ -1449,6 +1507,12 @@ where
     M: FnOnce() -> Result<(), crate::error::AppError>,
     S: FnOnce() -> std::io::Result<()>,
 {
+    // Metadata must be available without config copies, pending migrations, DB
+    // initialization or proxy setup (including when the installed DB is newer).
+    let args = normalize_args(args);
+    if args == ["status"] {
+        return CliRunResult::Json(run_command(&args));
+    }
     if let Err(error) = crate::config::ensure_remote_app_config_dir_initialized() {
         return CliRunResult::Json(
             serde_json::to_value(types::err::<()>(
@@ -1468,7 +1532,6 @@ where
         );
     }
 
-    let args = normalize_args(args);
     if args == ["serve"] {
         return match serve_runner() {
             Ok(()) => CliRunResult::Served,

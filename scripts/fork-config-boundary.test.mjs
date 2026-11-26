@@ -150,18 +150,16 @@ test("helper downloads come from this fork's release chain, not the inherited re
 });
 
 test("remote ssh processes never open a Windows console window", () => {
-  // GUI 进程 spawn 控制台程序会新建控制台窗口：远端模块里只允许两个构造器直接
-  // new ssh，并且两者都必须设置 CREATE_NO_WINDOW（否则每发一条命令都闪一个黑窗）。
+  // One shared tokio constructor serves one-shot and persistent processes;
+  // both must retain Windows CREATE_NO_WINDOW and never bypass this factory.
   const ssh = read("src-tauri/src/remote/ssh.rs");
   const session = read("src-tauri/src/remote/session.rs");
-  assert.equal((ssh.match(/Command::new\("ssh"\)/g) || []).length, 2);
+  assert.equal((ssh.match(/Command::new\("ssh"\)/g) || []).length, 1);
   assert.equal((session.match(/Command::new\("ssh"\)/g) || []).length, 0);
-  assert.equal(
-    (ssh.match(/creation_flags\(CREATE_NO_WINDOW\)/g) || []).length,
-    2,
-  );
+  assert.equal((ssh.match(/creation_flags\(CREATE_NO_WINDOW\)/g) || []).length, 1);
   assert.match(session, /ssh_tokio_command\(\)/);
-  assert.match(ssh, /pub\(crate\) fn ssh_command\(\) -> Command/);
+  assert.match(ssh, /let mut command = ssh_tokio_command\(\)/);
+  assert.match(ssh, /const CREATE_NO_WINDOW: u32 = 0x08000000/);
   assert.match(
     ssh,
     /pub\(crate\) fn ssh_tokio_command\(\) -> tokio::process::Command/,

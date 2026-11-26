@@ -261,50 +261,20 @@ fn ssh_command_has_no_trailing_space_when_helper_args_are_empty() {
 }
 
 #[test]
-fn helper_install_args_install_cli_and_link_configured_helper_path() {
+fn helper_install_args_use_shared_transaction_without_database_proxy_reads() {
     let args = build_helper_install_args(&profile());
-    let remote_command = args.last().expect("remote command");
-
-    assert!(args.contains(&"alice@example.com".to_string()));
-    assert!(remote_command.contains(
-        "api.github.com/repos/PowerDi/cc-switch-remote/releases/tags/remote-helper-latest"
-    ));
-    assert!(remote_command.contains("fetch_url_to_stdout()"));
-    // 下载现在带连接/整体/低速超时（旧实现没有任何超时，远端网络不通时界面会一直转圈）
-    assert!(remote_command.contains(
-        "curl -fsSL --connect-timeout 15 --max-time 900 --speed-limit 4096 --speed-time 30 \"$1\" -o \"$2\""
-    ));
-    assert!(remote_command.contains("wget -q -T 20 -t 2 -O - \"$1\""));
-    assert!(remote_command.contains("fetch_url_to_file()"));
-    assert!(remote_command.contains("wget -q -T 20 -t 2 -O \"$2\" \"$1\""));
-    assert!(remote_command.contains("load_existing_helper_outbound_proxy()"));
-    assert!(remote_command.contains("--json routing-config global-outbound"));
-    assert!(remote_command.contains("export http_proxy=\"$outbound_proxy\""));
-    assert!(remote_command.contains("export https_proxy=\"$outbound_proxy\""));
-    assert!(remote_command.contains("export all_proxy=\"$outbound_proxy\""));
-    assert!(remote_command.contains("verify_helper_status()"));
-    assert!(remote_command.contains("Remote server cannot download helper"));
-    assert!(remote_command.contains("Remote server failed to query GitHub helper release"));
-    assert!(remote_command.contains("Remote server failed to download the compatible helper asset"));
-    assert!(remote_command.contains("Remote-side helper install failed before verification"));
-    for capability in REMOTE_HELPER_REQUIRED_CAPABILITIES {
-        assert!(remote_command.contains(&format!("grep -q '\"{capability}\"'")));
-    }
-    for optional_capability in ["openclaw", "hermes-memory", "settings", "plugin"] {
-        if !REMOTE_HELPER_REQUIRED_CAPABILITIES.contains(&optional_capability) {
-            assert!(!remote_command.contains(&format!("grep -q '\"{optional_capability}\"'")));
-        }
-    }
-    assert!(remote_command.contains("cc-switch-remote helper is missing required capabilities"));
-    assert!(remote_command.contains(&REMOTE_HELPER_REQUIRED_CAPABILITIES.join(", ")));
-    assert!(remote_command.contains("cc-switch-remote-helper"));
-    assert!(remote_command.contains("cc-switch-cli"));
-    assert!(!remote_command.contains("asset_arch=universal"));
-    assert!(remote_command.contains("fetch_url_to_file \"$download_url\" \"$helper_tmp\""));
-    assert!(remote_command.contains("verify_helper_status"));
-    assert!(!remote_command.contains("cargo install"));
-    assert!(!remote_command.contains("rustup"));
-    assert!(!remote_command.contains("tar -xzf"));
+    let command = args.last().unwrap();
+    assert!(command.contains("PowerDi/cc-switch-remote"));
+    assert!(command.contains("remote-helper-latest"));
+    assert!(command.contains("CC_SWITCH_INSTALL_MODE=download"));
+    assert!(command.contains("mktemp -d"));
+    assert!(command.contains("install-lock"));
+    assert!(command.contains("--max-time 45"));
+    assert!(command.contains("env -i"));
+    assert!(command.contains("CC_SWITCH_TEST_HOME"));
+    assert!(!command.contains("routing-config global-outbound"));
+    assert!(command.contains(&REMOTE_HELPER_REQUIRED_CAPABILITIES.join(" ")));
+    assert!(command.find("--json status").unwrap() < command.find("mv -f").unwrap());
 }
 
 #[test]
@@ -422,8 +392,8 @@ fn helper_install_downloads_from_github_release_without_remote_compile() {
     let args = build_helper_install_args_with_source(&profile(), &source);
     let remote_command = args.last().expect("remote command");
 
-    assert!(remote_command.contains("if try_release_asset_install; then"));
-    assert!(remote_command.contains("verify_helper_status"));
+    assert!(remote_command.contains("github.com/$repo/releases/download/$tag"));
+    assert!(remote_command.contains("helper-validation"));
     assert!(!remote_command.contains("cargo install"));
     assert!(!remote_command.contains("Local source remote helper install failed"));
     assert!(!remote_command.contains("Git remote helper install failed"));
@@ -439,7 +409,7 @@ fn helper_install_args_quote_configured_helper_path() {
     assert!(args
         .last()
         .expect("remote command")
-        .contains("helper_path='/tmp/cc switch'\\''; rm -rf /'"));
+        .contains("CC_SWITCH_HELPER_PATH='/tmp/cc switch'\\''; rm -rf /'"));
 }
 
 #[test]
@@ -452,8 +422,8 @@ fn helper_install_args_accept_custom_release_source() {
     let args = build_helper_install_args_with_source(&profile(), &source);
     let remote_command = args.last().expect("remote command");
 
-    assert!(remote_command
-        .contains("api.github.com/repos/acme/cc-switch/releases/tags/remote-helper-canary"));
+    assert!(remote_command.contains("CC_SWITCH_REMOTE_HELPER_RELEASE_REPO=acme/cc-switch"));
+    assert!(remote_command.contains("remote-helper-canary"));
     assert!(!remote_command.contains("cargo install"));
 }
 
@@ -467,7 +437,7 @@ fn install_helper_runs_github_release_download_command_without_local_archive() {
         &ssh_path,
         r#"#!/bin/sh
 set -eu
-printf '%s\n' '{"ok":true,"data":{"version":"test","platform":"linux","capabilities":["providers","universal-providers","routing-config","openclaw","mcp","prompts","skills","sessions","hermes-memory","import-export","cloud-sync","tools","stream-check","usage","auth","settings","settings-app-config-dir","plugin","session"]},"error":null}'
+printf '%s\n' '{"ok":true,"data":{"version":"test","platform":"linux","arch":"x86_64","capabilities":["providers","universal-providers","routing-config","openclaw","mcp","prompts","skills","sessions","hermes-memory","import-export","cloud-sync","tools","stream-check","usage","auth","settings","settings-app-config-dir","plugin","session"]},"error":null}'
 "#,
     )
     .expect("write fake ssh");
@@ -481,8 +451,10 @@ printf '%s\n' '{"ok":true,"data":{"version":"test","platform":"linux","capabilit
     let new_path = format!("{}:{}", dir.path().display(), old_path.to_string_lossy());
     std::env::set_var("PATH", new_path);
 
-    let status: serde_json::Value =
-        cc_switch_lib::remote::install_helper_json(&profile(), None).expect("install helper");
+    let status: serde_json::Value = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(cc_switch_lib::remote::install_helper_json(&profile(), None))
+        .expect("install helper");
 
     std::env::set_var("PATH", old_path);
 

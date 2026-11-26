@@ -1,4 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { formatRemoteOperationError } from "@/lib/remoteHealth";
 import { remoteApi, type ManagementTarget } from "@/lib/api/remote";
 import { getManagementTargetKey } from "@/lib/managementTarget";
 import { useTargetAsyncGeneration } from "./useTargetAsyncGeneration";
@@ -27,6 +29,7 @@ export function useTargetCapabilityState(
   capability: string,
   enabled = true,
 ) {
+  const { t } = useTranslation();
   const targetKey = getManagementTargetKey(target);
   const latestTarget = useLatestTarget(target);
   const { revision } = useTargetAsyncGeneration(target);
@@ -69,7 +72,12 @@ export function useTargetCapabilityState(
     supported,
     error: health.isError
       ? extractErrorMessage(health.error)
-      : (health.data?.lastError ?? null),
+      : remoteUnavailable
+        ? formatRemoteOperationError(
+            { code: health.data?.failureCode, message: health.data?.lastError },
+            t,
+          )
+        : null,
     isFetching: health.isFetching,
     refetch: health.refetch,
   };

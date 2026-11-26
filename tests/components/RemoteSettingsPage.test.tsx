@@ -234,6 +234,28 @@ describe("RemoteSettingsPage", () => {
     getInstalledSkillsMock.mockResolvedValue([]);
   });
 
+  it("keeps SSH verified and Helper missing separate from a management connection", async () => {
+    checkHealthMock.mockResolvedValueOnce({
+      reachable: false,
+      sshReachable: true,
+      helperInstalled: false,
+      failureStage: "helper-missing",
+      capabilities: [],
+    });
+    renderSettingsPage(
+      <RemoteSettingsPage
+        open
+        onOpenChange={vi.fn()}
+        target={{ type: "remote", profile, secret: { password: "secret" } }}
+      />,
+    );
+    await screen.findByText("remote.health.sshReadyHelperMissing");
+    expect(screen.queryByText("已连接")).not.toBeInTheDocument();
+    expect(screen.queryByText("不可用")).not.toBeInTheDocument();
+    expect(checkHealthMock).toHaveBeenCalledTimes(1);
+    expect(getSettingsMock).not.toHaveBeenCalled();
+  });
+
   it("aligns remote settings tab order with local settings modules", async () => {
     renderSettingsPage(
       <RemoteSettingsPage

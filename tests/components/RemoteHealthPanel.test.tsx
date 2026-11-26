@@ -1,10 +1,16 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithQueryClient as render } from "../utils/testQueryClient";
+import { toast } from "sonner";
+import i18n from "i18next";
+import zh from "@/i18n/locales/zh.json";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { RemoteHealthPanel } from "@/components/remote/RemoteHealthPanel";
 import type { RemoteHostProfile } from "@/lib/api";
 import { EXPECTED_REMOTE_CAPABILITIES } from "@/lib/remoteHealth";
 
 const checkHealthMock = vi.fn();
+const testConnectionMock = vi.fn();
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const installHelperMock = vi.fn();
 const allExpectedCapabilities = EXPECTED_REMOTE_CAPABILITIES.map(
   (capability) => capability.id,
@@ -17,6 +23,7 @@ vi.mock("@/lib/api", async () => {
     remoteApi: {
       ...actual.remoteApi,
       checkHealth: (...args: unknown[]) => checkHealthMock(...args),
+      testConnection: (...args: unknown[]) => testConnectionMock(...args),
       installHelper: (...args: unknown[]) => installHelperMock(...args),
     },
   };
@@ -34,9 +41,124 @@ const profile: RemoteHostProfile = {
   updatedAt: 1,
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+const ready = {
+  reachable: true,
+  sshReachable: true,
+  helperInstalled: true,
+  helperVersion: "fixture-version",
+  capabilities: ["session"],
+};
+
 describe("RemoteHealthPanel", () => {
+  it("does not retry a failed connection test or mislabel unknown SSH state", async () => {
+    testConnectionMock.mockRejectedValueOnce(new Error("deadline fixture"));
+    render(
+      <RemoteHealthPanel profile={profile} secret={{ password: "fixture" }} />,
+    );
+    fireEvent.click(screen.getByTestId("remote-test-connection"));
+    await screen.findByText("deadline fixture");
+    expect(testConnectionMock).toHaveBeenCalledTimes(1);
+    expect(testConnectionMock).toHaveBeenCalledWith(profile, {
+      password: "fixture",
+    });
+    expect(checkHealthMock).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText("SSH 已验证 · 待安装 Helper"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reports SSH verified with missing Helper without claiming a management session", async () => {
+    testConnectionMock.mockResolvedValueOnce({
+      reachable: false,
+      sshReachable: true,
+      helperInstalled: false,
+      failureStage: "helper-missing",
+      capabilities: [],
+    });
+    render(<RemoteHealthPanel profile={profile} />);
+    fireEvent.click(screen.getByTestId("remote-test-connection"));
+    await screen.findByText("SSH 已验证 · 待安装 Helper");
+    expect(screen.getByText(/不建立管理会话/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "安装 Helper" })).toBeEnabled();
+  });
+
+  for (const change of ["host", "password", "id"] as const) {
+    it(`ignores late checks after changing ${change}`, async () => {
+      const pending = deferred<any>();
+      checkHealthMock.mockReturnValueOnce(pending.promise);
+      const view = render(
+        <RemoteHealthPanel profile={profile} secret={{ password: "old" }} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "检查" }));
+      const nextProfile =
+        change === "password"
+          ? profile
+          : { ...profile, [change]: "new-target" };
+      view.rerender(
+        <RemoteHealthPanel
+          profile={nextProfile}
+          secret={{ password: change === "password" ? "new" : "old" }}
+        />,
+      );
+      await act(async () => pending.resolve(ready));
+      expect(screen.queryByText("fixture-version")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "检查" })).toBeEnabled();
+    });
+  }
+
+  it("suppresses old install errors and does not clear the new target busy state", async () => {
+    const oldInstall = deferred<any>();
+    const newCheck = deferred<any>();
+    installHelperMock.mockReturnValueOnce(oldInstall.promise);
+    checkHealthMock.mockReturnValueOnce(newCheck.promise);
+    const view = render(<RemoteHealthPanel profile={profile} />);
+    fireEvent.click(screen.getByRole("button", { name: "安装 Helper" }));
+    view.rerender(<RemoteHealthPanel profile={{ ...profile, id: "B" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
+    await act(async () => oldInstall.reject(new Error("old host failure")));
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "加载中" })).toBeDisabled();
+    await act(async () => newCheck.resolve(ready));
+    expect(screen.getByText("fixture-version")).toBeInTheDocument();
+  });
+
+  it("preserves known health after install failure without reconnecting", async () => {
+    checkHealthMock.mockResolvedValueOnce(ready);
+    installHelperMock.mockRejectedValueOnce({
+      code: "install-locked",
+      message: "fixture lock",
+    });
+    render(<RemoteHealthPanel profile={profile} />);
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
+    await screen.findByText("fixture-version");
+    fireEvent.click(screen.getByRole("button", { name: "重新安装 Helper" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(screen.getByText("fixture-version")).toBeInTheDocument();
+    expect(checkHealthMock).toHaveBeenCalledTimes(1);
+    expect(testConnectionMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
+    i18n.addResourceBundle(
+      "zh",
+      "translation",
+      { remote: zh.remote },
+      true,
+      true,
+    );
     checkHealthMock.mockReset();
+    testConnectionMock.mockReset();
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.error).mockClear();
     installHelperMock.mockReset();
   });
 

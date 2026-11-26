@@ -240,9 +240,7 @@ export function RemoteServersPage({
               <h2 className="text-sm font-semibold">
                 {t("remote.details", { defaultValue: "连接详情" })}
               </h2>
-              {selectedSessionStatus && (
-                <RemoteSessionStatusBadge status={selectedSessionStatus} />
-              )}
+              <RemoteSessionStatusBadge status={selectedSessionStatus} />
             </div>
             <div className="grid min-w-0 gap-0 sm:grid-cols-2">
               <Detail

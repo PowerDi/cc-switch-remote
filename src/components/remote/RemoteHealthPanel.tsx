@@ -6,7 +6,8 @@ import {
   RefreshCw,
   Terminal,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useTargetAsyncGeneration } from "@/hooks/useTargetAsyncGeneration";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
-  diagnoseRemoteConnection,
+  remoteConnectionFailure,
   remoteApi,
   type RemoteConnectionSecret,
   type RemoteHealth,
@@ -23,8 +24,10 @@ import {
 import {
   canReportRemoteCapabilities,
   describeRemoteConnection,
+  remoteConnectionBadge,
   describeRemoteFailureHint,
   EXPECTED_REMOTE_CAPABILITIES,
+  formatRemoteOperationError,
   formatRemoteHelperBuild,
   formatRemoteHelperLatest,
   formatRemoteHelperLatestBuild,
@@ -33,7 +36,6 @@ import {
   formatRemotePlatform,
   type RemoteStageState,
 } from "@/lib/remoteHealth";
-import { extractErrorMessage } from "@/utils/errorUtils";
 
 const STAGE_DOT: Record<RemoteStageState, string> = {
   ok: "bg-emerald-500",
@@ -67,49 +69,24 @@ export function RemoteHealthPanel({
   secret?: RemoteConnectionSecret;
 }) {
   const { t } = useTranslation();
+  const { capture, isCurrent, revision } = useTargetAsyncGeneration(
+    profile ? { type: "remote", profile, secret } : { type: "local" },
+  );
   const [health, setHealth] = useState<RemoteHealth | null>(null);
   const [checking, setChecking] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [installing, setInstalling] = useState(false);
+  useEffect(() => {
+    setHealth(null);
+    setChecking(false);
+    setConnecting(false);
+    setInstalling(false);
+  }, [revision]);
   const connection = describeRemoteConnection(health);
   const connectionHint = health
     ? describeRemoteFailureHint(connection, t)
     : null;
-  const connectionBadge = !health
-    ? {
-        label: t("remote.health.notChecked", { defaultValue: "未检查" }),
-        variant: "outline" as const,
-      }
-    : connection.helper === "ok"
-      ? {
-          label: t("remote.health.ok", { defaultValue: "可连接" }),
-          variant: "default" as const,
-        }
-      : connection.ssh === "failed"
-        ? {
-            label: t("remote.health.failedConnection", {
-              defaultValue: "连接失败",
-            }),
-            variant: "destructive" as const,
-          }
-        : connection.helper === "missing"
-          ? {
-              label: t("remote.health.helperNeedsInstallBadge", {
-                defaultValue: "待安装 Helper",
-              }),
-              variant: "outline" as const,
-            }
-          : connection.ssh === "unknown" && connection.helper === "unknown"
-            ? {
-                label: t("remote.health.failed", { defaultValue: "失败" }),
-                variant: "destructive" as const,
-              }
-            : {
-                label: t("remote.health.helperErrorBadge", {
-                  defaultValue: "Helper 异常",
-                }),
-                variant: "destructive" as const,
-              };
+  const connectionBadge = remoteConnectionBadge(health, t);
   const healthCanReportCapabilities = canReportRemoteCapabilities(health);
   const capabilitySet = new Set(health?.capabilities ?? []);
   const missingCapabilities = healthCanReportCapabilities
@@ -132,39 +109,30 @@ export function RemoteHealthPanel({
   const helperBuildText = formatRemoteHelperBuild(health);
   const helperLatestBuildText = formatRemoteHelperLatestBuild(health);
 
-  const handleCheck = async () => {
+  const handleCheck = async (testOnly = false) => {
     if (!profile) return;
-    setChecking(true);
+    const generation = capture();
+    const setBusy = testOnly ? setConnecting : setChecking;
+    setBusy(true);
     try {
-      const result = await remoteApi.checkHealth(profile, secret);
-      setHealth(result);
+      const result = await (
+        testOnly ? remoteApi.testConnection : remoteApi.checkHealth
+      )(profile, secret);
+      if (isCurrent(generation)) setHealth(result);
     } catch (error) {
-      // 「检查」失败时仍然给出分层结论，否则「SSH 没通」和「Helper 没装」
-      // 会再次退化成同一个「失败」。
-      setHealth(await diagnoseRemoteConnection(profile, secret, error));
+      if (isCurrent(generation)) setHealth(remoteConnectionFailure(error));
     } finally {
-      setChecking(false);
-    }
-  };
-
-  const handleConnect = async () => {
-    if (!profile) return;
-    setConnecting(true);
-    try {
-      const result = await remoteApi.testConnection(profile, secret);
-      setHealth(result);
-    } catch (error) {
-      setHealth(await diagnoseRemoteConnection(profile, secret, error));
-    } finally {
-      setConnecting(false);
+      if (isCurrent(generation)) setBusy(false);
     }
   };
 
   const handleInstall = async () => {
     if (!profile) return;
+    const generation = capture();
     setInstalling(true);
     try {
       const result = await remoteApi.installHelper(profile, secret);
+      if (!isCurrent(generation)) return;
       setHealth(result);
       toast.success(
         t("remote.health.installSuccess", {
@@ -172,16 +140,16 @@ export function RemoteHealthPanel({
         }),
       );
     } catch (error) {
-      const message = extractErrorMessage(error);
-      setHealth(await diagnoseRemoteConnection(profile, secret, error));
+      if (!isCurrent(generation)) return;
+      // A failed/uncertain install does not invalidate the previous helper health.
       toast.error(
         t("remote.health.installFailed", {
           defaultValue: "安装远程 Helper 失败: {{error}}",
-          error: message,
+          error: formatRemoteOperationError(error, t),
         }),
       );
     } finally {
-      setInstalling(false);
+      if (isCurrent(generation)) setInstalling(false);
     }
   };
 
@@ -219,7 +187,7 @@ export function RemoteHealthPanel({
             className="min-w-0"
             data-testid="remote-test-connection"
             disabled={!profile || checking || connecting || installing}
-            onClick={() => void handleConnect()}
+            onClick={() => void handleCheck(true)}
           >
             <Plug className="mr-2 h-4 w-4" />
             {connecting
@@ -240,6 +208,9 @@ export function RemoteHealthPanel({
           </Button>
         </div>
       </div>
+      <p className="px-4 py-2 text-xs text-muted-foreground">
+        {t("remote.health.metadataOnly")}
+      </p>
       {health && (
         <div className="grid min-w-0 grid-cols-1 gap-0 border-b border-border-default sm:grid-cols-2">
           <ConnectionStageRow
@@ -328,9 +299,12 @@ export function RemoteHealthPanel({
           {helperUpdateErrorText}
         </div>
       )}
-      {health?.lastError && (
+      {(health?.lastError || health?.failureCode) && (
         <div className="border-t border-border-default px-4 py-3 text-xs text-destructive">
-          {health.lastError}
+          {formatRemoteOperationError(
+            { code: health.failureCode, message: health.lastError },
+            t,
+          )}
         </div>
       )}
       {healthCanReportCapabilities && (
