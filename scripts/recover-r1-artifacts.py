@@ -570,9 +570,9 @@ def apply_desktop(api, source, work, plan):
         require(release is not None, "Owner-precreated draft disappeared")
         current = api.repo(f"releases/{OWNER_DRAFT_ID}")
         require(owner_precreated_draft(api, current), "Owner-precreated draft changed during preflight")
-        # Its original tag/target were set by the owner. This narrowly authorized
-        # empty-draft transition sends neither target_commitish nor tag_name.
-        api.repo(f"releases/{OWNER_DRAFT_ID}", method="PATCH", body={"body": plan["body"], "name": "CC Switch Remote 4.0.21 · Remote r1"})
+        # Keep the owner-created tag explicit: GitHub can reset an omitted draft
+        # tag to untagged-*. Do not resend the restricted target_commitish field.
+        api.repo(f"releases/{OWNER_DRAFT_ID}", method="PATCH", body={"tag_name": TAG, "body": plan["body"], "name": "CC Switch Remote 4.0.21 · Remote r1"})
         release = api.repo(f"releases/{OWNER_DRAFT_ID}")
         owned_desktop(release)
         require(release["draft"] and release["body"] == plan["body"] and release["name"] == "CC Switch Remote 4.0.21 · Remote r1", "Initialized draft notes verification failed")
@@ -589,7 +589,7 @@ def apply_desktop(api, source, work, plan):
     current = api.repo(f"releases/{release['id']}")
     owned_desktop(current)
     require(current["draft"] and current["body"] == plan["body"], "Draft was modified during staging")
-    api.repo(f"releases/{release['id']}", method="PATCH", body={"draft": False, "prerelease": False, "make_latest": "true"})
+    api.repo(f"releases/{release['id']}", method="PATCH", body={"tag_name": TAG, "draft": False, "prerelease": False, "make_latest": "true"})
     final = api.repo(f"releases/{release['id']}")
     require(not final["draft"] and not final["prerelease"], "Release was not published stable")
     verify_set(api, release["id"], plan["assets"], exact=True)

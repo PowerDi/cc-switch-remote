@@ -498,7 +498,7 @@ class RecoveryTests(unittest.TestCase):
         (self.root / "evidence").mkdir()
         return api, plan
 
-    def test_only_fixed_empty_owner_draft_can_initialize_notes_without_tag_or_target_patch(self):
+    def test_only_fixed_empty_owner_draft_can_initialize_notes_with_pinned_tag_without_target_patch(self):
         api, plan = self.desktop_fixture()
         api.release_id = m.OWNER_DRAFT_ID
         api.release.update(id=m.OWNER_DRAFT_ID, body=m.OWNER_DRAFT_MARKER, name="CC Switch Remote 4.0.21 Remote r1")
@@ -521,17 +521,36 @@ class RecoveryTests(unittest.TestCase):
             m.apply_desktop(api, self.root, self.root, plan)
         method, endpoint, payload = api.mutations[0]
         self.assertEqual((method, endpoint), ("PATCH", f"releases/{m.OWNER_DRAFT_ID}"))
-        self.assertEqual(set(payload), {"body", "name"})
+        self.assertEqual(set(payload), {"tag_name", "body", "name"})
         self.assertEqual(payload["body"], plan["body"])
         self.assertFalse(any(method == "POST" for method, _, _ in api.mutations))
         for method, _, body in api.mutations:
             if method == "PATCH":
                 self.assertNotIn("target_commitish", body)
-                self.assertNotIn("tag_name", body)
+                self.assertEqual(body["tag_name"], m.TAG)
         self.assertEqual(api.release["body"], plan["body"])
         self.assertFalse(api.release["draft"])
         self.assertEqual(m.desktop_notes_date(api, api.release), (pub_date, False))
         self.assertTrue(m.matches(api.assets["fixture.msi"], plan["assets"]["fixture.msi"]))
+
+    def test_desktop_publish_pins_tag_and_permission_failure_keeps_complete_draft(self):
+        api, plan = self.desktop_fixture()
+        original_repo = api.repo
+        def deny_publish(endpoint, **kwargs):
+            if kwargs.get("method") == "PATCH":
+                payload = kwargs["body"]
+                self.assertEqual(endpoint, f"releases/{api.release_id}")
+                self.assertEqual(payload, {"tag_name": m.TAG, "draft": False, "prerelease": False, "make_latest": "true"})
+                raise m.http_failure(f"/repos/{m.REPO}/{endpoint}", "PATCH", 403, b"Resource not accessible by integration", "")
+            return original_repo(endpoint, **kwargs)
+        api.repo = deny_publish
+        with patch.object(m, "publication_preflight"), self.assertRaises(m.GitHubHttpError):
+            m.apply_desktop(api, self.root, self.root, plan)
+        self.assertTrue(api.release["draft"])
+        self.assertEqual(api.release["tag_name"], m.TAG)
+        self.assertEqual(api.release["body"], plan["body"])
+        self.assertTrue(m.matches(api.assets["fixture.msi"], plan["assets"]["fixture.msi"]))
+        self.assertFalse(any(method in ("POST", "DELETE") for method, _, _ in api.mutations))
 
     def test_desktop_draft_is_published_only_after_upload_hash_and_fresh_inventory(self):
         api, plan = self.desktop_fixture()
