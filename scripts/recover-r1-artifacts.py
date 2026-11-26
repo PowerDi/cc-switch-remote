@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse
@@ -109,6 +110,14 @@ def download_accept(endpoint):
     return "application/octet-stream" if re.fullmatch(r"releases/assets/\d+", endpoint) else "application/vnd.github+json"
 
 
+class GitHubHttpError(RuntimeError):
+    def __init__(self, message, endpoint, method, status):
+        super().__init__(message)
+        self.endpoint = endpoint
+        self.method = method
+        self.status = status
+
+
 def http_failure(endpoint, method, status, body, token):
     # Use the original API path, never error.url/Location (signed storage URLs).
     path = urlparse(endpoint).path
@@ -119,7 +128,7 @@ def http_failure(endpoint, method, status, body, token):
     text = re.sub(r"https?://[^\s\"'<>]+", "[redacted-url]", text, flags=re.IGNORECASE)
     text = re.sub(r"(?i)Bearer\s+[^\s\"'<>]+|(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+", "[redacted-token]", text)
     text = " ".join(text.split())[:1024]
-    return RuntimeError(f"GitHub {method} {safe_path}: HTTP {status}; body={text or '[empty]'}")
+    return GitHubHttpError(f"GitHub {method} {safe_path}: HTTP {status}; body={text or '[empty]'}", safe_path, method, status)
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -132,6 +141,14 @@ class GitHub:
         self.token = os.environ["GH_TOKEN"]
         self.opener = build_opener(NoRedirect())
 
+    def read_timeout(self):
+        deadline = getattr(self, "backup_read_deadline", None)
+        if deadline is None:
+            return 120
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "Uploaded backup read-back exceeded the 120-second deadline")
+        return min(120, remaining)
+
     def open(self, endpoint, method="GET", data=None, accept="application/vnd.github+json"):
         require(endpoint.startswith("/repos/"), "Only explicit GitHub repository endpoints are allowed")
         request = Request("https://api.github.com" + endpoint, data=data, method=method, headers={
@@ -140,7 +157,7 @@ class GitHub:
             "Content-Type": "application/json",
         })
         try:
-            return self.opener.open(request, timeout=120)
+            return self.opener.open(request, timeout=self.read_timeout())
         except HTTPError as error:
             if error.code in (301, 302, 303, 307, 308):
                 raise  # download() handles redirects without forwarding auth.
@@ -181,7 +198,7 @@ class GitHub:
             ), "Unexpected artifact redirect host")
             # Never forward the repository token to signed storage URLs.
             try:
-                response = self.opener.open(Request(location, headers={"User-Agent": "cc-switch-remote-r1-recovery"}), timeout=120)
+                response = self.opener.open(Request(location, headers={"User-Agent": "cc-switch-remote-r1-recovery"}), timeout=self.read_timeout())
             except HTTPError as storage_error:
                 raise http_failure(api_endpoint, "GET redirected download", storage_error.code, storage_error.read(4096), self.token) from None
         total = 0
@@ -572,7 +589,10 @@ def rollback_helper(api, work, plan):
             if name in actual:
                 require(actual[name]["state"] == "starter" or matches(actual[name], plan["assets"][name]), "Cannot rollback an unknown alias")
                 api.repo(f"releases/assets/{actual[name]['id']}", method="DELETE")
-    api.repo(f"git/refs/tags/{HELPER_TAG}", method="PATCH", body={"sha": before["tagSha"], "force": True})
+    current_tag = tag_sha(api, HELPER_TAG)
+    require(current_tag in (before["tagSha"], SOURCE), "Helper tag changed externally; rollback requires manual review")
+    if current_tag != before["tagSha"]:
+        api.repo(f"git/refs/tags/{HELPER_TAG}", method="PATCH", body={"sha": before["tagSha"], "force": True})
     api.repo(f"releases/{HELPER_RELEASE}", method="PATCH", body={"body": before["release"]["body"], "target_commitish": before["release"]["target_commitish"], "prerelease": True, "make_latest": "false"})
     # macOS was not touched before promotion commit; prove its backup state is intact too.
     verify_set(api, HELPER_RELEASE, {n: v for n, v in plan["backupManifest"].items() if "-latest-" in n or "macOS" in n})
@@ -595,8 +615,10 @@ def apply_helper(api, work, plan):
             name = f"cc-switch-remote-helper-latest-{platform}"
             replace_alias(api, name, work / "assets" / name, expected[name], {OLD_HASHES[platform], expected[name]["sha256"]})
         verify_set(api, HELPER_RELEASE, expected)
-        require(tag_sha(api, HELPER_TAG) in (OLD_HELPER, SOURCE), "Helper tag changed during promotion")
-        api.repo(f"git/refs/tags/{HELPER_TAG}", method="PATCH", body={"sha": SOURCE, "force": True})
+        current_tag = tag_sha(api, HELPER_TAG)
+        require(current_tag in (OLD_HELPER, SOURCE), "Helper tag changed during promotion")
+        if current_tag != SOURCE:
+            api.repo(f"git/refs/tags/{HELPER_TAG}", method="PATCH", body={"sha": SOURCE, "force": True})
         api.repo(f"releases/{HELPER_RELEASE}", method="PATCH", body={"target_commitish": SOURCE, "prerelease": True, "make_latest": "false",
             "body": f"Linux-only pure CLI helper binaries from {SOURCE}, preserved from run 45752621175. Both Linux x86_64/arm64 SHA/latest pairs verified equal. User explicitly discontinued current and future macOS desktop/helper packages; old macOS rolling assets removed only after backup and Linux verification. No real-host installation validation.\n{MARKER} helper -->"})
         require(tag_sha(api, HELPER_TAG) == SOURCE, "Helper tag promotion failed")
@@ -645,6 +667,56 @@ def verify_backup_archive(durable, work):
             require(size == path.stat().st_size and hashed.hexdigest() == sha256(path), "Durable backup content differs from rollback plan")
 
 
+def download_uploaded_backup(api, operation, work):
+    backup_id = os.environ["RECOVERY_BACKUP_ARTIFACT_ID"]
+    require(backup_id.isdigit(), "Backup artifact ID missing")
+    run_id = os.environ["GITHUB_RUN_ID"]
+    require(run_id.isdigit(), "Recovery workflow run ID missing")
+
+    def validate(backup):
+        require(str(backup["id"]) == backup_id, "Recovery backup artifact ID mismatch")
+        require(backup["name"] == f"remote-r1-{operation}-recovery-{run_id}" and not backup["expired"], "Recovery backup artifact missing/expired")
+        require(str(backup["workflow_run"]["id"]) == run_id and backup["workflow_run"]["head_sha"] == os.environ["GITHUB_SHA"], "Recovery backup belongs to another run")
+        require(digest(backup["digest"]) == os.environ["RECOVERY_BACKUP_ARTIFACT_DIGEST"], "Recovery backup upload digest mismatch")
+        require(0 < backup["size_in_bytes"] <= MAX_BYTES, "Recovery backup size invalid")
+
+    # Before tolerating any 404, require independent positive API evidence that
+    # this exact upload exists in THIS run, is unexpired and matches its digest.
+    # Missing listing entries, other IDs/runs, permission errors and all writes
+    # fail immediately. Never retry arbitrary GitHub 404s.
+    deadline = time.monotonic() + 120
+    api.backup_read_deadline = deadline
+    try:
+        listed = api.listing(f"actions/runs/{run_id}/artifacts", "artifacts")
+        confirmed = [item for item in listed if str(item["id"]) == backup_id]
+        require(len(confirmed) == 1, "Uploaded backup is not confirmed by the current run inventory; refusing 404 retries")
+        validate(confirmed[0])
+        endpoint = f"actions/artifacts/{backup_id}"
+        allowed_paths = {f"/repos/{REPO}/{endpoint}", f"/repos/{REPO}/{endpoint}/zip"}
+        durable = work / "durable-backup.zip"
+        delay = 2
+        while True:
+            try:
+                backup = api.repo(endpoint)
+                validate(backup)
+                api.download(endpoint + "/zip", durable, digest(backup["digest"]), backup["size_in_bytes"])
+                return durable
+            except GitHubHttpError as error:
+                if error.status != 404 or error.endpoint not in allowed_paths or error.method not in ("GET", "GET redirected download"):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Uploaded backup still unavailable after 120 seconds: {error}") from None
+                wait = min(delay, remaining)
+                print(f"Confirmed uploaded backup not yet readable; retry in {wait:g}s: {error}", file=sys.stderr)
+                time.sleep(wait)
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"Uploaded backup still unavailable after 120 seconds: {error}") from None
+                delay = min(delay * 2, 30)
+    finally:
+        del api.backup_read_deadline
+
+
 def apply(api, operation, source, work):
     guard(api, source)
     plan = json.loads((work / "plan.json").read_text(encoding="utf-8"))
@@ -656,17 +728,9 @@ def apply(api, operation, source, work):
     require(set(plan["assets"]) == expected_names, "Prepared asset allowlist changed")
     if operation == "helper":
         require(manifest(work / "backup/assets") == plan["backupManifest"], "Rollback backup changed")
-    backup_id = os.environ["RECOVERY_BACKUP_ARTIFACT_ID"]
-    require(backup_id.isdigit(), "Backup artifact ID missing")
-    backup = api.repo(f"actions/artifacts/{backup_id}")
-    require(backup["name"] == f"remote-r1-{operation}-recovery-{os.environ['GITHUB_RUN_ID']}" and not backup["expired"], "Recovery backup artifact missing/expired")
-    require(str(backup["workflow_run"]["id"]) == os.environ["GITHUB_RUN_ID"] and backup["workflow_run"]["head_sha"] == os.environ["GITHUB_SHA"], "Recovery backup belongs to another run")
-    require(digest(backup["digest"]) == os.environ["RECOVERY_BACKUP_ARTIFACT_DIGEST"], "Recovery backup upload digest mismatch")
-    # Read back the uploaded archive before trusting that rollback bytes are
-    # durably available. Verify every prepared backup/evidence entry, not just
-    # upload-artifact output fields. No extraction is needed here.
-    durable = work / "durable-backup.zip"
-    api.download(f"actions/artifacts/{backup_id}/zip", durable, digest(backup["digest"]), backup["size_in_bytes"])
+    # Read back the positively confirmed current-run upload with a bounded,
+    # 404-only visibility retry before trusting the rollback bytes.
+    durable = download_uploaded_backup(api, operation, work)
     verify_backup_archive(durable, work)
     durable.unlink()
     if operation == "desktop":

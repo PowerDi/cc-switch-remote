@@ -170,6 +170,76 @@ class RecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "mismatch"):
                 api.download("actions/artifacts/1/zip", self.root / f"bad-{index}", checksum, size)
 
+    def backup_fixture(self):
+        record = {"id": 123, "name": "remote-r1-desktop-recovery-456", "expired": False,
+                  "workflow_run": {"id": 456, "head_sha": "a" * 40},
+                  "digest": "sha256:" + "b" * 64, "size_in_bytes": 10}
+        api = Mock()
+        api.listing.return_value = [record]
+        api.repo.return_value = record
+        env = {"RECOVERY_BACKUP_ARTIFACT_ID": "123", "GITHUB_RUN_ID": "456", "GITHUB_SHA": "a" * 40,
+               "RECOVERY_BACKUP_ARTIFACT_DIGEST": "b" * 64}
+        now = [0.0]
+        sleeps = []
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+        return api, record, env, now, sleeps, sleep
+
+    def test_uploaded_backup_404_retries_metadata_and_zip_only_after_positive_inventory(self):
+        api, record, env, now, sleeps, sleep = self.backup_fixture()
+        endpoint = f"/repos/{m.REPO}/actions/artifacts/123"
+        missing = lambda path: m.http_failure(path, "GET", 404, b"Not Found", "")
+        api.repo.side_effect = [missing(endpoint), record, record]
+        api.download.side_effect = [missing(endpoint + "/zip"), None]
+        with patch.dict(m.os.environ, env), patch.object(m.time, "monotonic", side_effect=lambda: now[0]), patch.object(m.time, "sleep", side_effect=sleep):
+            self.assertEqual(m.download_uploaded_backup(api, "desktop", self.root), self.root / "durable-backup.zip")
+        self.assertEqual(sleeps, [2, 4])
+        api.listing.assert_called_once_with("actions/runs/456/artifacts", "artifacts")
+        self.assertEqual(api.repo.call_count, 3)
+        self.assertEqual(api.download.call_count, 2)
+        self.assertTrue(all(call.args == ("actions/artifacts/123",) and not call.kwargs for call in api.repo.call_args_list))
+
+    def test_uploaded_backup_visibility_retries_stop_within_two_minutes(self):
+        api, record, env, now, sleeps, sleep = self.backup_fixture()
+        api.download.side_effect = m.http_failure(f"/repos/{m.REPO}/actions/artifacts/123/zip", "GET", 404, b"missing", "")
+        with patch.dict(m.os.environ, env), patch.object(m.time, "monotonic", side_effect=lambda: now[0]), patch.object(m.time, "sleep", side_effect=sleep), self.assertRaisesRegex(RuntimeError, "after 120 seconds"):
+            m.download_uploaded_backup(api, "desktop", self.root)
+        self.assertEqual(sleeps, [2, 4, 8, 16, 30, 30, 30])
+        self.assertEqual(sum(sleeps), 120)
+        self.assertEqual(api.download.call_count, 7)
+
+    def test_backup_retry_requires_exact_unexpired_current_run_upload(self):
+        for change in ("absent", "id", "expired", "run", "digest"):
+            api, record, env, _, _, _ = self.backup_fixture()
+            if change == "absent": api.listing.return_value = []
+            elif change == "id": record["id"] = 789
+            elif change == "expired": record["expired"] = True
+            elif change == "run": record["workflow_run"]["id"] = 789
+            else: record["digest"] = "sha256:" + "c" * 64
+            with self.subTest(change=change), patch.dict(m.os.environ, env), patch.object(m.time, "sleep") as sleep, self.assertRaises(RuntimeError):
+                m.download_uploaded_backup(api, "desktop", self.root)
+            sleep.assert_not_called()
+            api.download.assert_not_called()
+            api.repo.assert_not_called()
+
+    def test_backup_retry_does_not_swallow_other_status_paths_or_mutations(self):
+        for status, method, path in ((403, "GET", "actions/artifacts/123/zip"), (404, "GET", "actions/artifacts/999/zip"), (404, "PATCH", "actions/artifacts/123")):
+            api, _, env, _, _, _ = self.backup_fixture()
+            api.download.side_effect = m.http_failure(f"/repos/{m.REPO}/{path}", method, status, b"fixture", "")
+            with self.subTest(status=status, method=method, path=path), patch.dict(m.os.environ, env), patch.object(m.time, "sleep") as sleep, self.assertRaises(m.GitHubHttpError):
+                m.download_uploaded_backup(api, "desktop", self.root)
+            sleep.assert_not_called()
+            api.download.assert_called_once()
+
+    def test_backup_read_http_timeout_respects_remaining_budget(self):
+        api = m.GitHub.__new__(m.GitHub)
+        api.backup_read_deadline = 120
+        with patch.object(m.time, "monotonic", return_value=115):
+            self.assertEqual(api.read_timeout(), 5)
+        with patch.object(m.time, "monotonic", return_value=120), self.assertRaisesRegex(RuntimeError, "deadline"):
+            api.read_timeout()
+
     def test_final_notes_follow_later_user_scope_without_touching_tag_snapshot(self):
         import subprocess
         original = subprocess.check_output(["git", "show", f"{m.SOURCE}:docs/release-notes/{m.TAG}-remote-zh.md"], cwd=Path(__file__).parents[1]).decode("utf-8")
@@ -325,6 +395,43 @@ class RecoveryTests(unittest.TestCase):
         for name, item in plan["backupManifest"].items():
             self.assertTrue(m.matches(api.assets[name], item))
         self.assertFalse(any(method == "DELETE" and m.OLD_HELPER[:8] in str(body) for method, _, body in api.mutations))
+
+    def test_helper_owner_preadvanced_tag_and_existing_candidates_need_no_ref_patch(self):
+        api, plan, old_hashes = self.helper_fixture()
+        api.tag = m.SOURCE
+        for name in plan["assets"]:
+            if "-latest-" not in name:
+                api.add(name, (self.root / "assets" / name).read_bytes())
+        plan["helperBefore"] = m.helper_state(api)
+        original_repo = api.repo
+        def deny_ref_patch(endpoint, **kwargs):
+            self.assertFalse(endpoint.startswith("git/refs/") and kwargs.get("method") == "PATCH")
+            return original_repo(endpoint, **kwargs)
+        api.repo = deny_ref_patch
+        with patch.object(m, "OLD_HASHES", old_hashes):
+            m.apply_helper(api, self.root, plan)
+        self.assertEqual(api.tag, m.SOURCE)
+        self.assertEqual(set(api.assets), set(plan["assets"]))
+        self.assertEqual([name for method, name, _ in api.mutations if method == "UPLOAD"],
+                         [f"cc-switch-remote-helper-latest-{platform}" for platform in m.PLATFORMS])
+
+    def test_helper_denied_promotion_restores_aliases_without_repatching_unchanged_old_tag(self):
+        api, plan, old_hashes = self.helper_fixture()
+        original_repo = api.repo
+        ref_patches = []
+        def deny_ref_patch(endpoint, **kwargs):
+            if endpoint.startswith("git/refs/") and kwargs.get("method") == "PATCH":
+                ref_patches.append(kwargs["body"]["sha"])
+                raise m.http_failure(f"/repos/{m.REPO}/{endpoint}", "PATCH", 403, b"Resource not accessible by integration", "")
+            return original_repo(endpoint, **kwargs)
+        api.repo = deny_ref_patch
+        with patch.object(m, "OLD_HASHES", old_hashes), self.assertRaisesRegex(RuntimeError, "prior aliases/tag restored"):
+            m.apply_helper(api, self.root, plan)
+        self.assertEqual(ref_patches, [m.SOURCE])
+        self.assertEqual(api.tag, m.OLD_HELPER)
+        self.assertEqual(api.release["body"], "old notes")
+        for name, item in plan["backupManifest"].items():
+            self.assertTrue(m.matches(api.assets[name], item))
 
     def test_helper_stops_before_mutation_when_release_changed_since_backup(self):
         api, plan, _ = self.helper_fixture()
