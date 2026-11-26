@@ -39,7 +39,7 @@ SemVer 的 `-remote.N` 是 prerelease 语法，但 fork GitHub release 使用 `p
 <!-- contract-reviewed -->
 <!-- real-install-not-performed -->
 
-这是源码、配置与定向测试的 **contract-reviewed**，不是“已实机 verified”。`manualClientMigration=manual-migration-approved`、`futureUpdaterContract=contract-reviewed`；当前 `installerContract=pending`、`realInstallValidation=not-performed`、`releaseReady=false`，保留 Linux 原生打包查询等未完成门槛。主代理可在 review 后仅分支构建验证，不得因为构建绿就写已实机安装。将来实际完成安装验证时允许改为 `verified-with-evidence`，但必须提供当前 tag/应用版本对应的证据文档与验证标记；本次仍为 `not-performed`。
+这是源码、配置、定向测试及下述 Linux x64 实际构建/原生查询证据的 **contract-reviewed**，不是“已实机安装 verified”。`manualClientMigration=manual-migration-approved`、`futureUpdaterContract=contract-reviewed`、`installerContract=contract-reviewed`；经发布候选审核批准，当前 `releaseReady=true`，但 `realInstallValidation=not-performed` 保持不变。Windows/macOS 仍是锁定工具链的契约审查，其实际产物、签名与发布链继续由正式流程核对。`current.status=unreleased` 只表示准备时 release 尚未发布；ready 候选的 UI 不会因此永久显示“未发布”。将来实际完成安装验证时允许改为 `verified-with-evidence`，但必须提供当前 tag/应用版本对应的证据文档与验证标记；本次没有安装、启动应用或迁移用户数据库。
 
 ### 已安装数据与恢复路径逐项核对
 
@@ -59,10 +59,18 @@ SemVer 的 `-remote.N` 是 prerelease 语法，但 fork GitHub release 使用 `p
 | Tauri updater 2.10.0 | 默认 `release.version > current_version`，使用 Rust SemVer；不依赖 GitHub prerelease 标志 | 正常/恢复 UI 的真实下载、重启与签名安装 |
 | Windows WiX | bundler `convert_version` 拒绝非数字 `remote.1`；显式 `bundle.windows.wix.version=4.0.21` 避开自动转换。系统 ProductVersion 与上游主数字相同，应用 SemVer 仍带 suffix。现模板 allow_downgrades 默认分支允许旧安装数值回退，另一分支 `AllowSameVersionUpgrades=yes`，支持同 core r2 覆盖契约 | MSI 实际安装/同数字覆盖未实机执行；不是新的独立安装序列 |
 | macOS | bundler 默认 CFBundleVersion/ShortVersion 写完整 app version，因此设置 `macOS.bundleVersion=4.0.21`，现有 Info.plist 覆盖 ShortVersion 为 4.0.21。Tauri runtime/updater 的版本仍来自应用配置而非这两个 OS 显示字段 | 实际签名、公证、替换与启动；同 core revision 不依靠 Apple 数字字段排序 |
-| Debian | bundler 原样写 `Version: 4.0.21-remote.1`；dpkg 按最后的连字符分 upstream/debian revision | 构建后 `dpkg-deb -f` 与 native compare gate 必须通过 |
-| RPM | bundler 2.8.1 原样传 app version 给 rpm 0.16 crate；config 只有 release/epoch、没有独立 Version override。源码可构造 header 不代表 native RPM 接受语义 | **pending**：构建后查询实际 NAME/VERSION/RELEASE/ARCH，native rpm.vercmp；不得先承诺兼容，失败应阻断并另行设计同主数字映射 |
+| Debian | Linux x64 实际构建的 `dpkg-deb -f` 确认 `Version: 4.0.21-remote.1`，原生 `dpkg --compare-versions` 排序 gate 已通过，见下方运行证据 | 实际安装、旧客户端迁移及 arm64 产物仍未由该 x64 运行验证 |
+| RPM | Linux x64 实际构建的 `rpm -qp` 确认 NAME=`cc-switch-remote`、VERSION=`4.0.21-remote.1`、RELEASE=`1`、ARCH=`x86_64`；原生 `rpm.vercmp` 排序 gate 已通过，不需要另设 Version/Release 映射 | 实际安装、旧客户端迁移及 arm64 产物仍未由该 x64 运行验证 |
 
 `scripts/verify-linux-package-versions.mjs` 作为 Linux 构建后必经 gate：读取唯一 deb/rpm、要求实际 Version 与派生应用版本相同、调用 native rpm/dpkg 比较 r1→r2/新基线以及 legacy downgrade，输出日志证据。不安装、不修改系统数据库。Windows/macOS 数字包壳是格式适配，绝非恢复独立 `4.1.1` 序列。新 Remote revision 修改时，四份 app version 需随之派生；数字包壳仅随 upstreamVersion 改变。
+
+### Linux x64 构建与原生查询证据
+
+- 源码 commit：`78435710fa68b1f76898d916fed26051f73de16b`；准备分支 `release/remote-v4.0.21-r1`。
+- [`release.yml` run 45749983081](https://github.com/PowerDi/cc-switch-remote/actions/runs/45749983081)：`workflow_dispatch(platform=linux-x64)`，不是正式发布或全量测试。identity job `139675156176` success；[Linux job `139675248238`](https://github.com/PowerDi/cc-switch-remote/actions/runs/45749983081/job/139675248238) success；publish skipped。
+- `2026-11-26T03:49:00Z` 的 `verify-linux-package-versions` 输出：`packageVersion=4.0.21-remote.1`，RPM `cc-switch-remote / 4.0.21-remote.1 / 1 / x86_64`，`debVersion=4.0.21-remote.1`，`nativeComparisons=4`，**`installationPerformed=false`**。四组原生比较覆盖 Remote revision 递增、新基线递增及旧 `4.1.0` 到首次新方案必须手动重装的降序事实。
+- 已生成 [artifact `15085925603` / `release-assets-Linux-X64`](https://github.com/PowerDi/cc-switch-remote/actions/runs/45749983081/artifacts/15085925603)。此证据针对上述 commit 的构建产物与包元数据，不将该旧准备构建冒充后续最终 tag 的产物；最终发布仍须核对 tag/commit、资产身份与签名。
+- 本次收尾仅更新 readiness 与证据说明，不改变四份应用版本、打包逻辑或 schema 23。Linux 包查询成功不等于完成安装，Windows/macOS 与真实 SSH/数据库恢复升级仍保留原有未验证范围。
 
 ## 发布与维护门槛
 

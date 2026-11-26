@@ -48,6 +48,8 @@ Helper 由独立工作流更新 `remote-helper-latest`；它不是第二个桌�
 
 ## 验证范围与限制
 
-连接、事务安装、跨目标异步、metadata 无 DB 写入、版本派生/排序和发布边界已有临时夹具定向回归；没有声称 Windows 密码 SSH、实际远端安装、MSI/macOS/Linux 安装及旧客户端迁移已经实机通过。跨平台产物仍须在发布流程核对，Linux 构建会用 `rpm -qp` / `rpm.vercmp`、`dpkg-deb` / `dpkg --compare-versions` 查询和比较产物，不执行系统安装。没有本轮数据库 schema 迁移。
+连接、事务安装、跨目标异步、metadata 无 DB 写入、版本派生/排序和发布边界已有临时夹具定向回归。[Linux x64 构建运行 45749983081](https://github.com/PowerDi/cc-switch-remote/actions/runs/45749983081) 已成功：准备 commit `78435710fa68b1f76898d916fed26051f73de16b` 的实际 RPM/DEB 均报告 `4.0.21-remote.1`，`rpm -qp` / `rpm.vercmp`、`dpkg-deb` / `dpkg --compare-versions` 查询及四组原生排序检查通过，**未执行系统安装**，该运行的 publish job 已跳过。
 
-发布准备的阻断状态与契约证据见 [Remote 版本策略](../remote-version-policy.md)；`releaseReady` 不能代替真实产物或安装验证。
+Windows/macOS 目前为锁定工具链契约审查，其实际产物、签名/公证及最终跨平台发布链仍由正式流程核对；该 Linux x64 结果不代表 arm64 或最终 tag 产物已验证。Windows 密码 SSH、实际远端安装、MSI/macOS/Linux 安装及旧客户端手动迁移仍未实机验证。没有本轮数据库 schema 迁移。
+
+发布候选审核与构建证据见 [Remote 版本策略](../remote-version-policy.md)。候选 `releaseReady=true` 不等于实际安装已验证；`realInstallValidation` 仍为 `not-performed`，旧客户端一次手动重新安装与备份要求不变。

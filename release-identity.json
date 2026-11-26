@@ -8,7 +8,7 @@
     "releaseTag": "remote-v4.0.21-r1",
     "packageVersion": "4.0.21-remote.1",
     "status": "unreleased",
-    "releaseReady": false,
+    "releaseReady": true,
     "notesFile": "docs/release-notes/remote-v4.0.21-r1-remote-zh.md"
   },
   "migration": {
@@ -22,7 +22,7 @@
   "upgradeValidation": {
     "manualClientMigration": "manual-migration-approved",
     "futureUpdaterContract": "contract-reviewed",
-    "installerContract": "pending",
+    "installerContract": "contract-reviewed",
     "realInstallValidation": "not-performed"
   },
   "history": [
