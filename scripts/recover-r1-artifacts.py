@@ -103,6 +103,25 @@ def digest(value):
     return value[7:]
 
 
+def download_accept(endpoint):
+    # Actions ZIP/log endpoints are JSON API requests which redirect to storage.
+    # Only a Releases asset entity uses the octet-stream API representation.
+    return "application/octet-stream" if re.fullmatch(r"releases/assets/\d+", endpoint) else "application/vnd.github+json"
+
+
+def http_failure(endpoint, method, status, body, token):
+    # Use the original API path, never error.url/Location (signed storage URLs).
+    path = urlparse(endpoint).path
+    safe_path = re.sub(r"[^A-Za-z0-9_./-]", "_", path)
+    text = (body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)).replace("\\/", "/")
+    if token:
+        text = text.replace(token, "[redacted-token]")
+    text = re.sub(r"https?://[^\s\"'<>]+", "[redacted-url]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?i)Bearer\s+[^\s\"'<>]+|(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+", "[redacted-token]", text)
+    text = " ".join(text.split())[:1024]
+    return RuntimeError(f"GitHub {method} {safe_path}: HTTP {status}; body={text or '[empty]'}")
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -120,7 +139,12 @@ class GitHub:
             "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "cc-switch-remote-r1-recovery",
             "Content-Type": "application/json",
         })
-        return self.opener.open(request, timeout=120)
+        try:
+            return self.opener.open(request, timeout=120)
+        except HTTPError as error:
+            if error.code in (301, 302, 303, 307, 308):
+                raise  # download() handles redirects without forwarding auth.
+            raise http_failure(endpoint, method, error.code, error.read(4096), self.token) from None
 
     def api(self, endpoint, method="GET", body=None):
         with self.open(endpoint, method, None if body is None else json.dumps(body).encode()) as response:
@@ -143,8 +167,9 @@ class GitHub:
 
     def download(self, endpoint, destination, expected_hash=None, expected_size=None):
         destination.parent.mkdir(parents=True, exist_ok=True)
+        api_endpoint = f"/repos/{REPO}/{endpoint}"
         try:
-            response = self.open(f"/repos/{REPO}/{endpoint}", accept="application/octet-stream")
+            response = self.open(api_endpoint, accept=download_accept(endpoint))
         except HTTPError as error:
             if error.code not in (301, 302, 303, 307, 308):
                 raise
@@ -155,7 +180,10 @@ class GitHub:
                 or parsed.hostname.endswith(".github.com")
             ), "Unexpected artifact redirect host")
             # Never forward the repository token to signed storage URLs.
-            response = self.opener.open(Request(location, headers={"User-Agent": "cc-switch-remote-r1-recovery"}), timeout=120)
+            try:
+                response = self.opener.open(Request(location, headers={"User-Agent": "cc-switch-remote-r1-recovery"}), timeout=120)
+            except HTTPError as storage_error:
+                raise http_failure(api_endpoint, "GET redirected download", storage_error.code, storage_error.read(4096), self.token) from None
         total = 0
         with response, destination.open("xb") as output:
             while chunk := response.read(1024 * 1024):
@@ -186,7 +214,8 @@ class GitHub:
                     connection.send(chunk)
             response = connection.getresponse()
             raw = response.read()
-            require(response.status == 201, f"Asset upload failed HTTP {response.status}; rerun can inspect/resume, not rebuild")
+            if response.status != 201:
+                raise http_failure(endpoint, "POST", response.status, raw[:4096], self.token)
             return json.loads(raw)
         finally:
             connection.close()

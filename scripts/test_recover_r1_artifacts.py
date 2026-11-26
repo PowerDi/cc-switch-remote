@@ -7,7 +7,8 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+from urllib.error import HTTPError
 import zipfile
 
 from cryptography.exceptions import InvalidSignature
@@ -104,6 +105,58 @@ class RecoveryTests(unittest.TestCase):
                 m.validate_run({**run, **change}, spec)
         with self.assertRaises(RuntimeError):
             m.require_job([{**job, "conclusion": "cancelled"}], 123)
+
+    def test_download_accept_distinguishes_actions_redirects_and_release_entities(self):
+        api = m.GitHub.__new__(m.GitHub)
+        cases = [
+            ("actions/artifacts/15086239867/zip", "application/vnd.github+json"),
+            ("actions/jobs/139722946978/logs", "application/vnd.github+json"),
+            ("actions/runs/45764776182/logs", "application/vnd.github+json"),
+            ("releases/assets/687510727", "application/octet-stream"),
+        ]
+        for index, (endpoint, expected_accept) in enumerate(cases):
+            with self.subTest(endpoint=endpoint):
+                api.open = Mock(return_value=io.BytesIO(b"fixture"))
+                api.download(endpoint, self.root / f"download-{index}")
+                api.open.assert_called_once_with(f"/repos/{m.REPO}/{endpoint}", accept=expected_accept)
+
+    def test_api_http_failure_reports_safe_path_status_body_without_token_or_signed_url(self):
+        api = m.GitHub.__new__(m.GitHub)
+        api.token = "fixture-private-token"
+        body = json.dumps({"message": "Unsupported Media Type", "token": api.token, "documentation_url": "https://docs.github.com/rest", "download": "https://store.blob.core.windows.net/file?sig=fixture-secret"}).encode()
+        api.opener = Mock()
+        api.opener.open.side_effect = HTTPError("https://api.github.com/private?secret=query-secret", 415, "Unsupported Media Type", {}, io.BytesIO(body))
+        with self.assertRaises(RuntimeError) as caught:
+            api.open(f"/repos/{m.REPO}/actions/artifacts/1/zip?secret=query-secret")
+        message = str(caught.exception)
+        self.assertIn(f"GET /repos/{m.REPO}/actions/artifacts/1/zip: HTTP 415", message)
+        self.assertIn("Unsupported Media Type", message)
+        for secret in (api.token, "https://", "fixture-secret", "query-secret"):
+            self.assertNotIn(secret, message)
+        self.assertLess(len(message), 1200)
+
+    def test_download_redirect_keeps_auth_off_storage_and_sanitizes_storage_failure(self):
+        api = m.GitHub.__new__(m.GitHub)
+        api.token = "fixture-token"
+        endpoint = "actions/artifacts/1/zip"
+        location = "https://fixture.blob.core.windows.net/file?sig=never-log-me"
+        redirect = lambda: HTTPError("https://api.github.com/fixture", 302, "Found", {"Location": location}, io.BytesIO())
+        api.opener = Mock()
+        api.opener.open.side_effect = [redirect(), io.BytesIO(b"fixture")]
+        api.download(endpoint, self.root / "redirected")
+        first, second = [call.args[0] for call in api.opener.open.call_args_list]
+        self.assertEqual(first.get_header("Accept"), "application/vnd.github+json")
+        self.assertEqual(first.get_header("Authorization"), "Bearer fixture-token")
+        self.assertIsNone(second.get_header("Authorization"))
+        api.opener.open.side_effect = [redirect(), HTTPError(location, 403, "Forbidden", {}, io.BytesIO((location + " " + api.token).encode()))]
+        with self.assertRaises(RuntimeError) as caught:
+            api.download(endpoint, self.root / "failed")
+        message = str(caught.exception)
+        self.assertIn("actions/artifacts/1/zip: HTTP 403", message)
+        self.assertNotIn("never-log-me", message)
+        self.assertNotIn(api.token, message)
+        self.assertNotIn("https://", message)
+        self.assertFalse((self.root / "failed").exists())
 
     def test_download_rejects_wrong_server_digest_and_size(self):
         api = m.GitHub.__new__(m.GitHub)
