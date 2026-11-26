@@ -32,6 +32,8 @@ HELPER_TAG = "remote-helper-latest"
 HELPER_RELEASE = 411740731
 PREFIX = f"CC-Switch-Remote-{TAG}-"
 MARKER = f"<!-- remote-r1-artifact-recovery source={SOURCE}"
+OWNER_DRAFT_ID = 459053371
+OWNER_DRAFT_MARKER = f"{MARKER} owner-precreated -->"
 PLATFORMS = ("Linux-x86_64", "Linux-arm64")
 LEGACY_PLATFORMS = (*PLATFORMS, "macOS-universal")
 REQUIRED_PLATFORMS = "windows-x86_64,linux-x86_64,linux-aarch64"
@@ -394,6 +396,25 @@ def owned_desktop(release):
     require(MARKER in (release.get("body") or ""), "Existing release is not owned by this recovery; refuse overwrite")
 
 
+def owner_precreated_draft(api, release):
+    if release["id"] != OWNER_DRAFT_ID or release.get("body") != OWNER_DRAFT_MARKER:
+        return False
+    owned_desktop(release)
+    require(release["draft"] is True, "Owner-precreated release is no longer a draft")
+    require(not api.listing(f"releases/{OWNER_DRAFT_ID}/assets"), "Owner-precreated draft must have no assets before notes initialization")
+    return True
+
+
+def desktop_notes_date(api, release):
+    initialize_owner = bool(release and owner_precreated_draft(api, release))
+    if release and not initialize_owner:
+        owned_desktop(release)
+        stamp = re.search(re.escape(MARKER) + r" pub_date=([^ ]+) -->", release["body"])
+        require(stamp is not None, "Missing deterministic draft publication timestamp")
+        return stamp[1], False
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), initialize_owner
+
+
 def helper_state(api):
     release = api.repo(f"releases/{HELPER_RELEASE}")
     require(release["tag_name"] == HELPER_TAG and not release["draft"] and release["prerelease"], "Unexpected helper rolling release")
@@ -438,16 +459,11 @@ def prepare(api, operation, source, work):
         require(len(proofs) == 3, "Need three real artifact+trusted-comment signature verifications")
         write_json(evidence / "signature-verification.json", proofs)
         release = find_desktop(api)
-        if release:
-            owned_desktop(release)
-            stamp = re.search(re.escape(MARKER) + r" pub_date=([^ ]+) -->", release["body"])
-            require(stamp is not None, "Missing deterministic draft publication timestamp")
-            pub_date = stamp[1]
-        else:
-            pub_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        pub_date, initialize_owner = desktop_notes_date(api, release)
         notes = final_desktop_notes((source / f"docs/release-notes/{TAG}-remote-zh.md").read_text(encoding="utf-8"), pub_date)
-        if release:
+        if release and not initialize_owner:
             require(release["body"] == notes, "Existing desktop release notes differ; do not rewrite")
+        plan["initializeOwnerDraft"] = initialize_owner
         plan["body"] = notes
         plan["existingReleaseId"] = release["id"] if release else None
         notes_file = evidence / "release-body.md"
@@ -540,13 +556,27 @@ def apply_desktop(api, source, work, plan):
     if release:
         require(release["id"] == plan["existingReleaseId"], "Desktop release appeared/changed after prepare")
         validate_existing_desktop(api, release, plan["assets"], complete=not release["draft"])
-        require(release["body"] == plan["body"], "Release body changed")
+        if plan.get("initializeOwnerDraft"):
+            require(owner_precreated_draft(api, release), "Owner-precreated draft changed; refuse notes initialization")
+        else:
+            require(release["body"] == plan["body"], "Release body changed")
         if not release["draft"]:
             print("Existing complete desktop release matches; no mutation")
             return
     else:
         require(plan["existingReleaseId"] is None, "Prepared draft disappeared")
     publication_preflight(api, source, work / "evidence")
+    if plan.get("initializeOwnerDraft"):
+        require(release is not None, "Owner-precreated draft disappeared")
+        current = api.repo(f"releases/{OWNER_DRAFT_ID}")
+        require(owner_precreated_draft(api, current), "Owner-precreated draft changed during preflight")
+        # Its original tag/target were set by the owner. This narrowly authorized
+        # empty-draft transition sends neither target_commitish nor tag_name.
+        api.repo(f"releases/{OWNER_DRAFT_ID}", method="PATCH", body={"body": plan["body"], "name": "CC Switch Remote 4.0.21 · Remote r1"})
+        release = api.repo(f"releases/{OWNER_DRAFT_ID}")
+        owned_desktop(release)
+        require(release["draft"] and release["body"] == plan["body"] and release["name"] == "CC Switch Remote 4.0.21 · Remote r1", "Initialized draft notes verification failed")
+        require(not api.listing(f"releases/{OWNER_DRAFT_ID}/assets"), "Owner draft assets changed during notes initialization")
     if release is None:
         release = api.repo("releases", method="POST", body={"tag_name": TAG, "target_commitish": SOURCE,
             "name": "CC Switch Remote 4.0.21 · Remote r1", "body": plan["body"], "draft": True, "prerelease": False, "make_latest": "false"})
@@ -576,6 +606,22 @@ def replace_alias(api, name, file, item, allowed_hashes, rollback=False):
     ensure_upload(api, HELPER_RELEASE, file, item)
 
 
+def helper_target_metadata():
+    return {"target_commitish": SOURCE, "prerelease": True,
+        "body": f"Linux-only pure CLI helper binaries from {SOURCE}, preserved from run 45752621175. Both Linux x86_64/arm64 SHA/latest pairs verified equal. User explicitly discontinued current and future macOS desktop/helper packages; old macOS rolling assets removed only after backup and Linux verification. No real-host installation validation.\n{MARKER} helper -->"}
+
+
+def ensure_helper_metadata(api, desired):
+    endpoint = f"releases/{HELPER_RELEASE}"
+    current = api.repo(endpoint)
+    require(current["id"] == HELPER_RELEASE and current["tag_name"] == HELPER_TAG and not current["draft"], "Unexpected helper release metadata")
+    if not all(current.get(key) == value for key, value in desired.items()):
+        api.repo(endpoint, method="PATCH", body={**desired, "make_latest": "false"})
+        current = api.repo(endpoint)
+    require(current["id"] == HELPER_RELEASE and current["tag_name"] == HELPER_TAG and not current["draft"]
+            and all(current.get(key) == value for key, value in desired.items()), "Helper release metadata verification failed")
+
+
 def rollback_helper(api, work, plan):
     before = plan["helperBefore"]
     require(tag_sha(api, HELPER_TAG) in (before["tagSha"], SOURCE), "Helper tag changed externally; rollback requires manual review")
@@ -593,7 +639,7 @@ def rollback_helper(api, work, plan):
     require(current_tag in (before["tagSha"], SOURCE), "Helper tag changed externally; rollback requires manual review")
     if current_tag != before["tagSha"]:
         api.repo(f"git/refs/tags/{HELPER_TAG}", method="PATCH", body={"sha": before["tagSha"], "force": True})
-    api.repo(f"releases/{HELPER_RELEASE}", method="PATCH", body={"body": before["release"]["body"], "target_commitish": before["release"]["target_commitish"], "prerelease": True, "make_latest": "false"})
+    ensure_helper_metadata(api, {"body": before["release"]["body"], "target_commitish": before["release"]["target_commitish"], "prerelease": before["release"]["prerelease"]})
     # macOS was not touched before promotion commit; prove its backup state is intact too.
     verify_set(api, HELPER_RELEASE, {n: v for n, v in plan["backupManifest"].items() if "-latest-" in n or "macOS" in n})
     require(tag_sha(api, HELPER_TAG) == before["tagSha"], "Helper rollback tag verification failed")
@@ -603,8 +649,9 @@ def apply_helper(api, work, plan):
     current = helper_state(api)
     require(state_fingerprint(current) == state_fingerprint(plan["helperBefore"]), "Helper release changed since backup; re-prepare before mutation")
     expected = plan["assets"]
+    desired_metadata = helper_target_metadata()
     present = checked_asset_map(current["release"]["assets"])
-    if current["tagSha"] == SOURCE and current["release"]["target_commitish"] == SOURCE and set(present) == set(expected) and all(matches(present[n], item) for n, item in expected.items()) and MARKER in (current["release"].get("body") or ""):
+    if current["tagSha"] == SOURCE and all(current["release"].get(key) == value for key, value in desired_metadata.items()) and set(present) == set(expected) and all(matches(present[n], item) for n, item in expected.items()):
         print("Existing complete helper channel matches; no mutation")
         return
     for name, item in expected.items():
@@ -619,8 +666,7 @@ def apply_helper(api, work, plan):
         require(current_tag in (OLD_HELPER, SOURCE), "Helper tag changed during promotion")
         if current_tag != SOURCE:
             api.repo(f"git/refs/tags/{HELPER_TAG}", method="PATCH", body={"sha": SOURCE, "force": True})
-        api.repo(f"releases/{HELPER_RELEASE}", method="PATCH", body={"target_commitish": SOURCE, "prerelease": True, "make_latest": "false",
-            "body": f"Linux-only pure CLI helper binaries from {SOURCE}, preserved from run 45752621175. Both Linux x86_64/arm64 SHA/latest pairs verified equal. User explicitly discontinued current and future macOS desktop/helper packages; old macOS rolling assets removed only after backup and Linux verification. No real-host installation validation.\n{MARKER} helper -->"})
+        ensure_helper_metadata(api, desired_metadata)
         require(tag_sha(api, HELPER_TAG) == SOURCE, "Helper tag promotion failed")
         verify_set(api, HELPER_RELEASE, expected)
     except Exception as promotion_error:

@@ -433,6 +433,53 @@ class RecoveryTests(unittest.TestCase):
         for name, item in plan["backupManifest"].items():
             self.assertTrue(m.matches(api.assets[name], item))
 
+    def test_helper_owner_prepared_metadata_skips_patch_but_verifies_and_promotes_assets(self):
+        api, plan, old_hashes = self.helper_fixture()
+        api.tag = m.SOURCE
+        desired = m.helper_target_metadata()
+        api.release.update(desired)
+        for name in plan["assets"]:
+            if "-latest-" not in name:
+                api.add(name, (self.root / "assets" / name).read_bytes())
+        plan["helperBefore"] = m.helper_state(api)
+        original_repo = api.repo
+        metadata_reads = []
+        def deny_metadata_and_ref_patch(endpoint, **kwargs):
+            self.assertFalse(kwargs.get("method") == "PATCH", "Preset metadata/tag must not require write permission")
+            if endpoint == f"releases/{m.HELPER_RELEASE}":
+                metadata_reads.append(endpoint)
+            return original_repo(endpoint, **kwargs)
+        api.repo = deny_metadata_and_ref_patch
+        with patch.object(m, "OLD_HASHES", old_hashes):
+            m.apply_helper(api, self.root, plan)
+        self.assertGreaterEqual(len(metadata_reads), 2)  # Snapshot and fresh promotion check.
+        self.assertEqual(api.tag, m.SOURCE)
+        self.assertTrue(all(api.release[key] == value for key, value in desired.items()))
+        self.assertEqual(set(api.assets), set(plan["assets"]))
+        self.assertTrue(all(m.matches(api.assets[name], item) for name, item in plan["assets"].items()))
+        self.assertEqual([name for method, name, _ in api.mutations if method == "UPLOAD"],
+                         [f"cc-switch-remote-helper-latest-{platform}" for platform in m.PLATFORMS])
+
+    def test_helper_rollback_skips_unchanged_metadata_patch_and_restores_backup_bytes(self):
+        api, plan, old_hashes = self.helper_fixture()
+        api.tag = m.SOURCE
+        api.release.update(m.helper_target_metadata())
+        plan["helperBefore"] = m.helper_state(api)
+        api.fail_upload_name = "cc-switch-remote-helper-latest-Linux-arm64"
+        original_repo = api.repo
+        def deny_metadata_and_ref_patch(endpoint, **kwargs):
+            self.assertFalse(kwargs.get("method") == "PATCH", "Unchanged rollback metadata/tag must not be rewritten")
+            return original_repo(endpoint, **kwargs)
+        api.repo = deny_metadata_and_ref_patch
+        with patch.object(m, "OLD_HASHES", old_hashes), self.assertRaisesRegex(RuntimeError, "prior aliases/tag restored"):
+            m.apply_helper(api, self.root, plan)
+        self.assertEqual(api.tag, plan["helperBefore"]["tagSha"])
+        for key in ("body", "target_commitish", "prerelease"):
+            self.assertEqual(api.release[key], plan["helperBefore"]["release"][key])
+        for name, item in plan["backupManifest"].items():
+            self.assertTrue(m.matches(api.assets[name], item), name)
+        self.assertFalse(any(method == "PATCH" for method, _, _ in api.mutations))
+
     def test_helper_stops_before_mutation_when_release_changed_since_backup(self):
         api, plan, _ = self.helper_fixture()
         api.add("foreign", b"unknown")
@@ -450,6 +497,41 @@ class RecoveryTests(unittest.TestCase):
         plan = {"assets": expected, "body": body, "existingReleaseId": 321}
         (self.root / "evidence").mkdir()
         return api, plan
+
+    def test_only_fixed_empty_owner_draft_can_initialize_notes_without_tag_or_target_patch(self):
+        api, plan = self.desktop_fixture()
+        api.release_id = m.OWNER_DRAFT_ID
+        api.release.update(id=m.OWNER_DRAFT_ID, body=m.OWNER_DRAFT_MARKER, name="CC Switch Remote 4.0.21 Remote r1")
+        owner = dict(api.release)
+        for change in ({"id": 999}, {"body": m.OWNER_DRAFT_MARKER + " extra"}, {"draft": False},
+                       {"prerelease": True}, {"target_commitish": "a" * 40}, {"tag_name": "other"}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                m.desktop_notes_date(api, {**owner, **change})
+        api.add("fixture.msi", b"candidate")
+        with self.assertRaisesRegex(RuntimeError, "no assets"):
+            m.desktop_notes_date(api, owner)
+        api.assets.clear(); api.data.clear()
+        pub_date, initialize = m.desktop_notes_date(api, owner)
+        self.assertTrue(initialize)
+        self.assertRegex(pub_date, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        plan.update(existingReleaseId=m.OWNER_DRAFT_ID, initializeOwnerDraft=True,
+                    body=f"Full verified notes\n{m.MARKER} pub_date={pub_date} -->\n")
+        self.assertFalse(api.mutations, "Preparation must remain read-only")
+        with patch.object(m, "publication_preflight"):
+            m.apply_desktop(api, self.root, self.root, plan)
+        method, endpoint, payload = api.mutations[0]
+        self.assertEqual((method, endpoint), ("PATCH", f"releases/{m.OWNER_DRAFT_ID}"))
+        self.assertEqual(set(payload), {"body", "name"})
+        self.assertEqual(payload["body"], plan["body"])
+        self.assertFalse(any(method == "POST" for method, _, _ in api.mutations))
+        for method, _, body in api.mutations:
+            if method == "PATCH":
+                self.assertNotIn("target_commitish", body)
+                self.assertNotIn("tag_name", body)
+        self.assertEqual(api.release["body"], plan["body"])
+        self.assertFalse(api.release["draft"])
+        self.assertEqual(m.desktop_notes_date(api, api.release), (pub_date, False))
+        self.assertTrue(m.matches(api.assets["fixture.msi"], plan["assets"]["fixture.msi"]))
 
     def test_desktop_draft_is_published_only_after_upload_hash_and_fresh_inventory(self):
         api, plan = self.desktop_fixture()
