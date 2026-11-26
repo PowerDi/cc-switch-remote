@@ -22,6 +22,49 @@ vi.mock("@/components/JsonEditor", () => ({
 }));
 
 describe("GrokBuildProviderForm", () => {
+  it("does not replace a withheld remote TOML with partial structured edits", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <GrokBuildProviderForm
+        providerId="grok-fixture"
+        target={{
+          type: "remote",
+          profile: {
+            id: "grok-host",
+            name: "Grok fixture",
+            host: "192.0.2.10",
+            port: 22,
+            username: "fixture",
+            authMethod: { type: "sshAgent" },
+            helperPath: "/fixture/helper",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        }}
+        initialData={{
+          name: "Fixture",
+          settingsConfig: { config: "[redacted]" },
+          category: "custom",
+        }}
+        submitLabel="Save"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+    fireEvent.change(container.querySelector("#codexBaseUrl")!, {
+      target: { value: "https://fixture.example/v1" },
+    });
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "fixture-draft" },
+    });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByRole("textbox", { name: "raw-config" })).toHaveValue(
+      "[redacted]",
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("offers curated Grok Build presets and applies one", async () => {
     const user = userEvent.setup();
     const { container } = render(

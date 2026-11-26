@@ -19,7 +19,7 @@ export const getDisplaySecretValue = (value: unknown): string =>
   typeof value === "string" && !isRedactedSecretValue(value) ? value : "";
 
 const isSecretConfigKey = (key: string): boolean => {
-  const normalized = key.toLowerCase();
+  const normalized = key.toLowerCase().replace(/-/g, "");
   return (
     normalized === "key" ||
     normalized.includes("api_key") ||
@@ -27,7 +27,8 @@ const isSecretConfigKey = (key: string): boolean => {
     normalized.includes("token") ||
     normalized.includes("secret") ||
     normalized.includes("password") ||
-    normalized.includes("credential")
+    normalized.includes("credential") ||
+    normalized.endsWith("authorization")
   );
 };
 

@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useMemo } from "react";
 import { FormLabel } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -21,8 +21,8 @@ import {
   canUseStoredRemoteProviderApiKey,
   fetchModelsForProviderConfig,
   showFetchModelsError,
-  type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { useProviderModelRequest } from "./hooks/useProviderModelRequest";
 import type { ManagementTarget } from "@/lib/api/remote";
 import {
   hermesApiModes,
@@ -111,8 +111,14 @@ export function HermesFormFields({
   const [expandedModelKeys, setExpandedModelKeys] = useState<Set<string>>(
     new Set(),
   );
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
-  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const { fetchedModels, setFetchedModels, isFetchingModels, run } =
+    useProviderModelRequest({
+      app: "hermes",
+      providerId,
+      target: modelFetchTarget,
+      baseUrl,
+      apiKey,
+    });
   const [baseUrlTouched, setBaseUrlTouched] = useState(false);
 
   const baseUrlErrorCode = useMemo(() => validateBaseUrl(baseUrl), [baseUrl]);
@@ -149,7 +155,7 @@ export function HermesFormFields({
     ]);
   };
 
-  const handleFetchModels = useCallback(() => {
+  const handleFetchModels = () => {
     const hasApiKeyForFetch =
       !!apiKey ||
       canUseStoredRemoteProviderApiKey(modelFetchTarget, providerId);
@@ -160,15 +166,16 @@ export function HermesFormFields({
       });
       return;
     }
-    setIsFetchingModels(true);
-    fetchModelsForProviderConfig({
-      app: "hermes",
-      providerId,
-      target: modelFetchTarget,
-      baseUrl,
-      apiKey,
-    })
-      .then((fetched) => {
+    void run(
+      () =>
+        fetchModelsForProviderConfig({
+          app: "hermes",
+          providerId,
+          target: modelFetchTarget,
+          baseUrl,
+          apiKey,
+        }),
+      (fetched) => {
         setFetchedModels(fetched);
         if (fetched.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -177,13 +184,13 @@ export function HermesFormFields({
             t("providerForm.fetchModelsSuccess", { count: fetched.length }),
           );
         }
-      })
-      .catch((err) => {
+      },
+      (err) => {
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
-      })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, modelFetchTarget, providerId, t]);
+      },
+    );
+  };
 
   const handleRemoveModel = (index: number) => {
     const removedKey = modelKeysRef.current[index];

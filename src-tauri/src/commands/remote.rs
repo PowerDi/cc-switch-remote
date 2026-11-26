@@ -65,17 +65,6 @@ pub struct RemoteProviderState {
     pub current_provider_id: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteFetchModelsOptions {
-    pub base_url: Option<String>,
-    pub is_full_url: Option<bool>,
-    pub models_url: Option<String>,
-    pub custom_user_agent: Option<String>,
-    pub api_format: Option<String>,
-    pub request_headers: Option<std::collections::BTreeMap<String, String>>,
-}
-
 #[derive(Clone, serde::Serialize)]
 struct RemoteUniversalProviderSyncedEvent {
     action: String,
@@ -2539,24 +2528,59 @@ pub async fn remote_stream_check_provider(
 pub async fn remote_fetch_models_for_provider(
     profile: RemoteHostProfile,
     app: String,
-    providerId: String,
-    options: RemoteFetchModelsOptions,
+    providerId: Option<String>,
+    options: crate::cli::commands::RemoteFetchModelsOptions,
     secret: Option<RemoteConnectionSecret>,
 ) -> Result<Vec<crate::services::model_fetch::FetchedModel>, String> {
-    let options_json = serde_json::to_string(&options).map_err(|e| e.to_string())?;
-    run_remote_helper_json(
-        profile,
-        vec![
-            "providers".to_string(),
-            "fetch-models".to_string(),
-            app,
-            providerId,
-            options_json,
-        ],
-        secret,
-        "Remote provider fetch models",
+    let provider_id = providerId.as_deref().unwrap_or_default().trim();
+    let capability_profile = profile.clone();
+    let capability_secret = secret.clone();
+    fetch_remote_provider_models_after_capability_check(
+        provider_id,
+        &options,
+        |capability| {
+            ensure_remote_helper_capability(capability_profile, capability_secret, capability)
+        },
+        |options_json| {
+            run_remote_helper_json(
+                profile,
+                vec![
+                    "providers".to_string(),
+                    "fetch-models".to_string(),
+                    app,
+                    provider_id.to_string(),
+                    options_json,
+                ],
+                secret,
+                "Remote provider fetch models",
+            )
+        },
     )
     .await
+}
+
+async fn fetch_remote_provider_models_after_capability_check<Check, Dispatch>(
+    provider_id: &str,
+    options: &crate::cli::commands::RemoteFetchModelsOptions,
+    check: impl FnOnce(&'static str) -> Check,
+    dispatch: impl FnOnce(String) -> Dispatch,
+) -> Result<Vec<crate::services::model_fetch::FetchedModel>, String>
+where
+    Check: std::future::Future<Output = Result<(), String>>,
+    Dispatch: std::future::Future<
+        Output = Result<Vec<crate::services::model_fetch::FetchedModel>, String>,
+    >,
+{
+    let capability = if provider_id.is_empty()
+        || options.draft_api_key().is_some()
+        || options.has_model_fetch_header_placeholders()
+    {
+        crate::remote_capabilities::PROVIDER_MODEL_FETCH_DRAFT_CAPABILITY
+    } else {
+        "provider-model-fetch"
+    };
+    check(capability).await?;
+    dispatch(serde_json::to_string(options).map_err(|e| e.to_string())?).await
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -4708,6 +4732,88 @@ mod tests {
                 REMOTE_USAGE_MANUAL_SESSION_SYNC_CAPABILITY,
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn remote_model_fetch_capability_retains_legacy_for_saved_keys_and_explicit_headers() {
+        let legacy = RemoteHelperStatus {
+            capabilities: vec!["provider-model-fetch".into()],
+        };
+        let options = serde_json::from_value(serde_json::json!({
+            "apiKey": " [redacted] ",
+            "requestHeaders": { "X-Api-Key": "fixture-header", "Accept": "" }
+        }))
+        .unwrap();
+        fetch_remote_provider_models_after_capability_check(
+            "stored",
+            &options,
+            |capability| {
+                assert_eq!(capability, "provider-model-fetch");
+                std::future::ready(validate_remote_helper_capability(&legacy, capability))
+            },
+            |payload| {
+                assert!(payload.contains("fixture-header"));
+                std::future::ready(Ok(Vec::new()))
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_model_fetch_capability_blocks_legacy_dispatch_for_drafts_and_restored_headers()
+    {
+        let legacy = RemoteHelperStatus {
+            capabilities: vec!["provider-model-fetch".into()],
+        };
+        let draft_capability = crate::remote_capabilities::PROVIDER_MODEL_FETCH_DRAFT_CAPABILITY;
+        let supported = RemoteHelperStatus {
+            capabilities: vec![draft_capability.into()],
+        };
+        for (provider_id, options) in [
+            ("stored", serde_json::json!({"apiKey":"fixture-draft"})),
+            (
+                "",
+                serde_json::json!({"requestHeaders":{"Authorization":"fixture-draft"}}),
+            ),
+            (
+                "stored",
+                serde_json::json!({"requestHeaders":{"x-api-key":""}}),
+            ),
+            (
+                "stored",
+                serde_json::json!({"requestHeaders":{"Authorization":"[redacted]"}}),
+            ),
+        ] {
+            let options = serde_json::from_value(options).unwrap();
+            let error = fetch_remote_provider_models_after_capability_check(
+                provider_id,
+                &options,
+                |capability| {
+                    std::future::ready(validate_remote_helper_capability(&legacy, capability))
+                },
+                |_| -> std::future::Ready<Result<Vec<_>, String>> {
+                    panic!("legacy helper must not receive a model fetch command")
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "remote_helper_upgrade_required: provider-model-fetch-draft"
+            );
+            fetch_remote_provider_models_after_capability_check(
+                provider_id,
+                &options,
+                |capability| {
+                    assert_eq!(capability, draft_capability);
+                    std::future::ready(validate_remote_helper_capability(&supported, capability))
+                },
+                |_| std::future::ready(Ok(Vec::new())),
+            )
+            .await
+            .unwrap();
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ import { http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderForm } from "@/components/providers/forms/ProviderForm";
 import { OPENCLAW_DEFAULT_USER_AGENT } from "@/components/providers/forms/hooks/useOpenclawFormState";
+import type { ManagementTarget } from "@/lib/api/remote";
 import { server } from "../msw/server";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
@@ -94,6 +95,69 @@ beforeEach(() => {
   );
 });
 describe("ProviderForm OpenClaw User-Agent headers", () => {
+  it("fetches models for the saved remote provider without exposing or re-entering its key", async () => {
+    const target: ManagementTarget = {
+      type: "remote",
+      profile: {
+        id: "openclaw-fixture",
+        name: "Fixture",
+        host: "192.0.2.10",
+        port: 22,
+        username: "fixture",
+        authMethod: { type: "sshAgent" },
+        helperPath: "/fixture/helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      secret: { password: "fixture-ssh" },
+    };
+    const fetchModels = vi.fn();
+    server.use(
+      http.post(
+        "http://tauri.local/remote_get_openclaw_live_provider_ids",
+        () => HttpResponse.json(["fixture-provider"]),
+      ),
+      http.post(
+        "http://tauri.local/remote_fetch_models_for_provider",
+        async ({ request }) => {
+          fetchModels(await request.json());
+          return HttpResponse.json([{ id: "remote-model", ownedBy: null }]);
+        },
+      ),
+    );
+    const onSubmit = vi.fn();
+    render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="openclaw"
+          providerId="fixture-provider"
+          target={target}
+          initialData={{
+            name: "Fixture provider",
+            settingsConfig: { ...base, apiKey: "" },
+            secretReferenceConfig: { ...base, apiKey: "[redacted]" },
+          }}
+          submitLabel="save-provider"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    await waitFor(() =>
+      expect(fetchModels).toHaveBeenCalledWith({
+        profile: target.profile,
+        secret: target.secret,
+        app: "openclaw",
+        providerId: "fixture-provider",
+        options: { baseUrl: base.baseUrl },
+      }),
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("enabling User-Agent preserves headers in final submission", async () => {
     const test = await mount(customHeaders);
     test.toggle();

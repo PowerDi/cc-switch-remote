@@ -1003,7 +1003,7 @@ export function CodexFormFields({
     runModelFetch(
       () =>
         fetchModelsForProviderConfig({
-          app: "codex",
+          app: appId,
           providerId,
           target: modelFetchTarget,
           baseUrl: codexBaseUrl,
@@ -1016,6 +1016,7 @@ export function CodexFormFields({
       "[ModelFetch] Failed:",
     );
   }, [
+    appId,
     runModelFetch,
     receiveFetchedModels,
     codexBaseUrl,

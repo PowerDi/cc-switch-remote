@@ -13,6 +13,7 @@ import type { ProviderFormData } from "@/lib/schemas/provider";
 import type { OpenCodeModel, OpenCodeProviderOptions } from "@/types";
 import { mcodeProviderPresets } from "@/config/mcodeProviderPresets";
 import { mcodePresetModelSources } from "@/config/presetModelMetadata";
+import { isRedactedSecretValue } from "@/utils/providerConfigUtils";
 import { BasicFormFields } from "./BasicFormFields";
 import { OpenCodeFormFields } from "./OpenCodeFormFields";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
@@ -125,12 +126,22 @@ export function McodeProviderForm({
     },
   });
   const name = form.watch("name");
+  const keepRemoteApiKey =
+    target?.type === "remote" &&
+    isEdit &&
+    isRedactedSecretValue(
+      (
+        initialData?.secretReferenceConfig?.options as
+          | OpenCodeProviderOptions
+          | undefined
+      )?.apiKey,
+    );
   const ready = Boolean(
     jsonValid &&
       name.trim() &&
       (isEdit || (providerKey && !keyInvalid && !keyTaken)) &&
       config.options?.baseURL?.trim() &&
-      config.options?.apiKey?.trim() &&
+      (config.options?.apiKey?.trim() || keepRemoteApiKey) &&
       Object.keys(config.models ?? {}).length,
   );
   useEffect(() => {
@@ -267,11 +278,19 @@ export function McodeProviderForm({
             }
           />
           <OpenCodeFormFields
+            appId="mcode"
+            providerId={providerId}
+            modelFetchTarget={target}
             apiFormats={API_FORMATS}
             presetModelSources={mcodePresetModelSources}
             npm={config.api ?? "anthropic-messages"}
             onNpmChange={(api) => update({ ...config, api })}
             apiKey={config.options?.apiKey ?? ""}
+            apiKeyPlaceholder={
+              keepRemoteApiKey
+                ? t("apiKeyInput.keepCurrentPlaceholder")
+                : undefined
+            }
             onApiKeyChange={(apiKey) => updateOptions({ apiKey })}
             category={category}
             shouldShowApiKeyLink={Boolean(preset?.apiKeyUrl)}

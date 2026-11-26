@@ -21,8 +21,8 @@ import {
   canUseStoredRemoteProviderApiKey,
   fetchModelsForProviderConfig,
   showFetchModelsError,
-  type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { useProviderModelRequest } from "./hooks/useProviderModelRequest";
 import type { ManagementTarget } from "@/lib/api/remote";
 import { openclawApiProtocols } from "@/config/openclawProviderPresets";
 import type { ProviderCategory, OpenClawModel } from "@/types";
@@ -83,8 +83,14 @@ export function OpenClawFormFields({
 }: OpenClawFormFieldsProps) {
   const { t } = useTranslation();
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
-  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const { fetchedModels, setFetchedModels, isFetchingModels, run } =
+    useProviderModelRequest({
+      app: "openclaw",
+      providerId,
+      target: modelFetchTarget,
+      baseUrl,
+      apiKey,
+    });
 
   // Stable key tracking for models list
   const modelKeysRef = useRef<string[]>([]);
@@ -131,7 +137,7 @@ export function OpenClawFormFields({
   };
 
   // Fetch models from API
-  const handleFetchModels = useCallback(() => {
+  const handleFetchModels = () => {
     const hasApiKeyForFetch =
       !!apiKey ||
       canUseStoredRemoteProviderApiKey(modelFetchTarget, providerId);
@@ -142,15 +148,16 @@ export function OpenClawFormFields({
       });
       return;
     }
-    setIsFetchingModels(true);
-    fetchModelsForProviderConfig({
-      app: "openclaw",
-      providerId,
-      target: modelFetchTarget,
-      baseUrl,
-      apiKey,
-    })
-      .then((models) => {
+    void run(
+      () =>
+        fetchModelsForProviderConfig({
+          app: "openclaw",
+          providerId,
+          target: modelFetchTarget,
+          baseUrl,
+          apiKey,
+        }),
+      (models) => {
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -159,13 +166,13 @@ export function OpenClawFormFields({
             t("providerForm.fetchModelsSuccess", { count: models.length }),
           );
         }
-      })
-      .catch((err) => {
+      },
+      (err) => {
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
-      })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, modelFetchTarget, providerId, t]);
+      },
+    );
+  };
 
   // Remove a model entry
   const handleRemoveModel = (index: number) => {

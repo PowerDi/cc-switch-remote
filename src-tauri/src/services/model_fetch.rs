@@ -216,7 +216,7 @@ pub async fn fetch_models(
         let response = match request.send().await {
             Ok(r) => r,
             Err(e) => {
-                return Err(format!("Request failed: {e}"));
+                return Err(format!("Request failed: {}", e.without_url()));
             }
         };
 
@@ -226,7 +226,7 @@ pub async fn fetch_models(
             let resp: ModelsResponse = response
                 .json()
                 .await
-                .map_err(|e| format!("Failed to parse response: {e}"))?;
+                .map_err(|e| format!("Failed to parse response: {}", e.without_url()))?;
 
             let mut models: Vec<FetchedModel> = if let Some(data) = resp.data {
                 data.into_iter()

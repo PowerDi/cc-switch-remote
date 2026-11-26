@@ -482,6 +482,8 @@ mod tests {
         assert!(capabilities
             .iter()
             .any(|capability| capability == "provider-model-fetch"));
+        assert!(capabilities.iter().any(|capability| capability
+            == crate::remote_capabilities::PROVIDER_MODEL_FETCH_DRAFT_CAPABILITY));
     }
 
     #[test]
@@ -532,6 +534,100 @@ mod tests {
                 .and_then(|error| error.get("code"))
                 .and_then(Value::as_str),
             Some("invalid_app")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn providers_fetch_models_uses_saved_and_unsaved_credentials_without_writing_rows() {
+        use crate::{database::Database, provider::Provider};
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let dir = tempfile::tempdir().expect("temp test home");
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
+        let db = Database::init().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let provider = Provider::with_id(
+            "existing-fixture".into(),
+            "Existing".into(),
+            serde_json::json!({"options": {
+                "apiKey": "fixture-saved", "baseURL": endpoint,
+                "headers": {"X-Gateway-Token": "fixture-saved-header"}
+            }}),
+            None,
+        );
+        db.save_provider("mcode", &provider).unwrap();
+        let before = db.get_all_providers("mcode").unwrap().len();
+        let worker = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut lines = BufReader::new(&mut stream).lines();
+                let request_line = lines.next().unwrap().unwrap();
+                assert!(request_line.starts_with("GET /v1/models "));
+                let headers: Vec<_> = lines
+                    .map(Result::unwrap)
+                    .take_while(|line| !line.is_empty())
+                    .collect();
+                let key = headers
+                    .iter()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("authorization")
+                            .then(|| value.trim().trim_start_matches("Bearer "))
+                    })
+                    .expect("authorization header");
+                let gateway = headers
+                    .iter()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("x-gateway-token")
+                            .then(|| value.trim())
+                    })
+                    .unwrap_or("none");
+                let body = serde_json::json!({"data": [{"id": format!("model-{key}-{gateway}")}]});
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+
+        for (id, key, header, expected) in [
+            (
+                "existing-fixture",
+                " [redacted] ",
+                "",
+                "model-fixture-saved-fixture-saved-header",
+            ),
+            (
+                "existing-fixture",
+                " fixture-draft ",
+                "fixture-draft-header",
+                "model-fixture-draft-fixture-draft-header",
+            ),
+            ("", "fixture-new", "[redacted]", "model-fixture-new-none"),
+        ] {
+            let result = run_command(&[
+                "providers".into(),
+                "fetch-models".into(),
+                "mcode".into(),
+                id.into(),
+                serde_json::json!({"baseUrl": (id.is_empty()).then_some(&endpoint), "apiKey": key, "requestHeaders": {"x-gateway-token": header}})
+                    .to_string(),
+            ]);
+            assert_eq!(result["data"][0]["id"], expected, "{result}");
+        }
+        worker.join().unwrap();
+        assert_eq!(db.get_all_providers("mcode").unwrap().len(), before);
+        assert_eq!(
+            db.get_provider_by_id("existing-fixture", "mcode")
+                .unwrap()
+                .unwrap()
+                .settings_config,
+            provider.settings_config
         );
     }
 
@@ -619,6 +715,77 @@ mod tests {
     /// 远端编辑器契约：读出去必须脱敏，写回来必须能按库里那一行还原。
     /// 若不还原，`base` 里的 `[redacted]` 与 live 的真密钥不一致，三方比较会
     /// 当成外部改动并以默认 Refuse 策略整单拒绝，下面的保存就不会成功。
+    #[test]
+    #[serial_test::serial]
+    fn helper_codex_editor_keeps_redacted_toml_credentials_and_rejects_unmatched_placeholders() {
+        let dir = tempfile::tempdir().expect("temp test home");
+        let _home = EnvVarGuard::set("CC_SWITCH_TEST_HOME", dir.path());
+        let path = crate::codex_config::get_codex_config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let live_text =
+            "[[mcp_servers.gateway.oauth_headers]]\nAuthorization = 'fixture-live-credential'\n";
+        std::fs::write(&path, live_text).unwrap();
+        let stored_text = "model = 'fixture-model'\nmodel_provider = 'legacy'\n[model_providers.legacy]\nname = 'Fixture'\nbase_url = 'https://example.com/v1'\nexperimental_bearer_token = 'fixture-stored-credential'\n";
+        let provider = crate::provider::Provider::with_id(
+            "fixture-codex".into(),
+            "Fixture".into(),
+            serde_json::json!({ "config": stored_text, "auth": {} }),
+            None,
+        );
+        let db = crate::Database::init().unwrap();
+        db.save_provider("codex", &provider).unwrap();
+        let app = crate::app_config::AppType::Codex;
+        let rows = commands::list_providers(app.clone()).unwrap();
+        let mut edited = rows["fixture-codex"].clone();
+        assert!(!edited.to_string().contains("fixture-stored-credential"));
+        let view = commands::editor_view(
+            app.clone(),
+            &edited["settingsConfig"].to_string(),
+            r#"{"providerId":"fixture-codex"}"#,
+        )
+        .unwrap();
+        let base = &view["settings"];
+        let base_text = base["config"].as_str().unwrap();
+        assert!(base_text.contains("[redacted]"));
+        assert!(!base_text.contains("fixture-live-credential"));
+        assert!(!base_text.contains("fixture-stored-credential"));
+        edited["settingsConfig"] = base.clone();
+        let editor = serde_json::json!({ "base": base }).to_string();
+
+        edited["settingsConfig"]["config"] = serde_json::json!(format!(
+            "{base_text}\n[unknown_service]\napi_key = '[redacted]'\n"
+        ));
+        assert!(commands::update_provider_from_editor(
+            app.clone(),
+            &edited.to_string(),
+            None,
+            &editor
+        )
+        .is_err());
+        let unchanged = db
+            .get_provider_by_id("fixture-codex", "codex")
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.settings_config["config"], stored_text);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), live_text);
+
+        edited["settingsConfig"]["config"] =
+            serde_json::json!(base_text.replace("fixture-model", "new-fixture-model"));
+        assert!(
+            commands::update_provider_from_editor(app, &edited.to_string(), None, &editor).unwrap()
+        );
+        let saved = db
+            .get_provider_by_id("fixture-codex", "codex")
+            .unwrap()
+            .unwrap();
+        let saved_text = saved.settings_config["config"].as_str().unwrap();
+        assert!(saved_text.contains("new-fixture-model"));
+        assert!(saved_text.contains("fixture-stored-credential"));
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(written.contains("fixture-live-credential"));
+        assert!(!written.contains("[redacted]"));
+    }
+
     #[test]
     #[serial_test::serial]
     fn helper_editor_view_redacts_secrets_and_editor_save_restores_them() {

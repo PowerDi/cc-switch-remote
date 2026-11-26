@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -19,8 +19,8 @@ import {
   canUseStoredRemoteProviderApiKey,
   fetchModelsForProviderConfig,
   showFetchModelsError,
-  type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { useProviderModelRequest } from "./hooks/useProviderModelRequest";
 import type { ManagementTarget } from "@/lib/api/remote";
 import { opencodeNpmPackages } from "@/config/opencodeProviderPresets";
 import { cn } from "@/lib/utils";
@@ -170,6 +170,7 @@ function ModelOptionKeyInput({
 }
 
 interface OpenCodeFormFieldsProps {
+  appId?: "opencode" | "mcode";
   providerId?: string;
   modelFetchTarget?: ManagementTarget;
   allowBuiltinDefaults?: boolean;
@@ -208,6 +209,7 @@ interface OpenCodeFormFieldsProps {
 }
 
 export function OpenCodeFormFields({
+  appId = "opencode",
   providerId,
   modelFetchTarget,
   allowBuiltinDefaults = false,
@@ -234,21 +236,18 @@ export function OpenCodeFormFields({
 }: OpenCodeFormFieldsProps) {
   const { t } = useTranslation();
 
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
-  const [isFetchingModels, setIsFetchingModels] = useState(false);
-  const modelFetchGeneration = useRef(0);
+  const requestHeaders = normalizeRequestHeaders(headers);
+  const { fetchedModels, setFetchedModels, isFetchingModels, run } =
+    useProviderModelRequest({
+      app: appId,
+      providerId,
+      target: modelFetchTarget,
+      baseUrl,
+      apiKey,
+      headers: requestHeaders,
+    });
 
-  useEffect(() => {
-    setFetchedModels((prev) => (prev.length === 0 ? prev : []));
-    setIsFetchingModels(false);
-    return () => {
-      // Ignore responses for a previous endpoint/key or an unmounted form.
-      modelFetchGeneration.current += 1;
-    };
-  }, [baseUrl, apiKey, headers]);
-
-  const handleFetchModels = useCallback(() => {
-    const requestHeaders = normalizeRequestHeaders(headers);
+  const handleFetchModels = () => {
     const hasCredentials =
       !!apiKey ||
       Object.keys(requestHeaders).length > 0 ||
@@ -266,20 +265,18 @@ export function OpenCodeFormFields({
       "user-agent",
     );
 
-    const generation = ++modelFetchGeneration.current;
-    setFetchedModels([]);
-    setIsFetchingModels(true);
-    fetchModelsForProviderConfig({
-      app: "opencode",
-      providerId,
-      target: modelFetchTarget,
-      baseUrl,
-      apiKey,
-      customUserAgent,
-      requestHeaders,
-    })
-      .then((result) => {
-        if (generation !== modelFetchGeneration.current) return;
+    void run(
+      () =>
+        fetchModelsForProviderConfig({
+          app: appId,
+          providerId,
+          target: modelFetchTarget,
+          baseUrl,
+          apiKey,
+          customUserAgent,
+          requestHeaders,
+        }),
+      (result) => {
         const models = [
           ...new Map(result.map((model) => [model.id, model])).values(),
         ];
@@ -288,18 +285,13 @@ export function OpenCodeFormFields({
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
         }
-      })
-      .catch((err) => {
-        if (generation !== modelFetchGeneration.current) return;
+      },
+      (err) => {
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
-      })
-      .finally(() => {
-        if (generation === modelFetchGeneration.current) {
-          setIsFetchingModels(false);
-        }
-      });
-  }, [baseUrl, apiKey, headers, modelFetchTarget, providerId, t]);
+      },
+    );
+  };
 
   // Track which models have expanded options panel
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());

@@ -1,3 +1,5 @@
+pub const PROVIDER_MODEL_FETCH_DRAFT_CAPABILITY: &str = "provider-model-fetch-draft";
+
 pub const REMOTE_HELPER_CAPABILITIES: &[&str] = &[
     "providers",
     // Parity through shared native provider, tool, MCP, prompt, skill and session services.
@@ -14,6 +16,7 @@ pub const REMOTE_HELPER_CAPABILITIES: &[&str] = &[
     "omo",
     "provider-official-seed",
     "provider-model-fetch",
+    PROVIDER_MODEL_FETCH_DRAFT_CAPABILITY,
     "opencode-runtime-models",
     "universal-providers",
     "routing-config",

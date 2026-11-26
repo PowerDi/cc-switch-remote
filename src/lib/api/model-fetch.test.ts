@@ -3,13 +3,18 @@ import {
   fetchCodexOauthModels,
   fetchModelsForProviderConfig,
   getOpenCodeModels,
+  showFetchModelsError,
 } from "./model-fetch";
 import type { ManagementTarget, RemoteHostProfile } from "./remote";
+import type { TFunction } from "i18next";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 const remoteFetchCodexOauthModelsMock = vi.hoisted(() => vi.fn());
 const remoteFetchModelsForProviderMock = vi.hoisted(() => vi.fn());
 const remoteGetOpenCodeModelsMock = vi.hoisted(() => vi.fn());
+const toastErrorMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/toast", () => ({ toast: { error: toastErrorMock } }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -66,7 +71,7 @@ describe("fetchModelsForProviderConfig", () => {
         providerId: " remote-provider ",
         target: remoteTarget,
         baseUrl: "https://api.example.com",
-        apiKey: "unsaved-secret",
+        apiKey: " unsaved-secret ",
         modelsUrl: "https://api.example.com/models",
       }),
     ).resolves.toEqual([{ id: "remote-model", ownedBy: null }]);
@@ -77,6 +82,7 @@ describe("fetchModelsForProviderConfig", () => {
       "remote-provider",
       {
         baseUrl: "https://api.example.com",
+        apiKey: "unsaved-secret",
         isFullUrl: undefined,
         modelsUrl: "https://api.example.com/models",
         customUserAgent: undefined,
@@ -86,7 +92,8 @@ describe("fetchModelsForProviderConfig", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("rejects unsaved remote providers without falling back to local invoke", async () => {
+  it("fetches for a new remote provider without saving it or invoking locally", async () => {
+    remoteFetchModelsForProviderMock.mockResolvedValueOnce([]);
     await expect(
       fetchModelsForProviderConfig({
         app: "pi",
@@ -95,11 +102,80 @@ describe("fetchModelsForProviderConfig", () => {
         baseUrl: "https://api.example.com",
         apiKey: "unsaved-secret",
       }),
-    ).rejects.toThrow("Remote model fetch requires a saved provider");
+    ).resolves.toEqual([]);
 
-    expect(remoteFetchModelsForProviderMock).not.toHaveBeenCalled();
+    expect(remoteFetchModelsForProviderMock).toHaveBeenCalledWith(
+      remoteProfile,
+      "pi",
+      undefined,
+      expect.objectContaining({ apiKey: "unsaved-secret" }),
+      remoteTarget.secret,
+    );
     expect(invokeMock).not.toHaveBeenCalled();
   });
+
+  it.each(["", " [redacted] "])(
+    "uses only the saved remote credential for placeholder %j",
+    async (apiKey) => {
+      await fetchModelsForProviderConfig({
+        app: "opencode",
+        providerId: "saved",
+        target: remoteTarget,
+        baseUrl: "https://api.example.com/v1",
+        apiKey,
+      });
+      expect(remoteFetchModelsForProviderMock).toHaveBeenCalledWith(
+        remoteProfile,
+        "opencode",
+        "saved",
+        expect.not.objectContaining({ apiKey: expect.anything() }),
+        remoteTarget.secret,
+      );
+      expect(invokeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("invokes the original local model fetch with the draft and headers", async () => {
+    invokeMock.mockResolvedValueOnce([{ id: "local-model", ownedBy: null }]);
+    const requestHeaders = { "X-Api-Key": "fixture-header" };
+    await expect(
+      fetchModelsForProviderConfig({
+        app: "opencode",
+        providerId: "local-provider",
+        target: { type: "local" },
+        baseUrl: "https://local.example.com/v1",
+        apiKey: "fixture-local-key",
+        requestHeaders,
+      }),
+    ).resolves.toEqual([{ id: "local-model", ownedBy: null }]);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "fetch_models_for_config",
+      expect.objectContaining({
+        baseUrl: "https://local.example.com/v1",
+        apiKey: "fixture-local-key",
+        requestHeaders,
+      }),
+    );
+    expect(remoteFetchModelsForProviderMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["provider-model-fetch", "provider-model-fetch-draft"])(
+    "localizes the helper upgrade message for %s",
+    (capability) => {
+      toastErrorMock.mockClear();
+      const t = vi.fn(() => "Update the helper on this host");
+      showFetchModelsError(
+        `remote_helper_upgrade_required: ${capability}`,
+        t as unknown as TFunction,
+      );
+      expect(t).toHaveBeenCalledWith(
+        "providerForm.fetchModelsHelperUpgradeRequired",
+      );
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Update the helper on this host",
+      );
+    },
+  );
 });
 
 describe("fetchCodexOauthModels", () => {

@@ -1826,6 +1826,8 @@
       "apply": "套用"
     },
     "fetchModelsFailed": "取得模型清單失敗",
+    "fetchModelsHelperUpgradeRequired": "請更新遠端 Helper，再使用此設定取得模型清單。",
+    "remoteTomlUnavailable": "無法安全讀取遠端 TOML。請在遠端主機上修復，或在原始設定編輯器中取代後再儲存。",
     "fetchModelsEmpty": "未找到可用模型",
     "fetchModelsNeedApiKey": "請先填寫 API Key",
     "fetchModelsNeedEndpoint": "請先填寫 API 端點",

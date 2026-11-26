@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { McodeProviderForm } from "@/components/providers/forms/McodeProviderForm";
 import { mcodeProviderPresets } from "@/config/mcodeProviderPresets";
 import { piProviderPresets } from "@/config/piProviderPresets";
+import { remoteApi, type ManagementTarget } from "@/lib/api/remote";
 import { setProviders } from "../msw/state";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
@@ -58,6 +59,72 @@ const original = {
 };
 
 describe("McodeProviderForm", () => {
+  it("fetches with the saved credential on the selected host and allows saving without re-entering it", async () => {
+    const target: ManagementTarget = {
+      type: "remote",
+      profile: {
+        id: "remote-mcode",
+        name: "Fixture",
+        host: "192.0.2.10",
+        port: 22,
+        username: "fixture",
+        authMethod: { type: "sshAgent" },
+        helperPath: "/fixture/helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      secret: { password: "fixture-ssh" },
+    };
+    const fetchModels = vi
+      .spyOn(remoteApi, "fetchModelsForProvider")
+      .mockResolvedValue([]);
+    const getProviderState = vi
+      .spyOn(remoteApi, "getProviderState")
+      .mockResolvedValue({ providers: {}, currentProviderId: "" });
+    try {
+      const onSubmit = vi.fn();
+      render(
+        <McodeProviderForm
+          appId="mcode"
+          target={target}
+          providerId="saved-mcode"
+          initialData={{
+            name: "Existing",
+            settingsConfig: {
+              ...original,
+              options: { ...original.options, apiKey: "" },
+            },
+            secretReferenceConfig: {
+              ...original,
+              options: { ...original.options, apiKey: "[redacted]" },
+            },
+          }}
+          submitLabel="Save"
+          onSubmit={onSubmit}
+          onCancel={() => {}}
+        />,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "providerForm.fetchModels" }),
+      );
+      await waitFor(() =>
+        expect(fetchModels).toHaveBeenCalledWith(
+          target.profile,
+          "mcode",
+          "saved-mcode",
+          expect.not.objectContaining({ apiKey: expect.anything() }),
+          target.secret,
+        ),
+      );
+      expect(onSubmit).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    } finally {
+      fetchModels.mockRestore();
+      getProviderState.mockRestore();
+    }
+  });
+
   it.each([true, false])(
     "edits native fields while preserving model options and unknown settings (explicit API: %s)",
     async (explicitApi) => {

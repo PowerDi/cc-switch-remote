@@ -1826,6 +1826,8 @@
       "apply": "Apply"
     },
     "fetchModelsFailed": "Failed to fetch models",
+    "fetchModelsHelperUpgradeRequired": "Update the remote helper to fetch models with this configuration.",
+    "remoteTomlUnavailable": "The remote TOML could not be read safely. Repair it on the remote host or replace it in the raw editor before saving.",
     "fetchModelsEmpty": "No models found",
     "fetchModelsNeedApiKey": "Please fill in API Key first",
     "fetchModelsNeedEndpoint": "Please fill in API endpoint first",

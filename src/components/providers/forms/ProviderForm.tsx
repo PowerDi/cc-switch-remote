@@ -2991,6 +2991,7 @@ function ProviderFormFull({
 
           {appId === "opencode" && !isAnyOmoCategory && !isNativeOpencode && (
             <OpenCodeFormFields
+              providerId={providerId}
               modelFetchTarget={target}
               apiKeyPlaceholder={remoteKeepApiKeyPlaceholder}
               allowBuiltinDefaults={canKeepExistingOpencodeOverride}
@@ -3040,6 +3041,7 @@ function ProviderFormFull({
           {/* OpenClaw 专属字段 */}
           {appId === "openclaw" && (
             <OpenClawFormFields
+              providerId={providerId}
               modelFetchTarget={target}
               apiKeyPlaceholder={remoteKeepApiKeyPlaceholder}
               baseUrl={openclawForm.openclawBaseUrl}
@@ -3063,6 +3065,7 @@ function ProviderFormFull({
           {/* Hermes 专属字段 */}
           {appId === "hermes" && (
             <HermesFormFields
+              providerId={providerId}
               modelFetchTarget={target}
               apiKeyPlaceholder={remoteKeepApiKeyPlaceholder}
               baseUrl={hermesForm.hermesBaseUrl}

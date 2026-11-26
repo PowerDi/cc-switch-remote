@@ -6,8 +6,10 @@ use crate::services::omo::{OmoLocalFileData, OmoVariant, SLIM, STANDARD};
 use crate::services::profile::{ProfilePayload, ProfileScope, ProfileService};
 use crate::services::provider::EditorSave;
 use crate::services::provider_secrets::{
-    redact_provider_map_secret_values, redact_secret_values, restore_redacted_secret_values,
-    restore_redacted_secret_values_for,
+    has_provider_toml_placeholder, is_model_fetch_header_placeholder,
+    redact_inactive_provider_field, redact_provider_map_secret_values, redact_provider_toml,
+    redact_secret_values, restore_provider_toml, restore_redacted_secret_values,
+    restore_redacted_secret_values_for, uses_provider_toml, REDACTED_SECRET_SENTINEL,
 };
 use crate::services::skill::{
     DiscoverableSkill, ImportSkillSelection, SkillBackupEntry, SkillDiscoveryResult, SkillRepo,
@@ -188,15 +190,35 @@ pub fn status_payload() -> StatusPayload {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Default, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteFetchModelsOptions {
     pub base_url: Option<String>,
+    pub api_key: Option<String>,
     pub is_full_url: Option<bool>,
     pub models_url: Option<String>,
     pub custom_user_agent: Option<String>,
     pub api_format: Option<String>,
     pub request_headers: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl RemoteFetchModelsOptions {
+    pub fn draft_api_key(&self) -> Option<&str> {
+        self.api_key.as_deref().and_then(model_fetch_api_key)
+    }
+
+    pub fn has_model_fetch_header_placeholders(&self) -> bool {
+        self.request_headers.as_ref().is_some_and(|headers| {
+            headers
+                .iter()
+                .any(|(name, value)| is_model_fetch_header_placeholder(name, value))
+        })
+    }
+}
+
+fn model_fetch_api_key(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty() && value != REDACTED_SECRET_SENTINEL).then_some(value)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -241,33 +263,72 @@ pub fn fetch_models_for_provider(
 ) -> Result<Vec<crate::services::model_fetch::FetchedModel>, String> {
     let options: RemoteFetchModelsOptions = serde_json::from_str(options_json)
         .map_err(|e| format!("Invalid model fetch options: {e}"))?;
-    let db = Database::init().map_err(|e| e.to_string())?;
-    let providers = db
-        .get_all_providers(app_type.as_str())
-        .map_err(|e| e.to_string())?;
-    let provider = providers
-        .get(provider_id)
-        .ok_or_else(|| format!("Provider not found: {provider_id}"))?;
-    let (stored_base_url, api_key) = provider.resolve_usage_credentials(&app_type);
+    let provider = if provider_id.is_empty() {
+        None
+    } else {
+        let db = Database::init().map_err(|e| e.to_string())?;
+        Some(
+            db.get_provider_by_id(provider_id, app_type.as_str())
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("Provider not found: {provider_id}"))?,
+        )
+    };
+    auth_runtime()?.block_on(fetch_models_with_credentials(
+        &app_type,
+        provider.as_ref(),
+        &options,
+    ))
+}
+
+async fn fetch_models_with_credentials(
+    app_type: &AppType,
+    provider: Option<&Provider>,
+    options: &RemoteFetchModelsOptions,
+) -> Result<Vec<crate::services::model_fetch::FetchedModel>, String> {
+    let (stored_base_url, stored_api_key) = provider
+        .map(|provider| provider.resolve_usage_credentials(app_type))
+        .unwrap_or_default();
     let base_url = options
         .base_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(stored_base_url.as_str());
+    let api_key = if let Some(api_key) = options.draft_api_key() {
+        match app_type {
+            AppType::Pi => crate::pi_config::resolve_usage_api_key(api_key),
+            AppType::Omp => crate::omp_config::resolve_usage_api_key(api_key),
+            _ => api_key.to_string(),
+        }
+    } else {
+        stored_api_key
+    };
     let user_agent = crate::provider::parse_custom_user_agent(options.custom_user_agent.as_deref())
         .ok()
         .flatten();
+    let request_headers = options.request_headers.as_ref().map(|headers| {
+        let mut headers = headers.clone();
+        if let Some(row) = provider {
+            crate::services::provider_secrets::restore_model_fetch_headers(
+                row,
+                app_type,
+                &mut headers,
+            );
+        }
+        headers.retain(|name, value| !is_model_fetch_header_placeholder(name, value));
+        headers
+    });
 
-    auth_runtime()?.block_on(crate::services::model_fetch::fetch_models(
+    crate::services::model_fetch::fetch_models(
         base_url,
-        &api_key,
+        model_fetch_api_key(&api_key).unwrap_or_default(),
         options.is_full_url.unwrap_or(false),
         options.models_url.as_deref(),
         user_agent,
         options.api_format.as_deref(),
-        options.request_headers.as_ref(),
-    ))
+        request_headers.as_ref(),
+    )
+    .await
 }
 
 fn build_command_state() -> Result<AppState, String> {
@@ -2279,9 +2340,9 @@ pub fn set_hermes_memory_enabled(
 pub fn list_providers(app: AppType) -> Result<serde_json::Value, String> {
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
     let state = build_remote_app_state(db);
-    let providers = ProviderService::list(&state, app).map_err(|e| e.to_string())?;
+    let providers = ProviderService::list(&state, app.clone()).map_err(|e| e.to_string())?;
     let mut value = serde_json::to_value(providers).map_err(|e| e.to_string())?;
-    redact_provider_map_secret_values(&mut value);
+    redact_provider_map_secret_values(&mut value, Some(&app));
     Ok(value)
 }
 
@@ -2309,7 +2370,8 @@ pub fn switch_provider(app: AppType, id: &str) -> Result<crate::services::Switch
 }
 
 pub fn add_provider(app: AppType, provider_json: &str, add_to_live: bool) -> Result<bool, String> {
-    let provider: Provider = serde_json::from_str(provider_json).map_err(|e| e.to_string())?;
+    let mut provider: Provider = serde_json::from_str(provider_json).map_err(|e| e.to_string())?;
+    restore_provider_toml(&app, None, &mut provider.settings_config)?;
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
     let state = build_remote_app_state(db);
     ProviderService::add(&state, app, provider, add_to_live).map_err(|e| e.to_string())
@@ -2324,13 +2386,17 @@ pub fn update_provider(
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
     let state = build_remote_app_state(db);
     let provider_id = original_id.unwrap_or(provider.id.as_str());
-    if let Some(existing_provider) = state
+    let existing_provider = state
         .db
         .get_provider_by_id(provider_id, app.as_str())
-        .map_err(|e| e.to_string())?
-    {
-        restore_redacted_secret_values(&existing_provider, &mut provider)
-            .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
+    restore_provider_toml(
+        &app,
+        existing_provider.as_ref().map(|row| &row.settings_config),
+        &mut provider.settings_config,
+    )?;
+    if let Some(row) = existing_provider.as_ref() {
+        restore_redacted_secret_values(row, &mut provider).map_err(|e| e.to_string())?;
     }
     ProviderService::update(&state, app, original_id, provider).map_err(|e| e.to_string())
 }
@@ -2354,12 +2420,23 @@ pub fn editor_view(
         meta: Option<crate::provider::ProviderMeta>,
     }
 
-    let settings_config: serde_json::Value =
+    let mut settings_config: serde_json::Value =
         serde_json::from_str(settings_config_json).map_err(|e| e.to_string())?;
     let options: EditorViewOptions =
         serde_json::from_str(options_json).map_err(|e| e.to_string())?;
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
     let state = build_remote_app_state(db);
+    if let Some(id) = options.provider_id.as_deref() {
+        if let Some(row) = state
+            .db
+            .get_provider_by_id(id, app.as_str())
+            .map_err(|e| e.to_string())?
+        {
+            restore_provider_toml(&app, Some(&row.settings_config), &mut settings_config)?;
+            restore_redacted_secret_values_for(&row.settings_config, &mut settings_config)
+                .map_err(|e| e.to_string())?;
+        }
+    }
     let category = ProviderService::editor_category(
         &state,
         &app,
@@ -2367,31 +2444,66 @@ pub fn editor_view(
         options.category,
     )
     .map_err(|e| e.to_string())?;
-    let view = ProviderService::editor_view_with_meta(
+    let mut view = ProviderService::editor_view_with_meta(
         &state,
-        app,
+        app.clone(),
         &settings_config,
         category.as_deref(),
         options.provider_id.as_deref(),
         options.meta.as_ref(),
     )
     .map_err(|e| e.to_string())?;
-    let mut value = serde_json::to_value(view).map_err(|e| e.to_string())?;
-    redact_secret_values(&mut value);
-    Ok(value)
+    redact_provider_toml(&app, &mut view.settings);
+    redact_secret_values(&mut view.settings);
+    for field in &mut view.inactive {
+        redact_inactive_provider_field(&field.path, &mut field.value, uses_provider_toml(&app));
+    }
+    serde_json::to_value(view).map_err(|e| e.to_string())
 }
 
 /// 编辑器保存上下文里的 `base`/`draft` 是从远端读出的脱敏内容；写回前按库里
 /// 那一行还原被替换的密钥，保证三方比较比的是真值。与 provider 回写路径用同一
 /// 套恢复逻辑（只回填仍是哨兵值的字段，用户真正改过的值不会被覆盖）。
-fn restore_editor_save_secrets(existing: Option<&Provider>, editor: &mut EditorSave) {
-    let Some(row) = existing else {
-        return;
-    };
-    let _ = restore_redacted_secret_values_for(&row.settings_config, &mut editor.base);
+fn restore_editor_save_secrets(
+    state: &AppState,
+    app: &AppType,
+    existing: Option<&Provider>,
+    provider: &mut Provider,
+    editor: &mut EditorSave,
+) -> Result<(), String> {
+    let row_settings = existing.map(|row| &row.settings_config);
     if let Some(draft) = editor.draft.as_mut() {
-        let _ = restore_redacted_secret_values_for(&row.settings_config, draft);
+        restore_provider_toml(app, row_settings, draft)?;
+        if let Some(row) = row_settings {
+            restore_redacted_secret_values_for(row, draft).map_err(|e| e.to_string())?;
+        }
     }
+    if has_provider_toml_placeholder(app, &editor.base)
+        || has_provider_toml_placeholder(app, &provider.settings_config)
+    {
+        let empty = serde_json::Value::Object(serde_json::Map::new());
+        let source = row_settings.or(editor.draft.as_ref()).unwrap_or(&empty);
+        let projection = ProviderService::editor_view_with_meta(
+            state,
+            app.clone(),
+            source,
+            existing.unwrap_or(provider).category.as_deref(),
+            existing.map(|row| row.id.as_str()),
+            existing.unwrap_or(provider).meta.as_ref(),
+        )
+        .map_err(|_| "Remote provider TOML could not be read for credential restoration")?;
+        for settings in [&mut editor.base, &mut provider.settings_config] {
+            if restore_provider_toml(app, Some(&projection.settings), settings).is_err() {
+                restore_provider_toml(app, row_settings, settings)?;
+            }
+        }
+    }
+    if let Some(row) = existing {
+        restore_redacted_secret_values_for(&row.settings_config, &mut editor.base)
+            .map_err(|e| e.to_string())?;
+        restore_redacted_secret_values(row, provider).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// 远端按编辑器上下文新增供应商：走 desktop 同一套 `add_from_editor`
@@ -2402,7 +2514,7 @@ pub fn add_provider_from_editor(
     add_to_live: bool,
     editor_save_json: &str,
 ) -> Result<bool, String> {
-    let provider: Provider = serde_json::from_str(provider_json).map_err(|e| e.to_string())?;
+    let mut provider: Provider = serde_json::from_str(provider_json).map_err(|e| e.to_string())?;
     let mut editor: EditorSave =
         serde_json::from_str(editor_save_json).map_err(|e| e.to_string())?;
     let db = Arc::new(Database::init().map_err(|e| e.to_string())?);
@@ -2411,7 +2523,7 @@ pub fn add_provider_from_editor(
         .db
         .get_provider_by_id(&provider.id, app.as_str())
         .map_err(|e| e.to_string())?;
-    restore_editor_save_secrets(existing.as_ref(), &mut editor);
+    restore_editor_save_secrets(&state, &app, existing.as_ref(), &mut provider, &mut editor)?;
     ProviderService::add_from_editor(&state, app, provider, add_to_live, Some(editor))
         .map_err(|e| e.to_string())
 }
@@ -2434,10 +2546,7 @@ pub fn update_provider_from_editor(
         .db
         .get_provider_by_id(provider_id, app.as_str())
         .map_err(|e| e.to_string())?;
-    if let Some(row) = existing.as_ref() {
-        restore_redacted_secret_values(row, &mut provider).map_err(|e| e.to_string())?;
-    }
-    restore_editor_save_secrets(existing.as_ref(), &mut editor);
+    restore_editor_save_secrets(&state, &app, existing.as_ref(), &mut provider, &mut editor)?;
     ProviderService::update_from_editor(&state, app, original_id, provider, Some(editor))
         .map_err(|e| e.to_string())
 }
@@ -2792,7 +2901,7 @@ pub fn list_universal_providers() -> Result<IndexMap<String, UniversalProvider>,
     let state = build_remote_app_state(db);
     let providers = ProviderService::list_universal(&state).map_err(|e| e.to_string())?;
     let mut value = serde_json::to_value(providers).map_err(|e| e.to_string())?;
-    redact_provider_map_secret_values(&mut value);
+    redact_provider_map_secret_values(&mut value, None);
     let providers: std::collections::HashMap<String, UniversalProvider> =
         serde_json::from_value(value).map_err(|e| e.to_string())?;
     Ok(providers.into_iter().collect())

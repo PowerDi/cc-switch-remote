@@ -164,6 +164,7 @@ export interface RemoteProviderState {
 
 export interface RemoteFetchModelsOptions {
   baseUrl?: string;
+  apiKey?: string;
   isFullUrl?: boolean;
   modelsUrl?: string;
   customUserAgent?: string;
@@ -1257,7 +1258,7 @@ export const remoteApi = {
   fetchModelsForProvider(
     profile: RemoteHostProfile,
     app: AppId,
-    providerId: string,
+    providerId: string | undefined,
     options: RemoteFetchModelsOptions,
     secret?: RemoteConnectionSecret,
   ): Promise<FetchedModel[]> {

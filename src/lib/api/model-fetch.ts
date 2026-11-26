@@ -4,6 +4,7 @@ import { toast } from "@/lib/toast";
 import { remoteApi, type ManagementTarget } from "./remote";
 import type { AppId } from "./types";
 import { parseHeaderOverrideJson } from "@/lib/requestOverrides";
+import { getDisplaySecretValue } from "@/utils/providerConfigUtils";
 
 export interface FetchedModel {
   id: string;
@@ -128,16 +129,14 @@ export async function fetchModelsForProviderConfig({
   requestHeaders,
 }: FetchModelsForProviderConfigOptions): Promise<FetchedModel[]> {
   if (target.type === "remote") {
-    const remoteProviderId = providerId?.trim();
-    if (!remoteProviderId) {
-      throw new Error("Remote model fetch requires a saved provider");
-    }
+    const draftApiKey = getDisplaySecretValue(apiKey).trim();
     return remoteApi.fetchModelsForProvider(
       target.profile,
       app,
-      remoteProviderId,
+      providerId?.trim() || undefined,
       {
         baseUrl,
+        ...(draftApiKey ? { apiKey: draftApiKey } : {}),
         isFullUrl,
         modelsUrl,
         customUserAgent,
@@ -223,6 +222,14 @@ export function showFetchModelsError(
   // 解析后端错误字符串
   const msg = String(err);
 
+  if (msg.includes("remote_helper_upgrade_required: provider-model-fetch")) {
+    toast.error(t("providerForm.fetchModelsHelperUpgradeRequired"));
+    return;
+  }
+  if (msg.includes("API Key or request headers are required to fetch models")) {
+    toast.error(t("providerForm.fetchModelsNeedApiKey"));
+    return;
+  }
   if (msg.includes("HTTP 401") || msg.includes("HTTP 403")) {
     toast.error(t("providerForm.fetchModelsAuthFailed"));
     return;

@@ -43,6 +43,8 @@ import {
   extractCodexBaseUrl,
   extractCodexModelName,
   extractCodexWireApi,
+  getDisplaySecretValue,
+  isRedactedSecretValue,
 } from "@/utils/providerConfigUtils";
 import {
   buildGrokBuildConfig,
@@ -246,7 +248,11 @@ export function GrokBuildProviderForm({
       ...overrides,
       apiBackend: GROK_BUILD_DEFAULT_API_BACKEND,
     };
-    setRawConfig((current) => updateGrokBuildConfig(current, next));
+    setRawConfig((current) =>
+      target?.type === "remote" && isRedactedSecretValue(current)
+        ? current
+        : updateGrokBuildConfig(current, next),
+    );
   };
 
   const handlePresetChange = (presetId: string) => {
@@ -329,6 +335,11 @@ export function GrokBuildProviderForm({
 
   const handleSubmit = async (values: ProviderFormData) => {
     const name = values.name.trim();
+
+    if (target?.type === "remote" && isRedactedSecretValue(rawConfig)) {
+      toast.error(t("providerForm.remoteTomlUnavailable"));
+      return;
+    }
 
     // 官方条目：config 快照原样透传（新增时为空），不做自定义模型字段校验，
     // 也不重建 config —— 新增走 ensure seed，编辑只允许改名称/图标等元信息。
@@ -472,7 +483,11 @@ export function GrokBuildProviderForm({
               appId="grokbuild"
               modelFetchTarget={target}
               providerId={providerId}
-              codexApiKey={apiKey}
+              codexApiKey={
+                target?.type === "remote"
+                  ? getDisplaySecretValue(apiKey)
+                  : apiKey
+              }
               onApiKeyChange={(value) => {
                 setApiKey(value);
                 syncStructuredConfig({ apiKey: value });

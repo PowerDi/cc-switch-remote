@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithQueryClient as render } from "../utils/testQueryClient";
 import type { ComponentProps } from "react";
 import type { PropsWithChildren } from "react";
@@ -11,6 +11,7 @@ import { OpenClawFormFields } from "@/components/providers/forms/OpenClawFormFie
 import { OpenCodeFormFields } from "@/components/providers/forms/OpenCodeFormFields";
 import { Form } from "@/components/ui/form";
 import type { AppId, ManagementTarget } from "@/lib/api";
+import type { FetchedModel } from "@/lib/api/model-fetch";
 
 const modelFetchApiMock = vi.hoisted(() => ({
   canUseStoredRemoteProviderApiKey: vi.fn(),
@@ -76,12 +77,22 @@ const FormShell = ({ children }: PropsWithChildren) => {
 };
 
 const renderField = (node: React.ReactElement) => {
-  render(<FormShell>{node}</FormShell>);
+  return render(<FormShell>{node}</FormShell>);
+};
+
+const deferredModels = () => {
+  let resolve!: (models: FetchedModel[]) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<FetchedModel[]>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
 };
 
 describe("provider model fetch fields", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     modelFetchApiMock.canUseStoredRemoteProviderApiKey.mockImplementation(
       (target, providerId) => target?.type === "remote" && Boolean(providerId),
     );
@@ -123,9 +134,162 @@ describe("provider model fetch fields", () => {
       );
     },
   );
+  it.each(["openclaw", "hermes"] as const)(
+    "%s keeps only the current target's models when requests resolve out of order",
+    async (app) => {
+      const old = deferredModels();
+      const current = deferredModels();
+      modelFetchApiMock.fetchModelsForProviderConfig
+        .mockReturnValueOnce(old.promise)
+        .mockReturnValueOnce(current.promise);
+      const target: ManagementTarget = {
+        ...remoteTarget,
+        profile: {
+          ...remoteTarget.profile,
+          id: "other-host",
+          host: "192.0.2.11",
+        },
+      };
+      const next = {
+        apiKey: "second-fixture-key",
+        baseUrl: "https://next.example.com/v1",
+        modelFetchTarget: target,
+      };
+      const view = renderField(
+        modelFetchField(app, "saved", { apiKey: "first-fixture-key" }),
+      );
+      await clickFetchModels();
+      view.rerender(
+        <FormShell>{modelFetchField(app, "saved", next)}</FormShell>,
+      );
+      await clickFetchModels();
+      expect(
+        modelFetchApiMock.fetchModelsForProviderConfig,
+      ).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          app,
+          target,
+          apiKey: next.apiKey,
+          baseUrl: next.baseUrl,
+        }),
+      );
+      await act(async () =>
+        current.resolve([{ id: "current-model", ownedBy: null }]),
+      );
+      await act(async () =>
+        old.resolve([{ id: "stale-model", ownedBy: null }]),
+      );
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: /Select model|providerForm.searchModelAriaLabel/,
+        }),
+      );
+      expect(
+        await screen.findByRole("option", { name: "current-model" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("option", { name: "stale-model" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["opencode", "openclaw", "hermes"] as const)(
+    "%s preserves an equivalent target rerender and ignores errors after close/reopen",
+    async (app) => {
+      const closed = deferredModels();
+      const current = deferredModels();
+      modelFetchApiMock.fetchModelsForProviderConfig
+        .mockReturnValueOnce(closed.promise)
+        .mockReturnValueOnce(current.promise);
+      const view = renderField(modelFetchField(app, "saved"));
+      await clickFetchModels();
+      view.rerender(<FormShell />);
+      view.rerender(<FormShell>{modelFetchField(app, "saved")}</FormShell>);
+      await clickFetchModels();
+      view.rerender(
+        <FormShell>
+          {modelFetchField(app, "saved", {
+            modelFetchTarget: {
+              ...remoteTarget,
+              profile: {
+                ...remoteTarget.profile,
+                authMethod: { ...remoteTarget.profile.authMethod },
+              },
+            },
+          })}
+        </FormShell>,
+      );
+      await act(async () => closed.reject(new Error("closed fixture request")));
+      expect(modelFetchApiMock.showFetchModelsError).not.toHaveBeenCalled();
+      await clickFetchModels();
+      expect(
+        modelFetchApiMock.fetchModelsForProviderConfig,
+      ).toHaveBeenCalledTimes(2);
+      await act(async () => current.resolve([]));
+      await clickFetchModels();
+      expect(
+        modelFetchApiMock.fetchModelsForProviderConfig,
+      ).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each(["opencode", "openclaw", "hermes"] as const)(
+    "%s ignores a stale failure and keeps the new request pending when only the SSH password changes",
+    async (app) => {
+      const stale = deferredModels();
+      const current = deferredModels();
+      modelFetchApiMock.fetchModelsForProviderConfig
+        .mockReturnValueOnce(stale.promise)
+        .mockReturnValueOnce(current.promise);
+      const firstTarget = {
+        ...remoteTarget,
+        secret: { password: "first-ssh-fixture" },
+      };
+      const nextTarget = {
+        ...remoteTarget,
+        secret: { password: "second-ssh-fixture" },
+      };
+      const view = renderField(
+        modelFetchField(app, "saved", { modelFetchTarget: firstTarget }),
+      );
+      await clickFetchModels();
+      view.rerender(
+        <FormShell>
+          {modelFetchField(app, "saved", { modelFetchTarget: nextTarget })}
+        </FormShell>,
+      );
+      await clickFetchModels();
+      expect(
+        modelFetchApiMock.fetchModelsForProviderConfig,
+      ).toHaveBeenCalledTimes(2);
+      await act(async () => stale.reject(new Error("stale fixture request")));
+      expect(modelFetchApiMock.showFetchModelsError).not.toHaveBeenCalled();
+      await clickFetchModels();
+      expect(
+        modelFetchApiMock.fetchModelsForProviderConfig,
+      ).toHaveBeenCalledTimes(2);
+      await act(async () => current.resolve([]));
+      await clickFetchModels();
+      expect(
+        modelFetchApiMock.fetchModelsForProviderConfig,
+      ).toHaveBeenCalledTimes(3);
+    },
+  );
 });
 
 function renderRemoteModelFetchField(appId: AppId, providerId: string) {
+  return renderField(modelFetchField(appId, providerId));
+}
+
+function modelFetchField(
+  appId: AppId,
+  providerId: string,
+  overrides?: {
+    apiKey?: string;
+    baseUrl?: string;
+    modelFetchTarget?: ManagementTarget;
+  },
+) {
   const baseProps = {
     providerId,
     modelFetchTarget: remoteTarget,
@@ -172,8 +336,7 @@ function renderRemoteModelFetchField(appId: AppId, providerId: string) {
       localProxyBodyOverride: "",
       onLocalProxyBodyOverrideChange: vi.fn(),
     };
-    renderField(<CodexFormFields {...props} />);
-    return;
+    return <CodexFormFields {...props} />;
   }
 
   if (appId === "gemini") {
@@ -195,8 +358,7 @@ function renderRemoteModelFetchField(appId: AppId, providerId: string) {
       onModelChange: vi.fn(),
       speedTestEndpoints: [],
     };
-    renderField(<GeminiFormFields {...props} />);
-    return;
+    return <GeminiFormFields {...props} />;
   }
 
   if (appId === "opencode") {
@@ -214,9 +376,9 @@ function renderRemoteModelFetchField(appId: AppId, providerId: string) {
       onModelsChange: vi.fn(),
       extraOptions: {},
       onExtraOptionsChange: vi.fn(),
+      ...overrides,
     };
-    renderField(<OpenCodeFormFields {...props} />);
-    return;
+    return <OpenCodeFormFields {...props} />;
   }
 
   if (appId === "openclaw") {
@@ -228,13 +390,13 @@ function renderRemoteModelFetchField(appId: AppId, providerId: string) {
       onApiKeyChange: vi.fn(),
       api: "openai-completions",
       onApiChange: vi.fn(),
-      models: [],
+      models: [{ id: "existing", name: "Existing" }],
       onModelsChange: vi.fn(),
       userAgent: true,
       onUserAgentChange: vi.fn(),
+      ...overrides,
     };
-    renderField(<OpenClawFormFields {...props} />);
-    return;
+    return <OpenClawFormFields {...props} />;
   }
 
   const props: ComponentProps<typeof HermesFormFields> = {
@@ -245,10 +407,11 @@ function renderRemoteModelFetchField(appId: AppId, providerId: string) {
     onApiKeyChange: vi.fn(),
     apiMode: "chat_completions",
     onApiModeChange: vi.fn(),
-    models: [],
+    models: [{ id: "existing", name: "Existing" }],
     onModelsChange: vi.fn(),
     rateLimitDelay: undefined,
     onRateLimitDelayChange: vi.fn(),
+    ...overrides,
   };
-  renderField(<HermesFormFields {...props} />);
+  return <HermesFormFields {...props} />;
 }

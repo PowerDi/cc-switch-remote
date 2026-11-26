@@ -1808,6 +1808,8 @@
       "apply": "Uygula"
     },
     "fetchModelsFailed": "Modeller getirilemedi",
+    "fetchModelsHelperUpgradeRequired": "Bu yapılandırmayla modelleri getirmek için uzak Helper’ı güncelleyin.",
+    "remoteTomlUnavailable": "Uzak TOML güvenli bir şekilde okunamadı. Kaydetmeden önce uzak ana bilgisayarda düzeltin veya ham yapılandırma düzenleyicisinde değiştirin.",
     "fetchModelsEmpty": "Hiçbir model bulunamadı",
     "fetchModelsNeedApiKey": "Lütfen önce API Anahtarını doldurun",
     "fetchModelsNeedEndpoint": "Lütfen önce API uç noktasını doldurun",
