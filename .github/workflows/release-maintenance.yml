@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to repair, for example v3.16.2
+        description: Existing fork release to repair (v4.1.0 or remote-v4.0.21-r1)
         required: true
         type: string
       operation:
@@ -29,6 +29,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Resolve the requested release, not the current build version
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq '.publishedAt' > published-at.txt
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body' > requested-notes.md
+          cp release-identity.json requested-identity.json
+          if [[ "$TAG" == remote-v* ]]; then
+            # Every new-naming release carries the exact build's identity snapshot.
+            mkdir -p identity
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir identity --pattern release-identity.json
+            cp identity/release-identity.json requested-identity.json
+          fi
+          node scripts/release-identity.mjs --resolve-only --identity-file requested-identity.json \
+            --tag "$TAG" --github-output "$GITHUB_OUTPUT"
 
       - name: Fetch release asset names
         env:
@@ -59,12 +84,6 @@ jobs:
           mkdir -p dl
           gh release download "$TAG" --dir dl --repo "$GITHUB_REPOSITORY" --clobber --pattern '*Windows.msi'
           ls -la dl/*-Windows.msi
-
-      - name: Setup Node.js
-        if: github.event.inputs.operation == 'sign-windows-msi-and-refresh-latest'
-        uses: actions/setup-node@v6
-        with:
-          node-version: "20"
 
       - name: Setup pnpm
         if: github.event.inputs.operation == 'sign-windows-msi-and-refresh-latest'
@@ -148,15 +167,17 @@ jobs:
             env -u TAURI_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY pnpm tauri signer sign -f "$TAURI_PRIVATE_KEY_PATH" "$msi"
           fi
           test -f "$sig"
-          gh release upload "$TAG" "$sig" --clobber --repo "$GITHUB_REPOSITORY"
+          # Upload only after latest.json and all updater key IDs have passed below.
 
       - name: Generate latest.json
         env:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euxo pipefail
-          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          PUB_DATE=$(<published-at.txt)
           node scripts/assemble-tauri-latest-json.mjs \
+            --identity-file requested-identity.json \
+            --notes-file requested-notes.md \
             --assets-dir dl \
             --asset-names-file asset-names.txt \
             --repo "$GITHUB_REPOSITORY" \
@@ -168,10 +189,15 @@ jobs:
             --tauri-config src-tauri/tauri.conf.json
           cat latest.json
 
-      - name: Upload latest.json
+      - name: Upload validated maintenance assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag }}
+          OPERATION: ${{ github.event.inputs.operation }}
         run: |
           set -euxo pipefail
-          gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          if [ "$OPERATION" = "sign-windows-msi-and-refresh-latest" ]; then
+            gh release upload "$TAG" dl/*-Windows.msi.sig latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          fi

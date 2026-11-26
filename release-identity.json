@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "repository": "PowerDi/cc-switch-remote",
+  "current": {
+    "upstreamVersion": "4.0.21",
+    "upstreamCommit": "c4db63c60d2a1ddcb4bd9f81152b9c6126413659",
+    "remoteRevision": 1,
+    "releaseTag": "remote-v4.0.21-r1",
+    "packageVersion": "4.1.0",
+    "status": "unreleased",
+    "releaseReady": false,
+    "notesFile": "docs/release-notes/remote-v4.0.21-r1-remote-zh.md"
+  },
+  "migration": {
+    "decision": "manual-portable-migration",
+    "legacyPortableThrough": "4.1.0",
+    "legacyDetailsThrough": "4.1.0",
+    "reason": "Approved transition: legacy portable clients manually download the first new-naming release from the fork release page once. Old hardcoded release-detail links cannot be repaired by a new client. No new bare v* compatibility tag/release is permitted."
+  },
+  "upgradeValidation": {
+    "normalUpdater": "pending",
+    "recoveryUpdater": "pending",
+    "portableMigration": "pending"
+  },
+  "history": [
+    {
+      "releaseTag": "v4.0.5",
+      "packageVersion": "4.0.5",
+      "releaseCommit": "e751681e645ea5398d17197b09eee1c3a5b0dcab",
+      "upstreamVersion": "4.0.4",
+      "upstreamCommit": "a29a4f3868e9c6ffc2212957cfa66a718642e344",
+      "remoteRevision": null,
+      "status": "published"
+    },
+    {
+      "releaseTag": "v4.0.6",
+      "packageVersion": "4.0.6",
+      "releaseCommit": "766f27f4cc6d1ba0ac612e5f5e15262fed5d8703",
+      "upstreamVersion": "4.0.4",
+      "upstreamCommit": "a29a4f3868e9c6ffc2212957cfa66a718642e344",
+      "remoteRevision": null,
+      "status": "published"
+    },
+    {
+      "releaseTag": "v4.0.7",
+      "packageVersion": "4.0.7",
+      "releaseCommit": "218135f43d285b140a090ff2c961736c66cdaf85",
+      "upstreamVersion": "4.0.4",
+      "upstreamCommit": "a29a4f3868e9c6ffc2212957cfa66a718642e344",
+      "remoteRevision": null,
+      "status": "published"
+    },
+    {
+      "releaseTag": "v4.0.8",
+      "packageVersion": "4.0.8",
+      "releaseCommit": "85bca82e3a7299dc65dd68018c21d2674db3e0b8",
+      "upstreamVersion": "4.0.4",
+      "upstreamCommit": "a29a4f3868e9c6ffc2212957cfa66a718642e344",
+      "remoteRevision": null,
+      "status": "published"
+    },
+    {
+      "releaseTag": "v4.0.9",
+      "packageVersion": "4.0.9",
+      "releaseCommit": "ec5b6931c4ad845a945fa6dcbe8fab3664259531",
+      "upstreamVersion": "4.0.4",
+      "upstreamCommit": "a29a4f3868e9c6ffc2212957cfa66a718642e344",
+      "remoteRevision": null,
+      "status": "published"
+    },
+    {
+      "releaseTag": "v4.1.0",
+      "packageVersion": "4.1.0",
+      "releaseCommit": "ed4353caf8536d8a7b902e799ff5f59c082178d5",
+      "upstreamVersion": "4.0.21",
+      "upstreamCommit": "c4db63c60d2a1ddcb4bd9f81152b9c6126413659",
+      "remoteRevision": null,
+      "status": "published"
+    }
+  ]
+}

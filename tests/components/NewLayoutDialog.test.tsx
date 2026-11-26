@@ -2,12 +2,23 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../release-identity.json", async () => ({
+  default: structuredClone(
+    (await import("../fixtures/releaseIdentity.json")).default,
+  ),
+}));
+
 const mocks = vi.hoisted(() => ({
   getAll: vi.fn(),
   save: vi.fn(),
   openExternal: vi.fn(),
+  version: "4.1.0",
   settings: undefined as
-    | { firstRunNoticeConfirmed?: boolean; newLayoutNoticeConfirmed?: boolean }
+    | {
+        firstRunNoticeConfirmed?: boolean;
+        newLayoutNoticeConfirmed?: boolean;
+        whatsNewSeenVersion?: string;
+      }
     | undefined,
 }));
 
@@ -19,10 +30,11 @@ vi.mock("@/lib/query", () => ({
   useSettingsQuery: () => ({ data: mocks.settings }),
 }));
 vi.mock("@tauri-apps/api/app", () => ({
-  getVersion: async () => "4.0.0",
+  getVersion: async () => mocks.version,
 }));
 
 import { NewLayoutDialog } from "@/components/shell/NewLayoutDialog";
+import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { APP_IDS } from "@/config/appConfig";
 
 function renderDialog() {
@@ -38,6 +50,7 @@ function renderDialog() {
 
 describe("NewLayoutDialog", () => {
   beforeEach(() => {
+    mocks.version = "4.1.0";
     mocks.settings = { firstRunNoticeConfirmed: true };
     mocks.save.mockReset().mockResolvedValue(true);
     mocks.openExternal.mockReset().mockResolvedValue(undefined);
@@ -66,7 +79,7 @@ describe("NewLayoutDialog", () => {
     expect(mocks.save).toHaveBeenCalledWith(
       expect.objectContaining({
         newLayoutNoticeConfirmed: true,
-        whatsNewSeenVersion: "4.0.0",
+        whatsNewSeenVersion: "upstream:4.0.21",
       }),
     );
   });
@@ -115,5 +128,49 @@ describe("NewLayoutDialog", () => {
     renderDialog();
     expect(mocks.getAll).not.toHaveBeenCalled();
     expect(screen.queryByText("newLayoutNotice.title")).not.toBeInTheDocument();
+  });
+
+  it("does not invent a seen baseline for an unknown install version", async () => {
+    mocks.version = "99.0.0";
+    mocks.settings = {
+      firstRunNoticeConfirmed: true,
+      whatsNewSeenVersion: "upstream:4.0.21",
+    };
+    renderDialog();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "newLayoutNotice.confirm" }),
+    );
+    await waitFor(() =>
+      expect(mocks.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          newLayoutNoticeConfirmed: true,
+          whatsNewSeenVersion: "upstream:4.0.21",
+        }),
+      ),
+    );
+  });
+
+  it("welcome confirmation stamps the actual fork baseline and suppresses both later notices", async () => {
+    mocks.settings = {};
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <FirstRunNoticeDialog />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "firstRunNotice.confirm" }),
+    );
+    await waitFor(() =>
+      expect(mocks.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          firstRunNoticeConfirmed: true,
+          newLayoutNoticeConfirmed: true,
+          whatsNewSeenVersion: "upstream:4.0.21",
+        }),
+      ),
+    );
   });
 });

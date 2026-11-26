@@ -22,14 +22,24 @@ import { WhatsNewDialog } from "@/components/WhatsNewDialog";
 import { WHATS_NEW_ENTRIES, entriesUpTo } from "@/lib/whatsNew";
 import ccswitchLogo from "@/assets/icons/logo.svg";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  currentReleasePageUrl,
+  FORK_REPOSITORY_URL,
+  updateReleasePageUrl,
+} from "@/lib/forkReleases";
+import {
+  currentUpstreamVersion,
+  getBuildIdentity,
+  identityVersion,
+  isUnreleasedBuild,
+} from "@/lib/releaseIdentity";
 
 interface AboutSectionProps {
   isPortable: boolean;
 }
 
 // Fork 边界：关于页的「官网 / 仓库 / 发行说明」指向本 fork 的发布链。
-const APP_RELEASES_URL = "https://github.com/PowerDi/cc-switch-remote/releases";
-const APP_REPOSITORY_URL = "https://github.com/PowerDi/cc-switch-remote";
+const APP_REPOSITORY_URL = FORK_REPOSITORY_URL;
 const APP_WEBSITE_URL = APP_REPOSITORY_URL;
 
 // 应用自身版本（getVersion，本地毫秒级、无网络）也缓存一份，纯为重挂时免去 loading 闪烁。
@@ -63,10 +73,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const [starPromptDismissed, setStarPromptDismissed] = useState(
     readStarPromptDismissed,
   );
-  const recentEntries = useMemo(
-    () => (version ? entriesUpTo(WHATS_NEW_ENTRIES, version) : []),
-    [version],
-  );
+  const recentEntries = useMemo(() => {
+    const baseline = currentUpstreamVersion(version);
+    return baseline ? entriesUpTo(WHATS_NEW_ENTRIES, baseline) : [];
+  }, [version]);
 
   const { hasUpdate, updateInfo, checkUpdate, resetDismiss, isChecking } =
     useUpdate();
@@ -100,26 +110,19 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const handleOpenReleaseNotes = useCallback(async () => {
     try {
-      const targetVersion = updateInfo?.availableVersion ?? version ?? "";
-      const displayVersion = targetVersion.startsWith("v")
-        ? targetVersion
-        : targetVersion
-          ? `v${targetVersion}`
-          : "";
-
-      if (!displayVersion) {
-        await settingsApi.openExternal(APP_RELEASES_URL);
-        return;
-      }
-
       await settingsApi.openExternal(
-        `${APP_RELEASES_URL}/tag/${displayVersion}`,
+        updateInfo
+          ? updateReleasePageUrl(
+              updateInfo.availableVersion,
+              updateInfo.releaseIdentity,
+            )
+          : currentReleasePageUrl(version),
       );
     } catch (error) {
       console.error("[AboutSection] Failed to open release notes", error);
       toast.error(t("settings.openReleaseNotesFailed"));
     }
-  }, [t, updateInfo?.availableVersion, version]);
+  }, [t, updateInfo, version]);
 
   const handleOpenGithub = useCallback(() => {
     void settingsApi.openExternal(APP_REPOSITORY_URL);
@@ -138,11 +141,17 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     if (hasUpdate) {
       if (isPortable) {
         try {
-          await settingsApi.openPortableUpdateDownload(
-            updateInfo?.availableVersion ?? "",
+          // Do not call the legacy Rust URL constructor. The actual release page
+          // also lets the user choose the correct portable architecture explicitly.
+          await settingsApi.openExternal(
+            updateReleasePageUrl(
+              updateInfo?.availableVersion ?? "",
+              updateInfo?.releaseIdentity,
+            ),
           );
         } catch (error) {
           console.error("[AboutSection] Portable update failed", error);
+          toast.error(t("settings.updateFailed"));
         }
         return;
       }
@@ -186,16 +195,15 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         closeButton: true,
       });
     }
-  }, [
-    checkUpdate,
-    hasUpdate,
-    isPortable,
-    resetDismiss,
-    t,
-    updateInfo?.availableVersion,
-  ]);
+  }, [checkUpdate, hasUpdate, isPortable, resetDismiss, t, updateInfo]);
 
-  const displayVersion = version ?? t("common.unknown");
+  const buildIdentity = getBuildIdentity(version);
+  const displayVersion = buildIdentity
+    ? identityVersion(buildIdentity)
+    : t("releaseIdentity.unknownPublicVersion");
+  const updateDisplayVersion = updateInfo?.releaseIdentity
+    ? identityVersion(updateInfo.releaseIdentity)
+    : t("releaseIdentity.unknownPublicVersion");
 
   return (
     <div className="divide-y divide-border overflow-hidden rounded-panel border border-border bg-surface">
@@ -212,7 +220,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             {isLoadingVersion ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
-              <span className="tabular-nums">{`${t("common.version")} v${displayVersion}`}</span>
+              <span className="tabular-nums">{displayVersion}</span>
+            )}
+            {isUnreleasedBuild(version) && (
+              <Badge variant="secondary">
+                {t("releaseIdentity.unreleased")}
+              </Badge>
             )}
             {isPortable && (
               <Badge
@@ -224,6 +237,33 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               </Badge>
             )}
           </div>
+          {!isLoadingVersion && (
+            <details className="mt-1 text-caption text-fg-2">
+              <summary className="cursor-pointer">
+                {t("releaseIdentity.versionDetails")}
+              </summary>
+              <p>
+                {t("releaseIdentity.installationVersion", {
+                  version: version ?? t("common.unknown"),
+                })}
+              </p>
+              {buildIdentity && (
+                <>
+                  <p>
+                    {t("releaseIdentity.upstreamBaseline", {
+                      version: buildIdentity.upstreamVersion,
+                    })}{" "}
+                    · {buildIdentity.upstreamCommit.slice(0, 8)}
+                  </p>
+                  <p>
+                    {t("releaseIdentity.releaseTag", {
+                      tag: buildIdentity.releaseTag,
+                    })}
+                  </p>
+                </>
+              )}
+            </details>
+          )}
         </div>
         <Button
           type="button"
@@ -241,7 +281,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             <>
               <Download className="h-3.5 w-3.5" />
               {t("settings.updateTo", {
-                version: updateInfo?.availableVersion ?? "",
+                version: updateDisplayVersion,
               })}
             </>
           ) : isChecking ? (
@@ -262,6 +302,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         <div className="space-y-1 px-5 py-4 text-body">
           <p className="font-medium text-fg-1">
             {t("settings.updateAvailable", {
+              version: updateDisplayVersion,
+            })}
+          </p>
+          <p className="text-caption text-fg-2">
+            {t("releaseIdentity.installationVersion", {
               version: updateInfo.availableVersion,
             })}
           </p>

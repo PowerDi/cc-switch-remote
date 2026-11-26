@@ -10,6 +10,11 @@ import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { getVersion } from "@tauri-apps/api/app";
 import {
+  getBuildIdentity,
+  identityVersion,
+  isUnreleasedBuild,
+} from "@/lib/releaseIdentity";
+import {
   ArrowLeft,
   BookOpen,
   ChartColumn,
@@ -807,7 +812,13 @@ function SettingsDirectory({
       </div>
       {!collapsed && version && (
         <div className="shrink-0 px-4 pb-4 text-caption text-fg-3">
-          CC Switch Remote v{version}
+          CC Switch Remote{" "}
+          {getBuildIdentity(version)
+            ? identityVersion(getBuildIdentity(version)!)
+            : t("releaseIdentity.unknownPublicVersion")}
+          {isUnreleasedBuild(version) && (
+            <span> · {t("releaseIdentity.unreleased")}</span>
+          )}
         </div>
       )}
     </>

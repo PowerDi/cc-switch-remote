@@ -13,7 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useSettingsQuery } from "@/lib/query";
 import { settingsApi } from "@/lib/api";
-import { markSeen } from "@/lib/whatsNew";
+import { markBuildSeen } from "@/lib/whatsNew";
 
 /** 首次运行欢迎提示：仅当后端启动阶段保留 firstRunNoticeConfirmed 为空时弹出。 */
 export function FirstRunNoticeDialog() {
@@ -35,7 +35,10 @@ export function FirstRunNoticeDialog() {
         ...rest,
         firstRunNoticeConfirmed: true,
         newLayoutNoticeConfirmed: true,
-        whatsNewSeenVersion: markSeen(settings.whatsNewSeenVersion, version),
+        whatsNewSeenVersion: markBuildSeen(
+          settings.whatsNewSeenVersion,
+          version,
+        ),
       });
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
     } catch (error) {

@@ -1,39 +1,36 @@
-import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import test from "node:test";
-import { fileURLToPath } from "node:url";
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  readReleaseMetadata,
+  verifyBuildIdentity,
+} from './release-identity.mjs';
 
-const repoRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
-const releaseVersion = "4.1.0";
+test('four installer versions follow machine-readable identity, not public tag numbering', () => {
+  const metadata = readReleaseMetadata();
+  assert.doesNotThrow(() => verifyBuildIdentity(metadata));
+  assert.equal(
+    metadata.current.releaseTag,
+    `remote-v${metadata.current.upstreamVersion}-r${metadata.current.remoteRevision}`,
+  );
+  assert.notEqual(
+    metadata.current.releaseTag,
+    `v${metadata.current.packageVersion}`,
+  );
+});
 
-test("release metadata uses the planned v4.1.0 version consistently", () => {
-  const packageJson = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
-  );
-  const tauriConfig = JSON.parse(
-    fs.readFileSync(
-      path.join(repoRoot, "src-tauri", "tauri.conf.json"),
-      "utf8",
-    ),
-  );
-  const cargoToml = fs.readFileSync(
-    path.join(repoRoot, "src-tauri", "Cargo.toml"),
-    "utf8",
-  );
-  const cargoLock = fs.readFileSync(
-    path.join(repoRoot, "src-tauri", "Cargo.lock"),
-    "utf8",
-  );
-
-  assert.equal(packageJson.version, releaseVersion);
-  assert.equal(tauriConfig.version, releaseVersion);
-  assert.match(cargoToml, new RegExp(`^version = "${releaseVersion}"$`, "m"));
-  assert.match(
-    cargoLock,
-    new RegExp(`name = "cc-switch-remote"\\r?\\nversion = "${releaseVersion}"`),
-  );
+test('a reused installer version cannot be marked ready, and ready identities require verified upgrade paths', () => {
+  const metadata = readReleaseMetadata();
+  if (
+    metadata.history.some(
+      (record) => record.packageVersion === metadata.current.packageVersion,
+    )
+  )
+    assert.equal(metadata.current.releaseReady, false);
+  if (metadata.current.releaseReady)
+    assert.ok(
+      Object.values(metadata.upgradeValidation).every(
+        (status) => status === 'verified',
+      ),
+    );
+  assert.equal(metadata.migration.decision, 'manual-portable-migration');
 });

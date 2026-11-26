@@ -20,10 +20,16 @@ import {
   releasesUrl,
   entriesSince,
   isNewerThanSeen,
-  markSeen,
+  markBuildSeen,
   resolveWhatsNewLanguage,
   type WhatsNewEntry,
 } from "@/lib/whatsNew";
+import {
+  currentUpstreamVersion,
+  getBuildIdentity,
+  identityVersion,
+  resolveUpstreamSeen,
+} from "@/lib/releaseIdentity";
 
 /** 默认展开的版本数，更早的折叠起来，跳了很多版本也不会撑满弹窗 */
 const EXPANDED_VERSIONS = 3;
@@ -94,7 +100,9 @@ export function WhatsNewDialog({
             <section key={entry.version}>
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-strong tabular-nums text-fg-1">
-                  v{entry.version}
+                  {t("releaseIdentity.upstreamSummary", {
+                    version: entry.version,
+                  })}
                 </h3>
                 <button
                   type="button"
@@ -159,20 +167,19 @@ export function WhatsNewNotice() {
   const [closed, setClosed] = useState(false);
   const stampedRef = useRef(false);
 
-  const seen = settings?.whatsNewSeenVersion;
+  const baseline = currentUpstreamVersion(currentVersion);
+  const seen = resolveUpstreamSeen(settings?.whatsNewSeenVersion);
   const due =
     settings != null &&
     settings.firstRunNoticeConfirmed === true &&
     newLayoutPending === false &&
-    !!currentVersion &&
-    isNewerThanSeen(currentVersion, seen);
+    !!baseline &&
+    isNewerThanSeen(baseline, seen);
 
   const entries = useMemo(
     () =>
-      due && currentVersion
-        ? entriesSince(WHATS_NEW_ENTRIES, seen, currentVersion)
-        : [],
-    [due, seen, currentVersion],
+      due && baseline ? entriesSince(WHATS_NEW_ENTRIES, seen, baseline) : [],
+    [due, seen, baseline],
   );
 
   // 打开时把内容定格：确认后设置刷新、区间变空，关闭动画里内容不会被清掉
@@ -191,7 +198,7 @@ export function WhatsNewNotice() {
       const { webdavSync: _, ...rest } = settings;
       await settingsApi.save({
         ...rest,
-        whatsNewSeenVersion: markSeen(
+        whatsNewSeenVersion: markBuildSeen(
           settings.whatsNewSeenVersion,
           currentVersion,
         ),
@@ -216,7 +223,11 @@ export function WhatsNewNotice() {
       open={!closed}
       onClose={() => void acknowledge()}
       entries={shown.entries}
-      updatedTo={currentVersion}
+      updatedTo={
+        getBuildIdentity(currentVersion)
+          ? identityVersion(getBuildIdentity(currentVersion)!)
+          : undefined
+      }
       since={shown.since}
     />
   );

@@ -45,6 +45,11 @@ jobs:
               - "tests/**"
               - "index.html"
               - "package.json"
+              - "release-identity.json"
+              - "scripts/**"
+              - "src-tauri/Cargo.toml"
+              - "src-tauri/Cargo.lock"
+              - "src-tauri/tauri.conf.json"
               - "pnpm-lock.yaml"
               - "pnpm-workspace.yaml"
               - "tsconfig.json"
@@ -74,6 +79,9 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "20"
+
+      - name: Verify fork release identity
+        run: node scripts/release-identity.mjs
 
       - name: Setup pnpm
         env:

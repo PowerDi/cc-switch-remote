@@ -3,6 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
+import { workflow, step } from "./test-support/release-fixtures.mjs";
+import { readReleaseMetadata } from "./release-identity.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
@@ -83,8 +86,53 @@ test("fork packaging and helper artifacts are not replaced by official names", (
   // 工作流按 $GITHUB_REPOSITORY 发布，所以在哪个仓库跑就发到哪个仓库。
   assert.match(helper, /--repo "\$GITHUB_REPOSITORY"/);
   assert.match(helper, /--no-default-features --features proxy-runtime/);
-  for (const workflow of [release, helper]) {
-    assert.doesNotMatch(workflow, /farion1231\/cc-switch/);
+  assert.doesNotMatch(helper, /farion1231\/cc-switch/);
+  const parsed = workflow("release.yml");
+  const upload = step(parsed.jobs["publish-release"], "Upload Release Assets");
+  assert.match(upload.uses, /^softprops\/action-gh-release@/);
+  assert.equal(
+    upload.with.tag_name,
+    "${{ needs.identity.outputs.release-tag }}",
+  );
+  assert.equal(upload.with.repository, undefined); // defaults to GITHUB_REPOSITORY, checked by identity validator
+  const allowed = new Set([
+    "Validate build or new public tag",
+    "Revalidate immediately before publishing",
+  ]);
+  for (const job of Object.values(parsed.jobs)) {
+    for (const item of job.steps) {
+      if (!item.run?.includes("farion1231/cc-switch")) continue;
+      assert.ok(
+        allowed.has(item.name),
+        "Official URLs are allowed only in baseline verification steps",
+      );
+      const officialLines = item.run
+        .split("\n")
+        .filter((line) => line.includes("farion1231/cc-switch"));
+      assert.equal(officialLines.length, 2);
+      assert.ok(
+        officialLines.some(
+          (line) =>
+            line.trim() ===
+            'gh api "repos/farion1231/cc-switch/releases/tags/$UPSTREAM_TAG" > upstream-release.json',
+        ),
+      );
+      assert.ok(
+        officialLines.some(
+          (line) =>
+            line.trim() ===
+            "git fetch --no-tags https://github.com/farion1231/cc-switch.git \\",
+        ),
+      );
+      assert.match(
+        item.run,
+        /refs\/tags\/\$UPSTREAM_TAG:refs\/remotes\/upstream\/tags\/\$UPSTREAM_TAG/,
+      );
+      assert.doesNotMatch(
+        item.run,
+        /farion1231\/cc-switch\/releases\/download|gh release (?:create|upload|edit).*farion1231/,
+      );
+    }
   }
 });
 
@@ -142,22 +190,56 @@ test("about and recovery UI retain the same fork release chain and Remote brandi
   const about = read("src/components/settings/AboutSection.tsx");
   const recovery = read("src/components/DatabaseUpgrade.tsx");
   assert.match(about, />CC Switch Remote<\/div>/);
-  assert.equal(
-    about.match(/const APP_RELEASES_URL\s*=\s*"([^"]+)"/)?.[1],
-    `${repository}/releases`,
+  const metadata = readReleaseMetadata();
+  assert.equal("https://github.com/" + metadata.repository, repository);
+  function imports(source, module) {
+    const tree = ts.createSourceFile(
+      "component.tsx",
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const declaration = tree.statements.find(
+      (node) =>
+        ts.isImportDeclaration(node) && node.moduleSpecifier.text === module,
+    );
+    assert.ok(declaration, "Missing shared release adapter import");
+    return declaration.importClause.namedBindings.elements.map(
+      (node) => node.name.text,
+    );
+  }
+  assert.deepEqual(
+    imports(about, "@/lib/forkReleases").sort(),
+    [
+      "FORK_REPOSITORY_URL",
+      "currentReleasePageUrl",
+      "updateReleasePageUrl",
+    ].sort(),
   );
-  assert.equal(
-    about.match(/const APP_REPOSITORY_URL\s*=\s*"([^"]+)"/)?.[1],
-    repository,
+  assert.ok(
+    imports(recovery, "@/lib/forkReleases").includes("FORK_RELEASES_URL"),
   );
+  assert.match(about, /const APP_REPOSITORY_URL = FORK_REPOSITORY_URL;/);
   assert.match(about, /const APP_WEBSITE_URL = APP_REPOSITORY_URL;/);
-  assert.match(about, /openExternal\(APP_RELEASES_URL\)/);
   assert.match(about, /openExternal\(APP_REPOSITORY_URL\)/);
   assert.match(about, /openExternal\(APP_WEBSITE_URL\)/);
-  assert.equal(
-    recovery.match(/const RELEASES_URL\s*=\s*"([^"]+)"/)?.[1],
-    `${repository}/releases`,
-  );
+  assert.match(recovery, /const RELEASES_URL = FORK_RELEASES_URL;/);
+  const settings = read("src-tauri/src/commands/settings.rs");
+  for (const name of [
+    "check_app_update_available",
+    "install_update_and_restart",
+  ]) {
+    const signature = settings.match(
+      new RegExp(`pub async fn ${name}\\(([\\s\\S]*?)\\)\\s*->`),
+    )?.[1];
+    assert.ok(signature, `Missing recovery command: ${name}`);
+    assert.doesNotMatch(
+      signature,
+      /\bState\s*</,
+      "Recovery updater cannot require initialized AppState",
+    );
+  }
   for (const source of [about, recovery]) {
     assert.doesNotMatch(
       source,
@@ -190,10 +272,18 @@ test("every runtime release link, updater endpoint and repository URL is this fo
     assert.doesNotMatch(source, /xiaoY233/);
   }
   assert.equal(
-    read("src/lib/forkReleases.ts").match(
-      /FORK_RELEASES_URL\s*=\s*"([^"]+)"/,
-    )?.[1],
+    `https://github.com/${readReleaseMetadata().repository}/releases`,
     `${repository}/releases`,
+  );
+  assert.ok(
+    read("src/lib/forkReleases.ts").includes(
+      'import metadata from "../../release-identity.json";',
+    ),
+  );
+  assert.ok(
+    read("src/lib/forkReleases.ts").includes(
+      "FORK_RELEASES_URL = `${FORK_REPOSITORY_URL}/releases`",
+    ),
   );
 });
 

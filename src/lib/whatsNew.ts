@@ -1,5 +1,9 @@
 import { FORK_RELEASES_URL } from "@/lib/forkReleases";
 import { compareVersions } from "@/lib/version";
+import {
+  currentUpstreamVersion,
+  resolveUpstreamSeen,
+} from "@/lib/releaseIdentity";
 
 /**
  * 更新摘要：每个版本一份 `src/whats-new/<version>.json`，构建时打进安装包。
@@ -81,6 +85,16 @@ export function markSeen(
 ): string | undefined {
   if (!current) return seen;
   return seen && compareVersions(seen, current) > 0 ? seen : current;
+}
+
+/** Fork UI stamps the actual upstream baseline in a separate namespace, not installer semver. */
+export function markBuildSeen(
+  seen: string | undefined,
+  packageVersion: string | undefined,
+): string | undefined {
+  const baseline = currentUpstreamVersion(packageVersion);
+  if (!baseline) return seen;
+  return `upstream:${markSeen(resolveUpstreamSeen(seen), baseline)}`;
 }
 
 export function resolveWhatsNewLanguage(language: string): WhatsNewLanguage {

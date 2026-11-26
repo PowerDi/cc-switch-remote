@@ -14,7 +14,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const RELEASES_URL = "https://github.com/PowerDi/cc-switch-remote/releases";
+import { FORK_RELEASES_URL } from "@/lib/forkReleases";
+import { getPublishedIdentity, identityVersion } from "@/lib/releaseIdentity";
+
+const RELEASES_URL = FORK_RELEASES_URL;
 
 interface DatabaseUpgradeProps {
   payload: {
@@ -186,9 +189,18 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         {phase === "upgradable" && availableVersion && (
           <p className="text-sm text-fg-2">
             {t("dbUpgrade.updateAvailable", {
-              version: availableVersion,
-              defaultValue: "发现新版本 v{{version}}，升级后即可继续使用。",
+              // This state-free legacy command returns installation semver only.
+              // Unknown future identities are deliberately not reconstructed from it.
+              version: getPublishedIdentity(availableVersion)
+                ? identityVersion(getPublishedIdentity(availableVersion)!)
+                : t("releaseIdentity.unknownPublicVersion"),
+              defaultValue: "发现新版本 {{version}}，升级后即可继续使用。",
             })}
+            <span className="mt-1 block text-xs">
+              {t("releaseIdentity.installationVersion", {
+                version: availableVersion,
+              })}
+            </span>
           </p>
         )}
 

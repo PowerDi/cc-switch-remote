@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { readReleaseMetadata, resolveReleaseIdentity, updaterReleaseIdentity } from './release-identity.mjs';
 
 const DEFAULT_REQUIRED_PLATFORMS = [
   'darwin-aarch64',
@@ -30,6 +32,8 @@ function parseArgs(argv) {
     if (arg === '--assets-dir') args.assetsDir = next();
     else if (arg === '--repo') args.repo = next();
     else if (arg === '--tag') args.tag = next();
+    else if (arg === '--identity-file') args.identityFile = next();
+    else if (arg === '--notes-file') args.notesFile = next();
     else if (arg === '--output') args.output = next();
     else if (arg === '--asset-names-file') args.assetNamesFile = next();
     else if (arg === '--pub-date') args.pubDate = next();
@@ -53,6 +57,8 @@ function usage() {
   return `Usage: node scripts/assemble-tauri-latest-json.mjs --repo owner/repo --tag v1.2.3 [options]
 
 Options:
+  --identity-file <file>          Explicit release identity snapshot (required mapping for remote-v tags)
+  --notes-file <file>             Read release notes without shell interpolation
   --assets-dir <dir>              Release assets directory, default: dl
   --asset-names-file <file>       Optional release asset names, JSON or newline text
   --output <file>                 Output file, default: latest.json
@@ -111,6 +117,7 @@ export function assembleLatestJson({
   assetsDir,
   repo,
   tag,
+  identityFile,
   assetNamesFile,
   pubDate = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
   notes = `Release ${tag}`,
@@ -119,17 +126,29 @@ export function assembleLatestJson({
   if (!repo) throw new Error('--repo is required');
   if (!tag) throw new Error('--tag is required');
 
-  const version = tag.replace(/^v/, '');
+  const metadata = readReleaseMetadata(identityFile);
+  const identity = resolveReleaseIdentity(tag, { metadata });
+  if (repo !== metadata.repository) throw new Error('Release repository does not match the fork identity');
+  const version = identity.packageVersion;
   const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
   const { entries, signatures } = readAssetMap(assetsDir, assetNamesFile);
   const platforms = {};
+  const portable = {};
   const updaterArtifacts = [];
   const unsignedUpdaterArtifacts = [];
 
   for (const name of entries) {
     if (name.endsWith('.sig')) continue;
+    if (name.startsWith(`CC-Switch-Remote-${tag}-`) && /-Windows(?:-arm64)?-Portable\.zip$/.test(name)) {
+      portable[name.endsWith('-arm64-Portable.zip') ? 'windows-aarch64' : 'windows-x86_64'] = { url: `${baseUrl}/${name}` };
+      continue;
+    }
     const platformKeys = classifyUpdaterArtifact(name);
     if (platformKeys.length === 0) continue;
+    const belongsToRelease = name.startsWith(`CC-Switch-Remote-${tag}-`)
+      // Older fork releases predate Remote asset branding; maintenance preserves those names.
+      || (identity.remoteRevision == null && name.startsWith(`CC-Switch-${tag}-`));
+    if (!belongsToRelease) throw new Error(`Artifact does not belong to requested release ${tag}: ${name}`);
 
     updaterArtifacts.push(name);
     const signature = signatures.get(name);
@@ -139,6 +158,7 @@ export function assembleLatestJson({
     }
 
     for (const platformKey of platformKeys) {
+      if (platforms[platformKey]) throw new Error(`Multiple updater artifacts for ${platformKey}`);
       platforms[platformKey] = {
         signature,
         url: `${baseUrl}/${name}`,
@@ -166,6 +186,8 @@ export function assembleLatestJson({
     notes,
     pub_date: pubDate,
     platforms,
+    ...(updaterReleaseIdentity(identity) ? { releaseIdentity: updaterReleaseIdentity(identity) } : {}),
+    ...(Object.keys(portable).length ? { portable } : {}),
   };
 }
 
@@ -180,9 +202,10 @@ function main() {
     assetsDir: args.assetsDir,
     repo: args.repo,
     tag: args.tag,
+    identityFile: args.identityFile,
     assetNamesFile: args.assetNamesFile,
     pubDate: args.pubDate,
-    notes: args.notes,
+    notes: args.notesFile ? fs.readFileSync(args.notesFile, 'utf8') : args.notes,
     requiredPlatforms: args.requiredPlatforms,
   });
 
@@ -190,7 +213,7 @@ function main() {
   console.log(`Generated ${args.output} with platforms: ${Object.keys(latestJson.platforms).join(', ')}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     main();
   } catch (error) {

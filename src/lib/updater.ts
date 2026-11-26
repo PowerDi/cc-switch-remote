@@ -1,11 +1,18 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { getGlobalProxyUrl } from "@/lib/api/globalProxy";
+import {
+  getPublishedIdentity,
+  parseUpdateIdentity,
+  type ReleaseIdentity,
+} from "@/lib/releaseIdentity";
 
 export type UpdateChannel = "stable" | "beta";
 
 export interface UpdateInfo {
   currentVersion: string;
+  /** Tauri/installer semver: retain this for update comparisons and dismissal persistence. */
   availableVersion: string;
+  releaseIdentity?: ReleaseIdentity | null;
   notes?: string;
   pubDate?: string;
 }
@@ -48,12 +55,26 @@ export async function checkForUpdate(
     return { status: "up-to-date" };
   }
 
-  const info: UpdateInfo = {
-    currentVersion,
-    availableVersion: (update as any).version ?? "",
-    notes: (update as any).notes,
-    pubDate: (update as any).date,
-  };
-
-  return { status: "available", info };
+  try {
+    const availableVersion = update.version ?? "";
+    const info: UpdateInfo = {
+      currentVersion,
+      availableVersion,
+      releaseIdentity:
+        parseUpdateIdentity(
+          update.rawJson?.releaseIdentity,
+          availableVersion,
+        ) ?? getPublishedIdentity(availableVersion),
+      notes: update.body,
+      pubDate: update.date,
+    };
+    return { status: "available", info };
+  } finally {
+    // Installation uses the state-free Rust command's fresh check, not this resource.
+    await update
+      .close()
+      .catch((error) =>
+        console.warn("[Updater] Failed to release check resource", error),
+      );
+  }
 }

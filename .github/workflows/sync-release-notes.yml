@@ -12,11 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to update, for example v3.16.7
+        description: Existing fork release (v4.1.0 or remote-v4.0.21-r1)
         required: true
         type: string
       notes_file:
-        description: Release note file path
+        description: Exact fork-owned tag-specific note path (upstream notes are rejected)
         required: false
         type: string
 
@@ -35,6 +35,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
 
       - name: Sync release notes
         shell: bash
@@ -84,9 +89,15 @@ jobs:
               continue
             fi
 
-            title="$(sed -n '1s/^# //p' "$file")"
-            if [ -z "$title" ]; then
-              title="CC Switch Remote $tag"
+            identity_json=$(node scripts/release-identity.mjs --resolve-only --tag "$tag" \
+              --require-fork-notes --notes-file "$file")
+            if [[ "$tag" == remote-v* ]]; then
+              display_version=$(printf '%s' "$identity_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s)["display-version"]));')
+              title="CC Switch Remote $display_version"
+            else
+              # Preserve legacy fork release titles; never reinterpret them as upstream versions.
+              title="$(sed -n '1s/^# //p' "$file")"
+              [ -n "$title" ] || title="CC Switch Remote $tag"
             fi
 
             gh release edit "$tag" \

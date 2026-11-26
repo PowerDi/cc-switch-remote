@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "remote-v*-r*"
   workflow_dispatch:
     inputs:
       platform:
@@ -23,11 +23,57 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref_name }}-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.platform || 'tag' }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  identity:
+    name: Validate Release Identity
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      release-tag: ${{ steps.identity.outputs.release-tag }}
+      package-version: ${{ steps.identity.outputs.package-version }}
+      display-version: ${{ steps.identity.outputs.display-version }}
+      release-ready: ${{ steps.identity.outputs.release-ready }}
+      notes-file: ${{ steps.identity.outputs.notes-file }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Validate build or new public tag
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            # Stop unready/mismatched identities before fetching any baseline ref.
+            UPSTREAM_TAG=$(node --input-type=module -e 'import {readReleaseMetadata,verifyBuildIdentity,verifyReleaseReadiness} from "./scripts/release-identity.mjs";const m=readReleaseMetadata();verifyBuildIdentity(m);verifyReleaseReadiness(m);if(m.current.releaseTag!==process.env.GITHUB_REF_NAME)throw new Error("Pushed tag does not match metadata");console.log(`v${m.current.upstreamVersion}`);')
+            gh api "repos/farion1231/cc-switch/releases/tags/$UPSTREAM_TAG" > upstream-release.json
+            # Explicit isolated destination; never import official tags into refs/tags.
+            git fetch --no-tags https://github.com/farion1231/cc-switch.git \
+              "refs/tags/$UPSTREAM_TAG:refs/remotes/upstream/tags/$UPSTREAM_TAG"
+            git fetch --no-tags origin main
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' > published-tags.txt
+            node scripts/release-identity.mjs --publish --tag "$GITHUB_REF_NAME" \
+              --published-tags-file published-tags.txt --upstream-release-file upstream-release.json \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            # Manual dispatch validates/builds only, even when releaseReady=true.
+            node scripts/release-identity.mjs --github-output "$GITHUB_OUTPUT"
+          fi
+
   release:
     runs-on: ${{ matrix.os }}
+    needs: identity
+    env:
+      RELEASE_TAG: ${{ needs.identity.outputs.release-tag }}
     environment: release
     strategy:
       fail-fast: false
@@ -40,17 +86,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Ensure release tag is on main
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "❌ Release tags must point to commits contained in origin/main." >&2
-            echo "Current tag commit: $GITHUB_SHA" >&2
-            exit 1
-          fi
-
+      # Tag/main ancestry and monotonic installation versions were checked before fan-out.
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
@@ -331,7 +367,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p release-assets
-          VERSION="${GITHUB_REF_NAME}"  # e.g., v3.5.0
+          VERSION="${RELEASE_TAG}"  # Public identity, not installation version or branch name
 
           # Locate bundle artifacts
           TAR_GZ=""; APP_PATH=""
@@ -501,8 +537,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f "release-assets/CC-Switch-Remote-${GITHUB_REF_NAME}-macOS.zip"
-          test -f "release-assets/CC-Switch-Remote-${GITHUB_REF_NAME}-macOS.dmg"
+          test -f "release-assets/CC-Switch-Remote-${RELEASE_TAG}-macOS.zip"
+          test -f "release-assets/CC-Switch-Remote-${RELEASE_TAG}-macOS.dmg"
           echo "⚠️ macOS artifacts are unsigned and not notarized"
 
       - name: Prepare Windows Assets
@@ -512,7 +548,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          $VERSION = $env:GITHUB_REF_NAME  # e.g., v3.5.0
+          $VERSION = $env:RELEASE_TAG  # Public identity, not installation version
           # 仅打包 MSI 安装器 + .sig（用于 Updater）
           $msi = Get-ChildItem -Path 'src-tauri/target/release/bundle/msi' -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($null -eq $msi) {
@@ -607,7 +643,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p release-assets
-          VERSION="${GITHUB_REF_NAME}"  # e.g., v3.5.0
+          VERSION="${RELEASE_TAG}"  # Public identity, not installation version or branch name
           ARCH="${{ matrix.arch || 'x86_64' }}"
           # Updater artifact: AppImage（含对应 .sig）
           APPIMAGE=$(find src-tauri/target/release/bundle -name "*.AppImage" | head -1 || true)
@@ -676,13 +712,22 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
-    needs: release
-    if: github.event_name == 'push'
+    needs: [identity, release]
+    if: github.event_name == 'push' && needs.identity.outputs.release-ready == 'true'
+    # Cross-tag publication is serialized; the inventory is re-read under this lock.
+    concurrency:
+      group: remote-app-publication
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ needs.identity.outputs.release-tag }}
+      NOTES_FILE: ${{ needs.identity.outputs.notes-file }}
     permissions:
       contents: write
     steps:
       - name: Checkout release notes
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Download built release artifacts
         uses: actions/download-artifact@v8
@@ -697,106 +742,59 @@ jobs:
           set -euo pipefail
           ls -la release-assets
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
       - name: Prepare Release Notes
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          BODY_PATH="release-body.md"
+          TAG="$RELEASE_TAG"
+          test "$NOTES_FILE" = "docs/release-notes/${TAG}-remote-zh.md"
+          node scripts/release-identity.mjs --resolve-only --tag "$TAG" \
+            --require-fork-notes --notes-file "$NOTES_FILE"
+          cp "$NOTES_FILE" release-body.md
 
-          if [ -f "docs/release-notes/${TAG}-remote-zh.md" ]; then
-            cp "docs/release-notes/${TAG}-remote-zh.md" "$BODY_PATH"
-            echo "Using docs/release-notes/${TAG}-remote-zh.md"
-          else
-            cat > "$BODY_PATH" <<EOF
-          ## CC Switch Remote ${TAG}
+      - name: Validate updater metadata before creating a release
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/assemble-tauri-latest-json.mjs \
+            --assets-dir release-assets --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" --notes-file release-body.md \
+            --output release-assets/latest.json
+          # This checks signing key IDs, NOT cryptographic signature validity.
+          node scripts/verify-tauri-updater-signatures.mjs \
+            --latest-json release-assets/latest.json --tauri-config src-tauri/tauri.conf.json
+          cp release-identity.json release-assets/release-identity.json
 
-          Remote-management fork of CC Switch.
-
-          Claude Code / Codex / Gemini provider management with local and remote targets.
-
-          ### 下载
-
-          - **macOS**: \`CC-Switch-Remote-${TAG}-macOS.dmg\` 或 \`CC-Switch-Remote-${TAG}-macOS.zip\`（未签名/未公证）
-          - **Windows**: \`CC-Switch-Remote-${TAG}-Windows.msi\`（安装版）或 \`CC-Switch-Remote-${TAG}-Windows-Portable.zip\`（绿色版）
-          - **Linux (x86_64)**: \`CC-Switch-Remote-${TAG}-Linux-x86_64.AppImage\` / \`.deb\` / \`.rpm\`
-          - **Linux (ARM64)**: \`CC-Switch-Remote-${TAG}-Linux-arm64.AppImage\` / \`.deb\` / \`.rpm\`
-          - **Remote Helper**: published separately by the \`Remote Helper Artifacts\` workflow on \`remote-helper-latest\`
-
-          > \`.tar.gz\` 为 Tauri updater 自动更新专用，无需手动下载。
-
-          ---
-          macOS 版本未进行 Apple Developer ID 签名和公证，首次打开可能需要在系统设置中手动允许。
-          EOF
-          fi
-
-          echo "Prepared release body:"
-          sed -n '1,120p' "$BODY_PATH"
+      - name: Revalidate immediately before publishing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          UPSTREAM_TAG=$(node --input-type=module -e 'import {readReleaseMetadata} from "./scripts/release-identity.mjs";console.log(`v${readReleaseMetadata().current.upstreamVersion}`);')
+          gh api "repos/farion1231/cc-switch/releases/tags/$UPSTREAM_TAG" > upstream-release.json
+          git fetch --no-tags https://github.com/farion1231/cc-switch.git \
+            "refs/tags/$UPSTREAM_TAG:refs/remotes/upstream/tags/$UPSTREAM_TAG"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' > published-tags.txt
+          node scripts/release-identity.mjs --publish --tag "$RELEASE_TAG" \
+            --published-tags-file published-tags.txt --upstream-release-file upstream-release.json
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref_name }}
-          name: CC Switch Remote ${{ github.ref_name }}
+          tag_name: ${{ needs.identity.outputs.release-tag }}
+          name: CC Switch Remote ${{ needs.identity.outputs.display-version }}
           prerelease: false
+          make_latest: true
           body_path: release-body.md
           files: release-assets/*
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  assemble-latest-json:
-    name: Assemble latest.json
-    runs-on: ubuntu-22.04
-    needs: publish-release
-    if: github.event_name == 'push'
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Prepare GH
-        run: |
-          gh --version || (type -p curl >/dev/null && sudo apt-get update && sudo apt-get install -y gh || true)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Fetch release asset names
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euxo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > asset-names.txt
-          cat asset-names.txt
-      - name: Download updater signatures
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euxo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          mkdir -p dl
-          gh release download "$TAG" --dir dl --repo "$GITHUB_REPOSITORY" --pattern '*.sig'
-          ls -la dl || true
-      - name: Generate latest.json
-        env:
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          node scripts/assemble-tauri-latest-json.mjs \
-            --assets-dir dl \
-            --asset-names-file asset-names.txt \
-            --repo "$REPO" \
-            --tag "$TAG" \
-            --pub-date "$PUB_DATE" \
-            --output latest.json
-          node scripts/verify-tauri-updater-signatures.mjs \
-            --latest-json latest.json \
-            --tauri-config src-tauri/tauri.conf.json
-          echo "Generated latest.json:" && cat latest.json
-      - name: Upload latest.json to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euxo pipefail
-          gh release upload "$GITHUB_REF_NAME" latest.json --clobber --repo "$GITHUB_REPOSITORY"

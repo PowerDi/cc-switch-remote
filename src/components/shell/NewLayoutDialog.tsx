@@ -16,7 +16,7 @@ import { APP_IDS } from "@/config/appConfig";
 import { providersApi, settingsApi } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
 import { FORK_RELEASES_URL } from "@/lib/forkReleases";
-import { markSeen } from "@/lib/whatsNew";
+import { markBuildSeen } from "@/lib/whatsNew";
 import type { Settings } from "@/types";
 
 /** 任一应用的数据库里已经有供应商（找到一家就停） */
@@ -84,7 +84,10 @@ export function NewLayoutDialog() {
       await settingsApi.save({
         ...rest,
         newLayoutNoticeConfirmed: true,
-        whatsNewSeenVersion: markSeen(settings.whatsNewSeenVersion, version),
+        whatsNewSeenVersion: markBuildSeen(
+          settings.whatsNewSeenVersion,
+          version,
+        ),
       });
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
     } catch (error) {
