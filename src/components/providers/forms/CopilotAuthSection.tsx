@@ -334,7 +334,11 @@ export const CopilotAuthSection: React.FC<CopilotAuthSectionProps> = ({
       needsReauth: false,
       users: accountUsers([account.id]),
       quota: (
-        <CopilotAccountQuota accountId={account.id} login={account.login} />
+        <CopilotAccountQuota
+          accountId={account.id}
+          login={account.login}
+          target={target}
+        />
       ),
     };
   });

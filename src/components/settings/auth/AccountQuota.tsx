@@ -30,6 +30,7 @@ import {
   quotaRows,
 } from "@/components/SubscriptionQuotaFooter";
 import type { SubscriptionQuota } from "@/types/subscription";
+import type { ManagementTarget } from "@/lib/api";
 import { useCopilotQuota } from "@/lib/query/copilot";
 import {
   useAgyAccountQuota,
@@ -271,13 +272,19 @@ export function subscriptionQuotaState(
 export function CopilotAccountQuota({
   accountId,
   login,
+  target,
 }: {
   accountId: string;
   login: string;
+  target?: ManagementTarget;
 }) {
   const { t } = useTranslation();
   const display = useQuotaDisplay();
-  const query = useCopilotQuota(accountId, { enabled: true, autoQuery: false });
+  const query = useCopilotQuota(accountId, {
+    enabled: true,
+    autoQuery: false,
+    target,
+  });
   const { data: quota, isFetching: loading } = query;
 
   let state: AccountQuotaState;
@@ -322,9 +329,11 @@ export function CopilotAccountQuota({
 export function XaiAccountQuota({
   accountId,
   login,
+  target,
 }: {
   accountId: string;
   login: string;
+  target?: ManagementTarget;
 }) {
   const { t, i18n } = useTranslation();
   const display = useQuotaDisplay();
@@ -335,6 +344,7 @@ export function XaiAccountQuota({
   } = useXaiOauthQuotaByAccountId(accountId, {
     enabled: true,
     autoQuery: false,
+    target,
   });
   return (
     <AccountQuotaColumn

@@ -127,8 +127,28 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
 }));
 
 vi.mock("@/components/providers/AuthSettingsPanel", () => ({
-  AuthSettingsPanel: ({ target }: { target: string | null }) =>
-    target ? <div data-testid="auth-settings-panel">{target}</div> : null,
+  AuthSettingsPanel: ({
+    target,
+    managementTarget,
+    onClose,
+  }: {
+    target: string | null;
+    managementTarget?: ManagementTarget;
+    onClose: () => void;
+  }) =>
+    target ? (
+      <div data-testid="auth-settings-panel">
+        {target}
+        <output data-testid="auth-settings-target">
+          {managementTarget?.type === "remote"
+            ? `remote:${managementTarget.profile.id}`
+            : "local"}
+        </output>
+        <button type="button" onClick={onClose}>
+          close-auth-settings
+        </button>
+      </div>
+    ) : null,
 }));
 
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
@@ -445,6 +465,57 @@ describe("EditProviderDialog", () => {
       undefined,
       { type: "local" },
     );
+  });
+
+  it("远程目标下「管理账号」打开同一目标的授权中心并返回编辑页", async () => {
+    const remoteTarget: ManagementTarget = {
+      type: "remote",
+      profile: {
+        id: "remote-host",
+        name: "Remote Host",
+        host: "192.0.2.10",
+        port: 22,
+        username: "root",
+        authMethod: { type: "sshAgent" },
+        helperPath: "/root/.local/bin/cc-switch-remote-helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    };
+    const provider: Provider = {
+      id: "codex-remote",
+      name: "Codex Remote",
+      category: "custom",
+      settingsConfig: { auth: {}, config: "" },
+    };
+    const onOpenChange = vi.fn();
+
+    renderWithQueryClient(
+      <EditProviderDialog
+        open
+        provider={provider}
+        onOpenChange={onOpenChange}
+        onSubmit={vi.fn()}
+        appId="codex"
+        target={remoteTarget}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "manage-auth" }));
+    expect(screen.getByTestId("auth-settings-panel")).toHaveTextContent(
+      "codex_oauth",
+    );
+    expect(screen.getByTestId("auth-settings-target")).toHaveTextContent(
+      "remote:remote-host",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "close-auth-settings" }),
+    );
+    expect(screen.queryByTestId("auth-settings-panel")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-config")).toHaveTextContent(
+      JSON.stringify(provider.settingsConfig),
+    );
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 
   it("clears the nested auth panel before the dialog reopens", async () => {

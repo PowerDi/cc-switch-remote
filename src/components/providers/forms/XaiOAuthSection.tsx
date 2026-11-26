@@ -215,7 +215,11 @@ export const XaiOAuthSection: React.FC<XaiOAuthSectionProps> = ({
         needsReauth,
         users: accountUsers([account.id]),
         quota: needsReauth ? undefined : (
-          <XaiAccountQuota accountId={account.id} login={account.login} />
+          <XaiAccountQuota
+            accountId={account.id}
+            login={account.login}
+            target={target}
+          />
         ),
       };
     });

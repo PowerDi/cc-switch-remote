@@ -552,9 +552,7 @@ export function EditProviderDialog({
           submitLabel={t("common.save")}
           onSubmit={handleSubmit}
           onCancel={closeDialog}
-          onManageAuthAccounts={
-            target.type === "local" ? setAuthSettingsTarget : undefined
-          }
+          onManageAuthAccounts={setAuthSettingsTarget}
           onSubmittingChange={setIsFormSubmitting}
           onSubmitReadyChange={handleSubmitReadyChange}
           initialData={initialData}
@@ -569,6 +567,7 @@ export function EditProviderDialog({
       {conflictDialog}
       <AuthSettingsPanel
         target={authSettingsTarget}
+        managementTarget={target}
         onClose={() => setAuthSettingsTarget(null)}
       />
     </FullScreenPanel>

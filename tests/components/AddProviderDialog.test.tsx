@@ -171,8 +171,28 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
 }));
 
 vi.mock("@/components/providers/AuthSettingsPanel", () => ({
-  AuthSettingsPanel: ({ target }: { target: string | null }) =>
-    target ? <div data-testid="auth-settings-panel">{target}</div> : null,
+  AuthSettingsPanel: ({
+    target,
+    managementTarget,
+    onClose,
+  }: {
+    target: string | null;
+    managementTarget?: ManagementTarget;
+    onClose: () => void;
+  }) =>
+    target ? (
+      <div data-testid="auth-settings-panel">
+        {target}
+        <output data-testid="auth-settings-target">
+          {managementTarget?.type === "remote"
+            ? `remote:${managementTarget.profile.id}`
+            : "local"}
+        </output>
+        <button type="button" onClick={onClose}>
+          close-auth-settings
+        </button>
+      </div>
+    ) : null,
 }));
 
 describe("AddProviderDialog", () => {
@@ -469,6 +489,52 @@ describe("AddProviderDialog", () => {
     expect(handleSubmit.mock.calls[0][0]).not.toHaveProperty(
       "ensureCodexOfficialSeed",
     );
+  });
+
+  it("远程目标下「管理账号」打开同一目标的授权中心，返回后回到添加页", async () => {
+    const remoteTarget: ManagementTarget = {
+      type: "remote",
+      profile: {
+        id: "remote-1",
+        name: "Remote Host",
+        host: "192.168.123.206",
+        port: 22,
+        username: "root",
+        authMethod: { type: "password" },
+        helperPath: "/root/.local/bin/cc-switch-remote-helper",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    };
+    const handleOpenChange = vi.fn();
+
+    render(
+      <AddProviderDialog
+        open
+        onOpenChange={handleOpenChange}
+        appId="codex"
+        target={remoteTarget}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "manage-auth" }));
+    expect(screen.getByTestId("auth-settings-panel")).toHaveTextContent(
+      "codex_oauth",
+    );
+    expect(screen.getByTestId("auth-settings-target")).toHaveTextContent(
+      "remote:remote-1",
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "close-auth-settings" }),
+    );
+    expect(screen.queryByTestId("auth-settings-panel")).not.toBeInTheDocument();
+    // 返回只关掉授权中心：添加页和表单还在
+    expect(
+      screen.getByRole("button", { name: "manage-auth" }),
+    ).toBeInTheDocument();
+    expect(handleOpenChange).not.toHaveBeenCalled();
   });
 
   it("clears the nested auth panel before the dialog reopens", async () => {

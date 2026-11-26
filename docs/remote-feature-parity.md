@@ -42,6 +42,17 @@ Starting with `remote-v4.0.21-r1`, the user-approved distribution is Windows x64
 | About: app release/update | local About | local-only | Desktop app update belongs to the local application. The update badge opens the local About settings even when the active management target is remote. |
 | About: install conflict diagnostics | Remote | remote-adapted | Remote environment diagnostics live in the Remote tab. |
 
+## Provider form account management audit (2026-11-26)
+
+Compared with fork `main` at `e9819449` (upstream v4.0.21 baseline):
+
+- **Parity, fixed:** Add/Edit Provider → `AuthSettingsPanel` → `AuthCenterPanel` now carries the selected management target. Closing the nested panel retains the provider form; existing form validation, save behavior, and reopen cleanup remain shared with local mode. The newer `AuthCenterTarget` type, including Kimi, is preserved.
+- **Parity, retained:** `useManagedAccountUsers` already routes queries by target and disables remote Claude Desktop/Antigravity queries. Its main-branch implementation and regression tests are retained.
+- **Parity, fixed:** Copilot/xAI account rows pass the target through `AccountQuota` into the existing quota hooks. Those hooks keep target-specific cache keys and refresh behavior. Copilot uses `copilotGetUsageForTarget` → `remoteApi.fetchCopilotUsage`; xAI uses `subscriptionApi.getXaiOauthQuota` → `remoteApi.getXaiOauthQuota`. Both pass the selected profile, account ID, and connection secret. Local mode retains its original quota commands. Desktop quota display preferences remain presentation-only.
+- **Remote-adapted, retained:** `useManagedAuth` checks Helper health and the `auth` capability before loading accounts or enabling authentication. Authentication mutations, validation, target-specific invalidation, and localized errors reuse the existing hook and adapters. This change does not modify Rust services, Helper commands, or session failure handling.
+- **Local-only, retained:** Claude official, Kimi, and Antigravity account sections remain hidden on remote targets. Remote account management uses the existing supported Copilot/Codex/xAI sections.
+- **Regression coverage:** Add/Edit dialog tests exercise opening and returning; `AuthSettingsPanel.test.tsx` checks target propagation and local-only visibility; `ManagedAccountQuota.target.test.tsx` exercises the real account-row → quota-hook → API chain, remote refresh, absence of local commands, local behavior, and unsupported auth. Live SSH/OAuth flows are outside this focused regression run.
+
 ## Feature Areas
 
 | Feature area | Status | Notes |

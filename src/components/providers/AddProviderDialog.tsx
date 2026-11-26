@@ -246,16 +246,6 @@ export function AddProviderDialog({
     [t, onOpenChange, target],
   );
 
-  // fork：托管账号管理是本机专属（远端没有本地 OAuth 浏览器流）。
-  const onManageAuthProviders = useCallback(
-    (targetProvider: AuthCenterTarget) => {
-      if (target.type === "local") {
-        setAuthSettingsTarget(targetProvider);
-      }
-    },
-    [target.type],
-  );
-
   const handleUniversalFormClose = useCallback(() => {
     setUniversalFormOpen(false);
     setSelectedUniversalPreset(null);
@@ -530,7 +520,7 @@ export function AddProviderDialog({
       onStackLayoutChange={setStackLayout}
       onSubmit={handleSubmit}
       onCancel={closeDialog}
-      onManageAuthAccounts={onManageAuthProviders}
+      onManageAuthAccounts={setAuthSettingsTarget}
       onSubmittingChange={setIsFormSubmitting}
       onSubmitReadyChange={handleSubmitReadyChange}
       onAccountLoginChange={setAccountLogin}
@@ -618,6 +608,7 @@ export function AddProviderDialog({
 
       <AuthSettingsPanel
         target={authSettingsTarget}
+        managementTarget={target}
         onClose={() => setAuthSettingsTarget(null)}
       />
       {conflictDialog}
