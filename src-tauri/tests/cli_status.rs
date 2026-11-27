@@ -804,9 +804,17 @@ fn app_mode_commands_round_trip_through_json_cli() {
             })
             .to_string()
         };
-        // 先初始化临时 home 的数据库，再把路由端口换成一个冷门口：
+        // 用只读 provider 查询初始化临时 home 的数据库，再把路由端口换成一个冷门口：
         // 开发机上常常真跑着一个路由 daemon 占着 15721，测试不该和它抢端口。
-        let _ = cc_switch_lib::cli::run(&["status".to_string()]);
+        let initialized = cc_switch_lib::cli::run(&[
+            "providers".to_string(),
+            "list".to_string(),
+            "codex".to_string(),
+        ]);
+        assert!(
+            initialized["ok"] == true && initialized["data"].is_object(),
+            "initialize test DB: {initialized:?}"
+        );
         {
             let test_home = std::env::var("CC_SWITCH_TEST_HOME").expect("test home");
             let db_path = std::path::PathBuf::from(test_home)

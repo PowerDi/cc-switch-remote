@@ -41,7 +41,8 @@ export function parseUpdateIdentity(
     record.packageVersion !== packageVersion ||
     typeof record.upstreamVersion !== "string" ||
     !STABLE_VERSION.test(record.upstreamVersion) ||
-    packageVersion !== `${record.upstreamVersion}-remote.${record.remoteRevision}` ||
+    packageVersion !==
+      `${record.upstreamVersion}-remote.${record.remoteRevision}` ||
     typeof record.upstreamCommit !== "string" ||
     !/^[a-f0-9]{40}$/.test(record.upstreamCommit) ||
     !Number.isSafeInteger(record.remoteRevision) ||
