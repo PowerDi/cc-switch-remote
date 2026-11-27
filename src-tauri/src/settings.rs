@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -830,16 +830,10 @@ impl AppSettings {
         };
         let loaded = load_settings_from_path(&path);
         if loaded.lossy {
-            // 原文件没被完整读进来：先留一份原样的副本，之后的保存才不会把用户的设置冲掉。
-            // 这会儿备份不了（比如文件正被别的进程独占），就记下来，留给第一次保存前再备份。
             match backup_settings_file(&path) {
                 Ok(dest) => log::warn!("设置文件未能完整读取，原文件已备份到 {}", dest.display()),
                 Err(err) => {
-                    log::error!(
-                        "设置文件未能完整读取，备份原文件也失败，保存前会再试: {}: {err}",
-                        path.display()
-                    );
-                    SETTINGS_BACKUP_PENDING.store(true, Ordering::SeqCst);
+                    log::error!("设置文件未能完整读取，备份失败: {}: {err}", path.display())
                 }
             }
         }
@@ -848,10 +842,6 @@ impl AppSettings {
         settings
     }
 }
-
-/// 读取 settings.json 没能完整读进来、原文件也还没备份成功时置位。置位期间每次保存前
-/// 都要先把原文件备份出来，备份不成功就拒绝保存，免得用默认值盖掉用户的设置。
-static SETTINGS_BACKUP_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// 读文件的 I/O 错误多是暂时的（Windows 上杀毒软件、同步盘短暂独占文件），重试几次再放弃。
 const SETTINGS_READ_ATTEMPTS: u32 = 5;
@@ -963,42 +953,182 @@ fn backup_settings_file(path: &Path) -> std::io::Result<PathBuf> {
     Ok(dest)
 }
 
-fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
-    let Some(path) = AppSettings::settings_path() else {
-        return Err(AppError::Config("无法获取用户主目录".to_string()));
-    };
-    write_settings_to_path(&path, settings, &SETTINGS_BACKUP_PENDING)
+fn open_settings_lock(path: &Path) -> Result<fs::File, AppError> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
+    options
+        .open(path)
+        .map_err(|error| AppError::io(path, error))
 }
 
-fn write_settings_to_path(
-    path: &Path,
-    settings: &AppSettings,
-    backup_pending: &AtomicBool,
-) -> Result<(), AppError> {
-    if backup_pending.load(Ordering::SeqCst) {
-        match backup_settings_file(path) {
-            Ok(dest) => {
-                log::warn!("保存设置前已备份未能读取的原文件到 {}", dest.display());
-                backup_pending.store(false, Ordering::SeqCst);
+#[cfg(unix)]
+fn try_lock_settings(file: &fs::File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => Ok(false),
+        _ => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn try_lock_settings(file: &fs::File) -> std::io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{Foundation::ERROR_LOCK_VIOLATION, Storage::FileSystem::LockFile};
+    if unsafe { LockFile(file.as_raw_handle(), 0, 0, 1, 0) } != 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+/// The lock file is stable across atomic replacements of `settings.json` and
+/// is never removed. The OS releases the lock when its handle closes.
+struct SettingsFile {
+    path: PathBuf,
+    _lock: fs::File,
+    document: Value,
+    settings: AppSettings,
+}
+
+impl SettingsFile {
+    fn begin(path: PathBuf) -> Result<Self, AppError> {
+        let lock_path = path.with_extension("json.lock");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| AppError::io(parent, error))?;
+        }
+        let lock = open_settings_lock(&lock_path)?;
+        let start = Instant::now();
+        while !try_lock_settings(&lock).map_err(|error| AppError::io(&lock_path, error))? {
+            if start.elapsed() >= Duration::from_secs(5) {
+                return Err(AppError::io(
+                    &lock_path,
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "settings are locked by another writer",
+                    ),
+                ));
             }
-            // 原文件已经不在了，没有要保护的内容。
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                backup_pending.store(false, Ordering::SeqCst);
-            }
-            Err(err) => {
-                return Err(AppError::Config(format!(
-                    "设置文件之前没能读取，备份原文件也失败，为免覆盖已取消保存 (The settings file could not be read earlier and backing it up failed; saving was cancelled to avoid overwriting it): {}: {err}",
-                    path.display()
-                )));
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let (document, mut settings) =
+            match read_settings_bytes(&path).map_err(|error| AppError::io(&path, error))? {
+                Some(bytes) => {
+                    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+                    let document: Value = serde_json::from_slice(bytes)
+                        .map_err(|error| AppError::json(&path, error))?;
+                    if !document.is_object() {
+                        return Err(AppError::Config(format!(
+                            "Expected a settings object: {}",
+                            path.display()
+                        )));
+                    }
+                    let settings = serde_json::from_slice(bytes)
+                        .map_err(|error| AppError::json(&path, error))?;
+                    (document, settings)
+                }
+                None => {
+                    let defaults = AppSettings::default();
+                    (settings_as_json(&defaults)?, defaults)
+                }
+            };
+        settings.normalize_paths();
+        Ok(Self {
+            path,
+            _lock: lock,
+            document,
+            settings,
+        })
+    }
+
+    fn current() -> Result<Self, AppError> {
+        Self::begin(AppSettings::settings_path().expect("settings path"))
+    }
+
+    fn commit(self, next: AppSettings) -> Result<(), AppError> {
+        self.commit_with(next, crate::config::atomic_write_private)
+    }
+
+    fn commit_with(
+        mut self,
+        mut next: AppSettings,
+        write: impl FnOnce(&Path, &[u8]) -> Result<(), AppError>,
+    ) -> Result<(), AppError> {
+        next.normalize_paths();
+        let previous = settings_as_json(&self.settings)?;
+        let updated = settings_as_json(&next)?;
+        if previous == updated && self.path.is_file() {
+            publish_settings(&self.path, self.settings);
+            return Ok(());
+        }
+        apply_settings_delta(&mut self.document, &previous, &updated, false);
+        let json = serde_json::to_vec_pretty(&self.document)
+            .map_err(|source| AppError::JsonSerialize { source })?;
+        write(&self.path, &json)?;
+        publish_settings(&self.path, next);
+        Ok(())
+    }
+}
+
+fn settings_as_json(settings: &AppSettings) -> Result<Value, AppError> {
+    serde_json::to_value(settings).map_err(|source| AppError::JsonSerialize { source })
+}
+
+/// Apply only changed known fields to the original JSON, keeping unknown keys.
+/// During rollback, revert only values that still match the failed save.
+fn apply_settings_delta(current: &mut Value, before: &Value, after: &Value, compare: bool) {
+    let (Some(current), Some(before), Some(after)) = (
+        current.as_object_mut(),
+        before.as_object(),
+        after.as_object(),
+    ) else {
+        return;
+    };
+    for key in before
+        .keys()
+        .chain(after.keys().filter(|key| !before.contains_key(*key)))
+    {
+        let previous = before.get(key);
+        let next = after.get(key);
+        if previous == next {
+            continue;
+        }
+        if let (
+            Some(previous @ Value::Object(_)),
+            Some(next @ Value::Object(_)),
+            Some(value @ Value::Object(_)),
+        ) = (previous, next, current.get_mut(key))
+        {
+            apply_settings_delta(value, previous, next, compare);
+        } else if !compare || current.get(key) == previous {
+            match next {
+                Some(value) => {
+                    current.insert(key.clone(), value.clone());
+                }
+                None => {
+                    current.remove(key);
+                }
             }
         }
     }
-
-    let mut normalized = settings.clone();
-    normalized.normalize_paths();
-    let json = serde_json::to_string_pretty(&normalized)
-        .map_err(|e| AppError::JsonSerialize { source: e })?;
-    crate::config::atomic_write_private(path, json.as_bytes())
 }
 
 #[cfg(test)]
@@ -1015,15 +1145,27 @@ fn save_settings_file_at_path(
         Some(failure) => {
             crate::config::atomic_write_private_with_failure(path, json.as_bytes(), failure)
         }
-        None => write_settings_to_path(path, settings, &AtomicBool::new(false)),
+        None => crate::config::atomic_write_private(path, json.as_bytes()),
     }
 }
 
 static SETTINGS_STORE: OnceLock<RwLock<AppSettings>> = OnceLock::new();
 static SETTINGS_TRANSACTION: OnceLock<Mutex<()>> = OnceLock::new();
+static FULL_SETTINGS_SAVE: Mutex<()> = Mutex::new(());
 
 fn settings_store() -> &'static RwLock<AppSettings> {
     SETTINGS_STORE.get_or_init(|| RwLock::new(AppSettings::load_from_file()))
+}
+
+fn publish_settings(path: &Path, settings: AppSettings) {
+    if AppSettings::settings_path().as_deref() != Some(path) {
+        return;
+    }
+    let mut guard = SETTINGS_STORE
+        .get_or_init(|| RwLock::new(settings.clone()))
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = settings;
 }
 
 fn settings_transaction() -> MutexGuard<'static, ()> {
@@ -1072,7 +1214,7 @@ pub fn get_settings() -> AppSettings {
 }
 
 pub fn get_settings_for_frontend() -> AppSettings {
-    let mut settings = get_settings();
+    let mut settings = read_settings_snapshot();
     if let Some(sync) = &mut settings.webdav_sync {
         sync.password.clear();
     }
@@ -1080,6 +1222,14 @@ pub fn get_settings_for_frontend() -> AppSettings {
         s3.secret_access_key.clear();
     }
     settings.webdav_backup = None;
+    settings
+}
+
+fn read_settings_snapshot() -> AppSettings {
+    let mut settings = AppSettings::settings_path()
+        .map(|path| load_settings_from_path(&path).settings)
+        .unwrap_or_default();
+    settings.normalize_paths();
     settings
 }
 
@@ -1120,6 +1270,15 @@ pub(crate) fn merge_settings_for_save(
     incoming.local_migrations = existing.local_migrations.clone();
     incoming.proxy_client_host = existing.proxy_client_host.clone();
     incoming.lightweight_mode = existing.lightweight_mode;
+    incoming.current_provider_claude = existing.current_provider_claude.clone();
+    incoming.current_provider_claude_desktop = existing.current_provider_claude_desktop.clone();
+    incoming.current_provider_codex = existing.current_provider_codex.clone();
+    incoming.current_provider_gemini = existing.current_provider_gemini.clone();
+    incoming.current_provider_grokbuild = existing.current_provider_grokbuild.clone();
+    incoming.current_provider_opencode = existing.current_provider_opencode.clone();
+    incoming.current_provider_openclaw = existing.current_provider_openclaw.clone();
+    incoming.current_provider_hermes = existing.current_provider_hermes.clone();
+    incoming.current_provider_agy = existing.current_provider_agy.clone();
     incoming
 }
 
@@ -1171,8 +1330,8 @@ impl<'de> Deserialize<'de> for SettingsSaveResult {
     }
 }
 
-/// Apply a frontend/helper settings payload as one transaction, including the
-/// live Codex rewrite. The helper and desktop command must use this same path.
+/// Serialize disk updates separately from live Codex work: provider operations
+/// can hold the Codex mode lock while acquiring the settings writer lock.
 pub(crate) fn save_settings_with_state(
     state: &crate::store::AppState,
     settings: AppSettings,
@@ -1190,8 +1349,13 @@ pub(crate) fn save_settings_with_state_and_migration_runner<F>(
 where
     F: FnOnce() -> Result<(), AppError>,
 {
+    let save = FULL_SETTINGS_SAVE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let transaction = settings_transaction();
-    let existing = get_settings();
+    let file = SettingsFile::current().map_err(|err| err.to_string())?;
+    let path = file.path.clone();
+    let existing = file.settings.clone();
     let mut merged = merge_settings_for_save(settings, &existing);
     let unify_codex_changed =
         merged.unify_codex_session_history != existing.unify_codex_session_history;
@@ -1209,18 +1373,20 @@ where
         }
         merged.unify_codex_migrate_existing = None;
     }
-    update_settings_locked(merged).map_err(|e| e.to_string())?;
+    merged.normalize_paths();
+    file.commit(merged.clone()).map_err(|e| e.to_string())?;
+    drop(transaction);
     if stack_settings_changed {
         if let Err(error) =
             futures::executor::block_on(crate::mode::controller::resync_codex_stack_catalog(state))
         {
-            let mut rollback = get_settings();
+            let mut rollback = merged.clone();
             rollback.codex_stack_classic_tools = existing.codex_stack_classic_tools;
             rollback.codex_stack_subagent_model = existing.codex_stack_subagent_model.clone();
             rollback.codex_stack_subagent_reasoning_effort =
                 existing.codex_stack_subagent_reasoning_effort.clone();
             rollback.codex_stack_auto_review_model = existing.codex_stack_auto_review_model.clone();
-            update_settings_locked(rollback)
+            rollback_settings(&path, &merged, &rollback)
                 .map_err(|e| format!("{error}; settings rollback failed: {e}"))?;
             return Err(format!(
                 "The aggregation setting did not take effect: {error}"
@@ -1231,28 +1397,15 @@ where
     if unify_codex_changed {
         if let Err(err) = crate::services::provider::reapply_current_codex_official_live(state) {
             log::warn!("统一 Codex 会话历史开关变更后重写 live 配置失败，回滚设置: {err}");
-            if let Err(rollback_err) = update_settings_locked(existing) {
+            if let Err(rollback_err) = rollback_settings(&path, &merged, &existing) {
                 log::error!("回滚统一会话开关设置失败: {rollback_err}");
             }
             return Err(format!(
                 "统一 Codex 会话历史开关未生效（live 配置重写失败）: {err}"
             ));
         }
-        if !unify_codex_enabled {
-            // 清除标记与迁移意愿，让重新开启并再次勾选时能补迁
-            // 关闭期间落入 openai 桶的官方会话（上游 commands/settings.rs 的同一分支）。
-            // 事务锁已持有，用 _locked 变体，避免重入死锁。
-            if let Err(err) = mutate_settings_locked(|settings| {
-                if let Some(migrations) = settings.local_migrations.as_mut() {
-                    migrations.codex_official_history_unify_v1 = None;
-                }
-                settings.unify_codex_migrate_existing = None;
-            }) {
-                log::warn!("清除统一会话迁移标记与迁移意愿失败: {err}");
-            }
-        }
     }
-    drop(transaction);
+    drop(save);
     let warning = if unify_codex_changed && unify_codex_enabled {
         migration_runner().err().map(|error| {
             let message = format!("设置已保存，但 Codex 历史迁移仍待重试: {error}");
@@ -1299,21 +1452,29 @@ pub(crate) fn retry_pending_codex_history_migration() -> Result<(), AppError> {
     })
 }
 
+/// Explicit replacement of known fields; unlike the UI save this also replaces
+/// backend-owned fields. Do not pass a cached snapshot to mutate a setting.
 pub fn update_settings(new_settings: AppSettings) -> Result<(), AppError> {
     let _transaction = settings_transaction();
-    update_settings_locked(new_settings)
+    SettingsFile::current()?.commit(new_settings)
 }
 
-fn update_settings_locked(mut new_settings: AppSettings) -> Result<(), AppError> {
-    new_settings.normalize_paths();
-    save_settings_file(&new_settings)?;
-
-    let mut guard = settings_store().write().unwrap_or_else(|e| {
-        log::warn!("设置锁已毒化，使用恢复值: {e}");
-        e.into_inner()
-    });
-    *guard = new_settings;
-    Ok(())
+fn rollback_settings(
+    path: &Path,
+    written: &AppSettings,
+    previous: &AppSettings,
+) -> Result<(), AppError> {
+    let _transaction = settings_transaction();
+    let file = SettingsFile::begin(path.to_path_buf())?;
+    let mut rollback = settings_as_json(&file.settings)?;
+    apply_settings_delta(
+        &mut rollback,
+        &settings_as_json(written)?,
+        &settings_as_json(previous)?,
+        true,
+    );
+    let rollback = serde_json::from_value(rollback).map_err(|error| AppError::json(path, error))?;
+    file.commit(rollback)
 }
 
 fn mutate_settings<F>(mutator: F) -> Result<(), AppError>
@@ -1321,23 +1482,10 @@ where
     F: FnOnce(&mut AppSettings),
 {
     let _transaction = settings_transaction();
-    mutate_settings_locked(mutator)
-}
-
-fn mutate_settings_locked<F>(mutator: F) -> Result<(), AppError>
-where
-    F: FnOnce(&mut AppSettings),
-{
-    let mut guard = settings_store().write().unwrap_or_else(|e| {
-        log::warn!("设置锁已毒化，使用恢复值: {e}");
-        e.into_inner()
-    });
-    let mut next = guard.clone();
+    let file = SettingsFile::current()?;
+    let mut next = file.settings.clone();
     mutator(&mut next);
-    next.normalize_paths();
-    save_settings_file(&next)?;
-    *guard = next;
-    Ok(())
+    file.commit(next)
 }
 
 pub fn is_codex_third_party_history_provider_bucket_migrated() -> bool {
@@ -1434,14 +1582,13 @@ pub fn mark_codex_legacy_official_history_bucket_migrated(
 }
 
 pub fn unify_codex_migrate_existing_requested() -> bool {
-    get_settings().unify_codex_migrate_existing.unwrap_or(false)
+    codex_live_settings()
+        .unify_codex_migrate_existing
+        .unwrap_or(false)
 }
 
 /// 记下当前是否处于轻量模式（见 [`AppSettings::lightweight_mode`]），值没变就不写盘。
 pub fn set_lightweight_mode(enabled: bool) -> Result<(), AppError> {
-    if get_settings().lightweight_mode == enabled {
-        return Ok(());
-    }
     mutate_settings(|settings| settings.lightweight_mode = enabled)
 }
 
@@ -1464,12 +1611,8 @@ pub fn set_proxy_client_host(host: &str) -> Result<(), AppError> {
 /// 用于导入配置等场景，确保内存缓存与文件同步
 pub fn reload_settings() -> Result<(), AppError> {
     let _transaction = settings_transaction();
-    let fresh_settings = AppSettings::load_from_file();
-    let mut guard = settings_store().write().unwrap_or_else(|e| {
-        log::warn!("设置锁已毒化，使用恢复值: {e}");
-        e.into_inner()
-    });
-    *guard = fresh_settings;
+    let path = AppSettings::settings_path().expect("settings path");
+    publish_settings(&path, AppSettings::load_from_file());
     Ok(())
 }
 
@@ -1482,10 +1625,10 @@ where
     F: FnOnce(),
 {
     let _transaction = settings_transaction();
-    let existing = get_settings();
-    let merged = merge_settings_for_save(settings, &existing);
+    let file = SettingsFile::current()?;
+    let merged = merge_settings_for_save(settings, &file.settings);
     after_snapshot();
-    update_settings_locked(merged)
+    file.commit(merged)
 }
 
 pub fn get_claude_override_dir() -> Option<PathBuf> {
@@ -1570,31 +1713,16 @@ pub fn preserve_codex_official_auth_on_switch() -> bool {
 }
 
 pub fn unify_codex_session_history() -> bool {
-    settings_store()
-        .read()
-        .unwrap_or_else(|e| {
-            log::warn!("设置锁已毒化，使用恢复值: {e}");
-            e.into_inner()
-        })
-        .unify_codex_session_history
+    codex_live_settings().unify_codex_session_history
 }
 
 pub fn codex_stack_classic_tools() -> bool {
-    settings_store()
-        .read()
-        .unwrap_or_else(|e| {
-            log::warn!("设置锁已毒化，使用恢复值: {e}");
-            e.into_inner()
-        })
-        .codex_stack_classic_tools
+    codex_live_settings().codex_stack_classic_tools
 }
 
 /// Codex 聚合模式下的子 agent 设置：(模型 slug, 推理强度)，空串当作没设。
 pub fn codex_stack_subagent() -> (Option<String>, Option<String>) {
-    let settings = settings_store().read().unwrap_or_else(|e| {
-        log::warn!("设置锁已毒化，使用恢复值: {e}");
-        e.into_inner()
-    });
+    let settings = codex_live_settings();
     let non_empty = |value: &Option<String>| {
         value
             .as_deref()
@@ -1610,17 +1738,21 @@ pub fn codex_stack_subagent() -> (Option<String>, Option<String>) {
 
 /// Codex 聚合模式下的自动审批模型 slug，空串当作没设。
 pub fn codex_stack_auto_review_model() -> Option<String> {
-    settings_store()
-        .read()
-        .unwrap_or_else(|e| {
-            log::warn!("设置锁已毒化，使用恢复值: {e}");
-            e.into_inner()
-        })
+    codex_live_settings()
         .codex_stack_auto_review_model
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string)
+}
+
+fn codex_live_settings() -> AppSettings {
+    let path = AppSettings::settings_path().expect("settings path");
+    let loaded = load_settings_from_path(&path);
+    if loaded.lossy {
+        return get_settings();
+    }
+    loaded.settings
 }
 
 // ===== 当前供应商管理函数 =====
@@ -1630,7 +1762,18 @@ pub fn codex_stack_auto_review_model() -> Option<String> {
 /// 这是设备级别的设置，不随数据库同步。
 /// 如果本地没有设置，调用者应该 fallback 到数据库的 `is_current` 字段。
 pub fn get_current_provider(app_type: &AppType) -> Option<String> {
-    let settings = settings_store().read().ok()?;
+    if matches!(
+        app_type,
+        AppType::Pi | AppType::Mcode | AppType::Kimi | AppType::Omp
+    ) {
+        return None;
+    }
+    let path = AppSettings::settings_path()?;
+    let loaded = load_settings_from_path(&path);
+    if loaded.lossy {
+        return None;
+    }
+    let settings = loaded.settings;
     match app_type {
         AppType::Claude => settings.current_provider_claude.clone(),
         AppType::ClaudeDesktop => settings.current_provider_claude_desktop.clone(),
@@ -1670,10 +1813,10 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
 /// 逻辑：
 /// 1. 从本地 settings 读取当前供应商 ID
 /// 2. 验证该 ID 在数据库中存在
-/// 3. 如果不存在则清理本地 settings，fallback 到数据库的 is_current
+/// 3. 如果不存在则直接 fallback 到数据库的 is_current，不改写设置
 ///
 /// 这确保了返回的 ID 一定是有效的（在数据库中存在）。
-/// 多设备云同步场景下，配置导入后本地 ID 可能失效，此函数会自动修复。
+/// 多设备云同步场景下，配置导入后本地 ID 可能失效。
 pub fn get_effective_current_provider(
     db: &crate::database::Database,
     app_type: &AppType,
@@ -1689,13 +1832,11 @@ pub fn get_effective_current_provider(
             return Ok(Some(local_id));
         }
 
-        // 3. 不存在，清理本地 settings
         log::warn!(
-            "本地 settings 中的供应商 {} ({}) 在数据库中不存在，将清理并 fallback 到数据库",
+            "本地 settings 中的供应商 {} ({}) 在数据库中不存在，fallback 到数据库",
             local_id,
             app_type.as_str()
         );
-        let _ = set_current_provider(app_type, None);
     }
 
     // Fallback 到数据库的 is_current
@@ -1861,13 +2002,41 @@ mod tests {
             AppSettings::settings_path(),
             Some(home.path().join(".cc-switch-remote/settings.json"))
         );
-        save_settings_file(&AppSettings::default()).expect("save fork settings");
+        update_settings(AppSettings::default()).expect("save fork settings");
 
         assert_eq!(
             std::fs::read(&upstream_path).expect("read upstream sentinel"),
             b"upstream-settings-sentinel"
         );
         assert!(home.path().join(".cc-switch-remote/settings.json").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn settings_lock_and_pointer_follow_config_directory_override() {
+        struct ResetOverride;
+        impl Drop for ResetOverride {
+            fn drop(&mut self) {
+                crate::app_store::set_app_config_dir_override_for_cli(None).unwrap();
+            }
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let _guard = TestHomeGuard::set(home.path());
+        let default_path = AppSettings::settings_path().unwrap();
+        set_current_provider(&AppType::Claude, Some("default")).unwrap();
+        let bytes = fs::read(&default_path).unwrap();
+        let custom_dir = home.path().join("alternate");
+        crate::app_store::set_app_config_dir_override_for_cli(custom_dir.to_str()).unwrap();
+        let _override_guard = ResetOverride;
+        assert!(get_current_provider(&AppType::Claude).is_none());
+        set_current_provider(&AppType::Claude, Some("alternate")).unwrap();
+        assert_eq!(
+            get_current_provider(&AppType::Claude).as_deref(),
+            Some("alternate")
+        );
+        assert!(custom_dir.join("settings.json.lock").is_file());
+        assert_eq!(fs::read(default_path).unwrap(), bytes);
     }
 
     #[cfg(unix)]
@@ -2340,61 +2509,187 @@ mod tests {
     }
 
     #[test]
-    fn pending_backup_is_taken_before_overwriting() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        fs::write(&path, "original").expect("write");
-        let pending = AtomicBool::new(true);
+    #[serial]
+    fn settings_mutations_refuse_corrupt_disk_data_without_changing_cache() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let _guard = TestHomeGuard::set(home.path());
+        let path = AppSettings::settings_path().expect("settings path");
+        set_current_provider(&AppType::Claude, Some("cached")).expect("seed settings");
+        let original = settings_as_json(&get_settings()).expect("cached settings");
 
-        write_settings_to_path(&path, &AppSettings::default(), &pending).expect("save");
-
-        assert!(!pending.load(Ordering::SeqCst));
-        let backups: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().contains(".broken-"))
-            .collect();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(
-            fs::read_to_string(backups[0].path()).expect("read backup"),
-            "original"
-        );
-        let saved: AppSettings =
-            serde_json::from_str(&fs::read_to_string(&path).expect("read saved")).expect("parse");
-        assert!(saved.claude_config_dir.is_none());
+        for corrupt in ["original", r#"{"silentStartup": "true"}"#] {
+            fs::write(&path, corrupt).expect("write corrupt fixture");
+            assert!(set_current_provider(&AppType::Claude, None).is_err());
+            assert!(update_settings(AppSettings::default()).is_err());
+            assert_eq!(fs::read_to_string(&path).expect("read settings"), corrupt);
+            assert_eq!(settings_as_json(&get_settings()).unwrap(), original);
+        }
     }
 
     #[test]
-    fn save_is_refused_when_pending_backup_fails() {
+    fn settings_write_is_refused_when_disk_read_fails() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // 目标是目录：复制失败（且不是 NotFound），保存必须拒绝、不能动原位置。
         let path = dir.path().join("settings.json");
         fs::create_dir(&path).expect("mkdir");
-        let pending = AtomicBool::new(true);
-
-        assert!(write_settings_to_path(&path, &AppSettings::default(), &pending).is_err());
-        assert!(pending.load(Ordering::SeqCst));
+        assert!(SettingsFile::begin(path.clone()).is_err());
         assert!(path.is_dir());
     }
 
     #[test]
-    fn save_without_pending_backup_writes_atomically() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        let settings = AppSettings {
-            claude_config_dir: Some("/tmp/claude".to_string()),
-            ..AppSettings::default()
-        };
-
-        write_settings_to_path(&path, &settings, &AtomicBool::new(false)).expect("save");
-
-        let loaded = load_settings_from_path(&path);
-        assert!(!loaded.lossy);
+    #[serial]
+    fn settings_failed_atomic_commit_does_not_publish_unwritten_cache() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let _guard = TestHomeGuard::set(home.path());
+        set_current_provider(&AppType::Claude, Some("before")).expect("seed settings");
+        let file = SettingsFile::current().expect("settings file");
+        let path = file.path.clone();
+        let bytes = fs::read(&path).expect("before bytes");
+        let mut next = file.settings.clone();
+        next.current_provider_claude = Some("after".to_string());
+        let result = file.commit_with(next, |path, bytes| {
+            crate::config::atomic_write_private_with_failure(
+                path,
+                bytes,
+                crate::config::AtomicWriteFailure::Rename,
+            )
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).expect("after bytes"), bytes);
         assert_eq!(
-            loaded.settings.claude_config_dir.as_deref(),
-            Some("/tmp/claude")
+            get_settings().current_provider_claude.as_deref(),
+            Some("before")
         );
-        let entries = fs::read_dir(dir.path()).expect("read dir").count();
-        assert_eq!(entries, 1, "no temp or backup files left behind");
+    }
+
+    #[test]
+    fn settings_waits_for_other_writer_before_taking_snapshot() {
+        const CHILD_SETTINGS_PATH: &str = "CC_SWITCH_SETTINGS_LOCK_TEST_CHILD";
+        if let Some(path) = std::env::var_os(CHILD_SETTINGS_PATH) {
+            use std::io::Write;
+            let path = PathBuf::from(path);
+            let lock = open_settings_lock(&path.with_extension("json.lock")).unwrap();
+            assert!(
+                !try_lock_settings(&lock).unwrap(),
+                "parent must hold the OS lock"
+            );
+            drop(lock);
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "settings transaction ready").unwrap();
+            stdout.flush().unwrap();
+            drop(stdout);
+            let file = SettingsFile::begin(path).expect("child writer");
+            assert!(file.settings.silent_startup);
+            let mut next = file.settings.clone();
+            next.current_provider_codex = Some("child".to_string());
+            file.commit(next).expect("child commit");
+            return;
+        }
+
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("settings.json");
+        let first = SettingsFile::begin(path.clone()).expect("first writer");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "settings::tests::settings_waits_for_other_writer_before_taking_snapshot",
+                "--nocapture",
+            ])
+            .env(CHILD_SETTINGS_PATH, &path)
+            .env("CC_SWITCH_TEST_HOME", dir.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn second writer process");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let pipe = child.stdout.take().unwrap();
+        let output = std::thread::spawn(move || {
+            let mut reader = BufReader::new(pipe);
+            let mut captured = String::new();
+            while reader.read_line(&mut captured).unwrap() != 0 {
+                if captured.contains("settings transaction ready\n") {
+                    let _ = ready_tx.send(());
+                    break;
+                }
+            }
+            use std::io::Read;
+            reader.read_to_string(&mut captured).unwrap();
+            captured
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("child reached lock");
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(child.try_wait().unwrap().is_none());
+        assert!(!path.exists());
+        let mut next = first.settings.clone();
+        next.silent_startup = true;
+        first.commit(next).expect("first commit");
+        let status = child.wait().expect("wait for child writer");
+        assert!(status.success(), "{}", output.join().unwrap());
+        let final_settings = SettingsFile::begin(path).unwrap().settings;
+        assert!(final_settings.silent_startup);
+        assert_eq!(
+            final_settings.current_provider_codex.as_deref(),
+            Some("child")
+        );
+    }
+
+    #[test]
+    fn settings_update_keeps_unknown_keys_in_retained_objects() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("settings.json");
+        let original = serde_json::json!({
+            "currentProviderClaude": "before",
+            "futureKey": { "options": [1, 2] },
+            "webdavSync": {
+                "baseUrl": "https://fixture.invalid",
+                "futureSyncKey": "keep",
+                "status": { "futureStatusKey": "keep", "lastSyncAt": 100 }
+            }
+        });
+        fs::write(&path, original.to_string()).unwrap();
+        let file = SettingsFile::begin(path.clone()).expect("settings file");
+        let mut next = file.settings.clone();
+        next.current_provider_claude = None;
+        next.webdav_sync.as_mut().unwrap().status.last_sync_at = Some(200);
+        file.commit(next).expect("commit");
+
+        let actual: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let mut expected = original;
+        expected
+            .as_object_mut()
+            .unwrap()
+            .remove("currentProviderClaude");
+        expected["webdavSync"]["status"]["lastSyncAt"] = 200.into();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn settings_rollback_keeps_newer_changes() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("settings.json");
+        let initial = SettingsFile::begin(path.clone()).expect("first writer");
+        let before = initial.settings.clone();
+        let mut saved = before.clone();
+        saved.silent_startup = true;
+        saved.language = Some("en".to_string());
+        initial.commit(saved.clone()).expect("save setup");
+
+        let concurrent = SettingsFile::begin(path.clone()).expect("second writer");
+        let mut next = concurrent.settings.clone();
+        next.language = Some("zh".to_string());
+        next.current_provider_codex = Some("new".to_string());
+        concurrent.commit(next).expect("concurrent save");
+
+        rollback_settings(&path, &saved, &before).expect("rollback");
+        let result = SettingsFile::begin(path).unwrap();
+        assert!(!result.settings.silent_startup);
+        assert_eq!(result.settings.language.as_deref(), Some("zh"));
+        assert_eq!(
+            result.settings.current_provider_codex.as_deref(),
+            Some("new")
+        );
     }
 }
