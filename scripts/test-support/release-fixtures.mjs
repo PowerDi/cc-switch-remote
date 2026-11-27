@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { parsers } from "prettier/plugins/yaml";
-import { REPO_ROOT, readReleaseMetadata } from "../release-identity.mjs";
+import { REPO_ROOT } from "../release-identity.mjs";
 
 export const read = (file) =>
   fs.readFileSync(path.join(REPO_ROOT, file), "utf8");
@@ -110,7 +110,7 @@ export function frozenMetadata() {
 }
 
 export function candidateMetadata() {
-  const metadata = structuredClone(readReleaseMetadata());
+  const metadata = JSON.parse(read("tests/fixtures/releaseIdentity.json"));
   metadata.current.releaseReady = true;
   // Synthetic verification flags are confined to test fixtures, never production metadata.
   metadata.upgradeValidation.installerContract = "contract-reviewed";

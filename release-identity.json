@@ -4,12 +4,12 @@
   "current": {
     "upstreamVersion": "4.0.21",
     "upstreamCommit": "c4db63c60d2a1ddcb4bd9f81152b9c6126413659",
-    "remoteRevision": 1,
-    "releaseTag": "remote-v4.0.21-r1",
-    "packageVersion": "4.0.21-remote.1",
+    "remoteRevision": 2,
+    "releaseTag": "remote-v4.0.21-r2",
+    "packageVersion": "4.0.21-remote.2",
     "status": "unreleased",
     "releaseReady": true,
-    "notesFile": "docs/release-notes/remote-v4.0.21-r1-remote-zh.md"
+    "notesFile": "docs/release-notes/remote-v4.0.21-r2-remote-zh.md"
   },
   "migration": {
     "decision": "manual-client-reinstall",
@@ -78,6 +78,15 @@
       "upstreamVersion": "4.0.21",
       "upstreamCommit": "c4db63c60d2a1ddcb4bd9f81152b9c6126413659",
       "remoteRevision": null,
+      "status": "published"
+    },
+    {
+      "releaseTag": "remote-v4.0.21-r1",
+      "packageVersion": "4.0.21-remote.1",
+      "releaseCommit": "c0b701e44bf89fb1d264236949a3af2745af1989",
+      "upstreamVersion": "4.0.21",
+      "upstreamCommit": "c4db63c60d2a1ddcb4bd9f81152b9c6126413659",
+      "remoteRevision": 1,
       "status": "published"
     }
   ]

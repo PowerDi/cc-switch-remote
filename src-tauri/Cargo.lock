@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "cc-switch-remote"
-version = "4.0.21-remote.1"
+version = "4.0.21-remote.2"
 dependencies = [
  "anyhow",
  "arboard",
